@@ -5907,7 +5907,13 @@ function buildFormsPage() {
       const printBtn = document.createElement('button');
       printBtn.className = 'sub-nav-btn active';
       printBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Print Form';
-      printBtn.onclick = () => window.print();
+        printBtn.onclick = () => {
+            if (currentTaskNumber) {
+                printSingleTaskForm(currentTaskNumber);
+            } else {
+                alert("Please select a task first.");
+            }
+        };
       printContainer.appendChild(printBtn);
     }
     buildTaskAssignmentForm();
@@ -6699,6 +6705,18 @@ const TASK_FORM_PRINT_STYLES = `
 
 function getTaskFormPrintHTML(num, f) {
     const members = (f.teamMembers || []).map(m => `${m.name} ${m.leader ? '(L)' : ''}`).join(', ');
+
+    // Team Types string
+    const activeTypes = [];
+    if (f.teamTypes) {
+        Object.entries(f.teamTypes).forEach(([type, active]) => {
+            if (active) {
+                activeTypes.push(type === 'other' ? (f.otherTeamType || 'Other') : type.toUpperCase());
+            }
+        });
+    }
+    const teamTypeStr = activeTypes.length > 0 ? activeTypes.join(', ') : '';
+
     return `
                 <div class="task-form">
                     <div class="form-header">
@@ -6725,6 +6743,10 @@ function getTaskFormPrintHTML(num, f) {
                         <div class="form-row">
                              <div class="form-field"><span class="field-label">Description / Clothing</span><div class="field-value">${f.lostPersonDescription || ''} ${f.lostPersonClothing || ''}</div></div>
                         </div>
+                        <div class="form-row">
+                             <div class="form-field"><span class="field-label">Physical / Medical Information</span><div class="field-value">${f.lostPersonPhysical || ''}</div></div>
+                             <div class="form-field" style="flex:0.4;"><span class="field-label">On Scene</span><div class="field-value">${[f.onSceneFamily ? 'Family' : '', f.onSceneMedia ? 'Media' : ''].filter(Boolean).join(', ') || 'None'}</div></div>
+                        </div>
                     </div>
 
                     <div class="form-section">
@@ -6732,9 +6754,15 @@ function getTaskFormPrintHTML(num, f) {
                         <div class="form-row">
                              <div class="form-field"><span class="field-label">Region/Segment</span><div class="field-value">${f.segment || ''}</div></div>
                              <div class="form-field"><span class="field-label">Team ID</span><div class="field-value">${f.teamName || ''}</div></div>
+                             <div class="form-field" style="flex:0.6;"><span class="field-label">Team Type</span><div class="field-value">${teamTypeStr}</div></div>
                         </div>
                         <div class="form-row">
                              <div class="form-field"><span class="field-label">Task Objective</span><div class="field-value">${f.instructions || ''}</div></div>
+                        </div>
+                        <div class="form-row">
+                             <div class="form-field"><span class="field-label">Briefed By</span><div class="field-value">${f.briefedBy || ''}</div></div>
+                             <div class="form-field" style="flex:0.3;"><span class="field-label">Radio #</span><div class="field-value">${f.radioNumber || ''}</div></div>
+                             <div class="form-field" style="flex:0.3;"><span class="field-label">GPS #</span><div class="field-value">${f.gpsNumber || ''}</div></div>
                         </div>
                     </div>
                     
@@ -6863,6 +6891,12 @@ function printSearchFile() {
     const psrcData = metrics.map(m => m.totalPSRc);
     const posData = metrics.map(m => m.totalPOS);
 
+    const forms = bundle.forms || {};
+    const taskFormsHTML = Object.keys(forms)
+        .sort((a, b) => parseInt(a) - parseInt(b))
+        .map(num => `<div class="print-section">${getTaskFormPrintHTML(num, forms[num])}</div>`)
+        .join('');
+
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
         alert("Please allow popups to view the printout.");
@@ -6960,7 +6994,9 @@ function printSearchFile() {
         </div>
 
         <!-- Task Forms -->
-        <div id="forms-body"></div>
+        <div id="forms-body">
+            ${taskFormsHTML}
+        </div>
     </div>
 
     <script>
@@ -7069,84 +7105,6 @@ function printSearchFile() {
         }
         drawLineChart('psrc-chart', psrcData, '#007bff', false);
         drawLineChart('pos-chart', posData, '#fd7e14', true);
-
-        // Render Task Forms
-        const formsBody = document.getElementById('forms-body');
-        const forms = bundle.forms || {};
-        Object.keys(forms).sort((a,b) => parseInt(a)-parseInt(b)).forEach(num => {
-            const f = forms[num];
-            const section = document.createElement('div');
-            section.className = 'print-section';
-            
-            const members = (f.teamMembers || []).map(m => \`\${m.name} \${m.leader ? '(L)' : ''}\`).join(', ');
-
-            section.innerHTML = \`
-                <div class="task-form">
-                    <div class="form-header">
-                        <span style="font-weight: bold; font-size: 16pt;">Task Assignment Form</span>
-                        <span style="font-weight: bold; font-size: 16pt;">Task # \${num}</span>
-                    </div>
-                    
-                    <div class="form-section">
-                        <div class="form-section-title">1. INCIDENT OVERVIEW</div>
-                        <div class="form-row">
-                            <div class="form-field"><span class="field-label">Incident Name</span><div class="field-value">\${f.incidentNumber || ''}</div></div>
-                            <div class="form-field" style="flex:0.3;"><span class="field-label">Op Period</span><div class="field-value">\${f.opPeriod || ''}</div></div>
-                            <div class="form-field" style="flex:0.5;"><span class="field-label">Date/Time</span><div class="field-value">\${f.dateTime || ''}</div></div>
-                        </div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">2. SUBJECT INFORMATION</div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Subject Name</span><div class="field-value">\${f.lostPersonName || ''}</div></div>
-                             <div class="form-field" style="flex:0.2;"><span class="field-label">Age</span><div class="field-value">\${f.lostPersonAge || ''}</div></div>
-                             <div class="form-field" style="flex:0.2;"><span class="field-label">Gender</span><div class="field-value">\${f.lostPersonGender || ''}</div></div>
-                        </div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Description / Clothing</span><div class="field-value">\${f.lostPersonDescription || ''} \${f.lostPersonClothing || ''}</div></div>
-                        </div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">3. ASSIGNMENT DETAILS</div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Region/Segment</span><div class="field-value">\${f.segment || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Team ID</span><div class="field-value">\${f.teamName || ''}</div></div>
-                        </div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Task Objective</span><div class="field-value">\${f.instructions || ''}</div></div>
-                        </div>
-                    </div>
-                    
-                    <div class="form-section">
-                        <div class="form-section-title">4. PERSONNEL</div>
-                        <div class="form-field"><span class="field-label">Team Members</span><div class="field-value">\${members}</div></div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">5. TIMESTAMPS</div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Leave Base</span><div class="field-value">\${f.leaveBase || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Begin Search</span><div class="field-value">\${f.beginSearch || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Finish Search</span><div class="field-value">\${f.completeSearch || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Return Base</span><div class="field-value">\${f.returnBase || ''}</div></div>
-                        </div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">6. PAR CHECKS (20 MINUTE STATUS)</div>
-                        <div id="par-checks-\${num}">
-                            \${(f.parChecksRaw || []).length > 0 ? 
-                                f.parChecksRaw.map(l => '<div class="par-check-item"><div class="par-check-time">' + l.time + '</div><div class="par-check-action">' + l.action + '</div></div>').join('') : 
-                                '<div style="font-style: italic; color: #888; padding: 5px;">No par checks recorded for this task.</div>'
-                            }
-                        </div>
-                    </div>
-                </div>
-            \`;
-            formsBody.appendChild(section);
-        });
 
         // Auto-print
         setTimeout(() => {
