@@ -6,35 +6,43 @@ const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
 const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
-const SARTOPO_PROXY_STORAGE_KEY = 'sar-sartopo-proxy-v1';
+const SAR_TOPO_PROXY_STORAGE_KEY = 'sar-sartopo-proxy-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
-const KVDB_BASE_URL = 'https://kvdb.io';
-const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin).replace(/[^a-zA-Z0-9]/g, '').substr(0, 12);
+const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin || 'default').replace(/[^a-zA-Z0-9]/g, '').substring(0, 12);
+
+function getSyncServerUrl() {
+    let url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
+    return url || 'https://sar-sync-server-production.up.railway.app';
+}
 
 function getSyncBucket() {
     let bucket = localStorage.getItem(SYNC_BUCKET_STORAGE_KEY);
     if (!bucket) {
-        // If they had an old sync URL, maybe we can derive a bucket from it? 
-        // But better to just start fresh or let them set it.
         bucket = DEFAULT_BUCKET;
         localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
     }
     return bucket;
 }
 
-function getSartopoProxy() {
-    return localStorage.getItem(SARTOPO_PROXY_STORAGE_KEY) || 'http://sartopo-proxy-production.up.railway.app:5050/api/proxy';
+function getSarTopoProxy() {
+    let proxy = localStorage.getItem(SAR_TOPO_PROXY_STORAGE_KEY);
+    // Migration: Migrate to the standard HTTPS URL (Railway default)
+    if (proxy && proxy.includes(':5050')) {
+        proxy = proxy.replace('http://', 'https://').replace(':5050', '');
+        localStorage.setItem(SAR_TOPO_PROXY_STORAGE_KEY, proxy);
+    }
+    return proxy || 'https://sartopo-proxy-production.up.railway.app/fetch-map';
 }
 
-function setSartopoProxy(url) {
-    if (url) localStorage.setItem(SARTOPO_PROXY_STORAGE_KEY, url);
-    else localStorage.removeItem(SARTOPO_PROXY_STORAGE_KEY);
+function setSarTopoProxy(url) {
+    if (url) localStorage.setItem(SAR_TOPO_PROXY_STORAGE_KEY, url);
+    else localStorage.removeItem(SAR_TOPO_PROXY_STORAGE_KEY);
 }
 
 function getDeviceId() {
     let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
     if (!id) {
-        id = 'device-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+        id = 'device-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now();
         localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
     }
     return id;
@@ -125,10 +133,6 @@ function isMapsPage() {
   return pageKey() === 'page10';
 }
 
-function isAccountsPage() {
-  return pageKey() === 'page8';
-}
-
 function getCurrentUser() {
   const userJson = sessionStorage.getItem('sar-current-user');
   if (!userJson) return null;
@@ -147,7 +151,7 @@ function getAccountName(user) {
 
 function setupAutoFormatDate(input) {
   input.oninput = () => {
-    let val = input.value.replace(/[^\d]/g, '');
+      let val = input.value.replace(/\D/g, '');
     if (val.length > 8) val = val.slice(0, 8);
     let formatted = val;
     if (val.length > 4) {
@@ -161,7 +165,7 @@ function setupAutoFormatDate(input) {
 
 function setupAutoFormatTime(input) {
   input.oninput = () => {
-    let val = input.value.replace(/[^\d]/g, '');
+      let val = input.value.replace(/\D/g, '');
     if (val.length > 4) val = val.slice(0, 4);
     let formatted = val;
     if (val.length > 2) {
@@ -5718,7 +5722,7 @@ function buildSettingsPage() {
       nextBundle.background = 'assets/us-night.jpg';
       saveBundle(nextBundle);
       applyBackground(nextBundle);
-      status.textContent = 'Background reset to default.';
+        status.textContent = 'Background reverted to default us-night satellite image.';
     };
   }
 
@@ -5729,45 +5733,52 @@ function buildSettingsPage() {
   const saveProxyBtn = document.getElementById('save-proxy-btn');
 
   if (proxyInput && saveProxyBtn) {
-    proxyInput.value = getSartopoProxy();
+      proxyInput.value = getSarTopoProxy();
     saveProxyBtn.onclick = () => {
-      setSartopoProxy(proxyInput.value.trim());
+        setSarTopoProxy(proxyInput.value.trim());
       status.textContent = 'SarTopo Proxy URL saved.';
     };
   }
 
     const startWalkthroughBtn = document.getElementById('start-walkthrough-btn');
     if (startWalkthroughBtn) {
-        startWalkthroughBtn.onclick = () => startSartopoSetupWalkthrough(1);
+        startWalkthroughBtn.onclick = () => startSarTopoSetupWalkthrough(1);
     }
 
   if (syncUrlInput && saveSyncBtn) {
     const syncBucketInput = document.getElementById('sync-bucket-input');
+      syncUrlInput.value = getSyncServerUrl();
     if (syncBucketInput) syncBucketInput.value = getSyncBucket();
 
     saveSyncBtn.onclick = async () => {
-      if (syncBucketInput) {
-        const bucket = syncBucketInput.value.trim();
-        if (bucket) {
-           localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
-           syncStatusMsg.textContent = 'Sync bucket saved! Testing connection...';
-           
-           try {
-             // Test connection by trying to get the bundle
-             const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
-             const resp = await fetch(`${bucketUrl}/bundle`);
-             if (resp.ok) {
-                syncStatusMsg.textContent = 'Sync connection successful! Data found in bucket.';
-             } else if (resp.status === 404) {
-                syncStatusMsg.textContent = 'Connected! This is a new bucket, data will be pushed on next change.';
-             } else {
-                syncStatusMsg.textContent = `Server returned status ${resp.status}. Bucket might be invalid.`;
-             }
-             syncWithServer();
-           } catch (err) {
-             syncStatusMsg.textContent = 'Could not reach sync service (kvdb.io). Check your internet connection.';
-           }
-        }
+        const serverUrl = syncUrlInput.value.trim();
+        const bucket = syncBucketInput ? syncBucketInput.value.trim() : getSyncBucket();
+
+        if (serverUrl && bucket) {
+            localStorage.setItem(SYNC_URL_STORAGE_KEY, serverUrl);
+            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+            syncStatusMsg.textContent = 'Sync settings saved! Testing connection...';
+
+            try {
+                const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
+                const [resp, listResp] = await Promise.all([
+                    fetch(`${apiBase}/bundle`),
+                    fetch(`${apiBase}/all-files`)
+                ]);
+
+                if (resp.ok || listResp.ok) {
+                    syncStatusMsg.textContent = 'Sync connection successful! Data found.';
+                } else if (resp.status === 404 && listResp.status === 404) {
+                    syncStatusMsg.textContent = 'Connected! New bucket created on server.';
+                } else {
+                    syncStatusMsg.textContent = `Server returned status ${resp.status}/${listResp.status}.`;
+                }
+                syncWithServer();
+            } catch (err) {
+                syncStatusMsg.textContent = 'Could not reach sync server. Check the URL and your connection.';
+            }
+        } else {
+            syncStatusMsg.textContent = 'Please enter both Server URL and Bucket ID.';
       }
     };
   }
@@ -8603,7 +8614,7 @@ function showImportSegmentsPopup() {
   renderFileSelection();
 }
 
-function startSartopoSetupWalkthrough(step = 1) {
+function startSarTopoSetupWalkthrough(step = 1) {
     let title = "SarTopo Setup Guide (1/4)";
     let body = "";
     let btnText = "Next";
@@ -8621,7 +8632,7 @@ function startSartopoSetupWalkthrough(step = 1) {
         body = `
       <p>We have moved the "middleman" to the web. You no longer need to run <code>middleman.py</code> on your computer.</p>
       <p style="margin-top:10px;">The proxy is hosted at:</p>
-      <code style="display:block; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; margin: 10px 0;">http://sartopo-proxy-production.up.railway.app:5050</code>
+      <code style="display:block; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; margin: 10px 0;">https://sartopo-proxy-production.up.railway.app</code>
       <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This service handles all SarTopo traffic securely and enables this site to fetch your private or public map data.</p>
     `;
     } else if (step === 3) {
@@ -8631,7 +8642,7 @@ function startSartopoSetupWalkthrough(step = 1) {
       <ul style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
         <li>Go to the <strong>Settings</strong> page.</li>
         <li>Look for <strong>SarTopo Proxy Settings</strong>.</li>
-        <li>Ensure it is set to <code>http://sartopo-proxy-production.up.railway.app:5050/api/proxy</code></li>
+        <li>Ensure it is set to <code>https://sartopo-proxy-production.up.railway.app/fetch-map</code></li>
         <li>Click <strong>Save Proxy Settings</strong>.</li>
       </ul>
       <div style="margin-top:15px; padding: 10px; background: rgba(255,165,0,0.1); border-radius: 4px; font-size: 0.9rem;">
@@ -8672,7 +8683,7 @@ function startSartopoSetupWalkthrough(step = 1) {
     nextBtn.onclick = () => {
         closePopup(popup);
         if (nextStep) {
-            setTimeout(() => startSartopoSetupWalkthrough(nextStep), 300);
+            setTimeout(() => startSarTopoSetupWalkthrough(nextStep), 300);
         }
     };
     btnContainer.appendChild(nextBtn);
@@ -9242,7 +9253,7 @@ function buildMapsPage() {
   const mapNameInput = document.getElementById('map-name-input');
     const mapHelpBtn = document.getElementById('map-help-setup-btn');
     if (mapHelpBtn) {
-        mapHelpBtn.onclick = () => startSartopoSetupWalkthrough(1);
+        mapHelpBtn.onclick = () => startSarTopoSetupWalkthrough(1);
     }
 
   const addMapBtn = document.getElementById('add-map-btn');
@@ -9259,7 +9270,7 @@ function buildMapsPage() {
   const clearMapBtn = document.getElementById('clear-map-btn');
 
     const checkProxyHealth = async () => {
-        const proxyUrl = getSartopoProxy();
+        const proxyUrl = getSarTopoProxy();
         const dot = document.getElementById('proxy-status-dot');
         const text = document.getElementById('proxy-status-text');
         if (!dot || !text) return;
@@ -9271,22 +9282,33 @@ function buildMapsPage() {
         }
 
         // Derived health endpoint from proxyUrl
-        // Assuming proxyUrl is like http://sartopo-proxy-production.up.railway.app:5050/api/proxy
-        let healthUrl = proxyUrl.replace('/api/proxy', '/api/health');
-        if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('/api/')[0] + '/api/health';
+        // Assuming proxyUrl is like https://sartopo-proxy-production.up.railway.app/fetch-map
+        let healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
+        if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
 
         try {
+            console.log('[PROXY] Checking health:', healthUrl);
             const resp = await fetch(healthUrl);
             if (resp.ok) {
                 dot.style.background = '#40c057';
                 text.textContent = 'Online';
             } else {
+                console.warn('[PROXY] Health check returned error:', resp.status);
                 dot.style.background = '#ff6b6b';
-                text.textContent = 'Error';
+                text.textContent = 'Error ' + resp.status;
             }
         } catch (err) {
+            console.error('[PROXY] Health check failed:', err);
             dot.style.background = '#ff6b6b';
             text.textContent = 'Offline';
+
+            // Helpful tip for mixed content or unreachable
+            if (window.location.protocol === 'https:' && healthUrl.startsWith('http:')) {
+                console.error('[PROXY] Mixed content detected! Site is HTTPS but proxy is HTTP.');
+                text.textContent = 'Offline (Security)';
+            } else if (healthUrl.includes(':5050')) {
+                console.info('[PROXY] Using port 5050. Ensure the proxy is listening on this port and it is publicly accessible.');
+            }
         }
     };
 
@@ -9417,7 +9439,7 @@ function buildMapsPage() {
     
     try {
       let data = null;
-      const proxyUrl = getSartopoProxy();
+        const proxyUrl = getSarTopoProxy();
 
       if (proxyUrl) {
         try {
@@ -9448,7 +9470,7 @@ function buildMapsPage() {
             return;
         }
       } else {
-          alert('No SarTopo Proxy configured. All SarTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., http://sartopo-proxy-production.up.railway.app:5050/api/proxy).');
+          alert('No SarTopo Proxy configured. All SarTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., https://sartopo-proxy-production.up.railway.app/fetch-map).');
           return;
       }
       
@@ -9483,7 +9505,10 @@ let isSyncing = false;
 async function syncWithServer() {
     if (isSyncing) return;
     const bucket = getSyncBucket();
-    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl) return;
+
+    const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
     
     isSyncing = true;
     try {
@@ -9492,11 +9517,11 @@ async function syncWithServer() {
         
         // 1. Check active user status
         if (currentUser && currentUser.pin) {
-            const resp = await fetch(`${bucketUrl}/user-${currentUser.pin}`);
+            const resp = await fetch(`${apiBase}/user-${currentUser.pin}`);
             if (resp.ok) {
-                const remoteDeviceId = await resp.text();
+                const data = await resp.json();
+                const remoteDeviceId = data.deviceId;
                 if (remoteDeviceId && remoteDeviceId !== deviceId) {
-                    // Different device is active!
                     alert("This user has been selected on another device. Switching user...");
                     sessionStorage.removeItem('sar-current-user');
                     window.location.href = 'home.html';
@@ -9506,17 +9531,13 @@ async function syncWithServer() {
         }
         
         // 2. Sync active bundle
-        const resp = await fetch(`${bucketUrl}/bundle`);
+        const resp = await fetch(`${apiBase}/bundle`);
         if (resp.ok) {
             const serverBundle = await resp.json();
-            
             if (serverBundle) {
                 const localBundle = loadBundle();
-                // Simple check: if server bundle is different, update local
                 if (JSON.stringify(serverBundle) !== JSON.stringify(localBundle)) {
                     localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
-                    
-                    // Update file list if needed
                     const files = getSavedFiles();
                     if (serverBundle.fileName) {
                         files[serverBundle.fileName] = {
@@ -9525,22 +9546,21 @@ async function syncWithServer() {
                         };
                         localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
                     }
-                    
-                    // Refresh UI if on a page that shows data
                     refreshSyncUI();
                 }
             }
+        } else if (resp.status === 404) {
+            pushBundleToServer(loadBundle());
         }
 
         // 3. Sync entire file list
-        const listResp = await fetch(`${bucketUrl}/all-files`);
+        const listResp = await fetch(`${apiBase}/all-files`);
         if (listResp.ok) {
             const serverFiles = await listResp.json();
             const localFiles = getSavedFiles();
             let localChanged = false;
             let serverNeedsUpdate = false;
 
-            // 1. Update local from server
             for (const [name, sInfo] of Object.entries(serverFiles)) {
                 const lInfo = localFiles[name];
                 if (!lInfo || (new Date(sInfo.lastModified) > new Date(lInfo.lastModified))) {
@@ -9551,7 +9571,6 @@ async function syncWithServer() {
                 }
             }
 
-            // 2. Check for local-only files
             for (const name of Object.keys(localFiles)) {
                 if (!serverFiles[name]) {
                     serverNeedsUpdate = true;
@@ -9572,51 +9591,35 @@ async function syncWithServer() {
             }
         }
     } catch (err) {
-        console.error("Sync failed:", err);
+        console.warn("Sync background check failed:", err);
     } finally {
         isSyncing = false;
     }
 }
 
-function refreshSyncUI() {
-    if (typeof recalculateEverything === 'function') recalculateEverything();
-    
-    const pk = pageKey();
-    if (pk === 'index') {
-        if (typeof buildRegionsTable === 'function') buildRegionsTable();
-    } else if (pk === 'page2') {
-        if (typeof buildSegmentsTable === 'function') buildSegmentsTable();
-    } else if (pk === 'page3') {
-        if (typeof buildPersonnelTable === 'function') buildPersonnelTable();
-    } else if (pk === 'page4') {
-        if (typeof buildSearchLogTable === 'function') buildSearchLogTable();
-    } else if (pk === 'home') {
-        if (typeof buildHomePage === 'function') buildHomePage();
-        if (typeof buildSavedFilesTable === 'function') buildSavedFilesTable();
-    }
-}
-
 async function pushBundleToServer(bundle) {
     const bucket = getSyncBucket();
-    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl) return;
     
     try {
-        await fetch(`${bucketUrl}/bundle`, {
+        await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/bundle`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(bundle)
         });
     } catch (err) {
-        console.error("Push to sync service failed:", err);
+        console.error("Push bundle failed:", err);
     }
 }
 
 async function pushFileListToServer(files) {
     const bucket = getSyncBucket();
-    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl) return;
     
     try {
-        await fetch(`${bucketUrl}/all-files`, {
+        await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/all-files`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(files)
@@ -9628,13 +9631,14 @@ async function pushFileListToServer(files) {
 
 async function notifyActiveUser(user) {
     const bucket = getSyncBucket();
-    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
-    if (!user || !user.pin) return;
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl || !user || !user.pin) return;
     
     try {
-        await fetch(`${bucketUrl}/user-${user.pin}`, {
+        await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/user-${user.pin}`, {
             method: 'PUT',
-            body: getDeviceId()
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({deviceId: getDeviceId()})
         });
     } catch (err) {
         console.error("Notify active user failed:", err);

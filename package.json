@@ -1,0 +1,13 @@
+{
+  "name": "sar-sync-server",
+  "version": "1.0.0",
+  "description": "Synchronization server for SAR Search Website",
+  "main": "sync-server.js",
+  "scripts": {
+    "start": "node sync-server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2"
+  }
+}

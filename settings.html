@@ -66,7 +66,7 @@
                 <span>Choose Image</span>
                 <input type="file" id="bg-image-input" accept="image/*">
               </label>
-              <button id="reset-bg-btn" class="clear-btn" type="button">Reset to Default</button>
+              <button class="clear-btn" id="reset-bg-btn" type="button">Use Default</button>
             </div>
           </div>
 
@@ -119,10 +119,11 @@
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
                 If you are getting CORS errors when fetching shapes, you must use a proxy server.
                 Enter the Web Proxy URL below (e.g.,
-                <code>http://sartopo-proxy-production.up.railway.app:5050/api/proxy</code>).
+              <code>https://sartopo-proxy-production.up.railway.app/fetch-map</code>).
             </p>
             <div class="home-row">
-                <input class="pill-input" id="sartopo-proxy-input" placeholder="e.g., http://sartopo-proxy-production.up.railway.app:5050/api/proxy" style="flex-grow: 1;"
+              <input class="pill-input" id="sartopo-proxy-input"
+                     placeholder="e.g., https://sartopo-proxy-production.up.railway.app/fetch-map" style="flex-grow: 1;"
                        type="text">
               <button id="save-proxy-btn" class="clear-btn" type="button">Save Proxy Settings</button>
             </div>
@@ -131,14 +132,17 @@
           <div class="home-panel full-width">
             <h2>Data Synchronization</h2>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-              Enter your unique Sync Bucket ID to synchronize data across devices. 
-              Keep this ID private as anyone with it can access your data. 
-              Phones and computers must use the <b>same</b> Bucket ID to talk to each other.
+              Enter your Sync Server URL (from Railway) and a unique Bucket ID to synchronize data across devices.
+              Phones and computers must use the <b>same</b> Server and Bucket ID to talk to each other.
             </p>
-            <div class="home-row">
-              <input type="text" id="sync-bucket-input" class="pill-input" style="flex-grow: 1;" placeholder="e.g., my-private-sar-sync-123">
-              <input type="hidden" id="sync-url-input">
-              <button id="save-sync-url-btn" class="clear-btn" type="button">Save Sync Settings</button>
+            <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
+              <input class="pill-input" id="sync-url-input" placeholder="Sync Server URL (e.g., https://my-sync-server.railway.app)" style="flex: 1; min-width: 250px;"
+                     type="text">
+              <input class="pill-input" id="sync-bucket-input" placeholder="Bucket ID (e.g., my-private-bucket)" style="flex: 1; min-width: 200px;"
+                     type="text">
+              <button class="clear-btn" id="save-sync-url-btn" style="white-space: nowrap;" type="button">Save Sync
+                Settings
+              </button>
             </div>
             <div id="sync-status-msg" style="margin-top: 10px; font-size: 0.85rem; color: var(--accent);"></div>
           </div>
