@@ -2497,7 +2497,6 @@ tr.log-sweeps-due::after {
   border-top: 1px solid var(--line);
   z-index: 1000;
   height: 65px;
-  display: flex;
   justify-content: space-around;
   align-items: center;
 }
@@ -2534,4 +2533,18 @@ tr.log-sweeps-due::after {
 
 .bottom-nav a:active {
   background: rgba(255, 255, 255, 0.05);
+}
+
+
+/* Drag and Drop Styles */
+.mini-pill.dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.pill-container.drag-over,
+.mini-pill.clickable-pill.drag-over {
+  background: rgba(255, 255, 255, 0.2);
+  outline: 2px dashed #007aff;
+  outline-offset: 2px;
 }

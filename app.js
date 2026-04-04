@@ -2584,6 +2584,58 @@ function addAutoSearchLogEntry(teamName, region, segment) {
   return taskNumber;
 }
 
+function reassignMember(memberName, targetTeam) {
+  const bundle = loadBundle();
+  const data = bundle.pages.page3 || [];
+  const originalRow = data.find(row => row[0] === memberName);
+  
+  if (originalRow) {
+    const fromTeam = originalRow[1];
+    if (fromTeam === targetTeam) return;
+    
+    originalRow[1] = targetTeam;
+    
+    // Auto-switch team lead to new team's lead
+    const existingTeamMember = data.find(row => row[1] === targetTeam && row[2]);
+    originalRow[2] = existingTeamMember ? existingTeamMember[2] : '';
+    
+    saveBundle(bundle);
+    addActivityLogEntry(targetTeam, `${memberName} reassigned from ${fromTeam} to ${targetTeam}`);
+    refreshCurrentPageTable();
+  }
+}
+
+function promoteToTeamLead(memberName, targetTeam) {
+  const bundle = loadBundle();
+  const data = bundle.pages.page3 || [];
+  
+  // First ensure member is in the target team
+  const originalRow = data.find(row => row[0] === memberName);
+  if (!originalRow) return;
+
+  const fromTeam = originalRow[1];
+  const oldLeadRow = data.find(row => row[1] === targetTeam && row[2] === row[0]);
+  const oldLeadName = oldLeadRow ? oldLeadRow[0] : 'None';
+
+  if (memberName === oldLeadName && fromTeam === targetTeam) return;
+
+  if (fromTeam !== targetTeam) {
+    originalRow[1] = targetTeam;
+    addActivityLogEntry(targetTeam, `${memberName} reassigned from ${fromTeam} to ${targetTeam}`);
+  }
+
+  // Update all team members to the new lead name
+  data.forEach(row => {
+    if (row[1] === targetTeam) {
+      row[2] = memberName;
+    }
+  });
+
+  saveBundle(bundle);
+  addActivityLogEntry(targetTeam, `${memberName} is now Team Lead (previously ${oldLeadName})`);
+  refreshCurrentPageTable();
+}
+
 function buildPersonnelActivityTable() {
   const tableHead = document.getElementById('table-head');
   const tableBody = document.getElementById('table-body');
@@ -2664,11 +2716,38 @@ function buildPersonnelActivityTable() {
     tdMembers.dataset.label = 'Members';
     const membersContainer = document.createElement('div');
     membersContainer.className = 'pill-container';
+    
+    // Drag and drop for container
+    membersContainer.ondragover = (e) => {
+      e.preventDefault();
+      membersContainer.classList.add('drag-over');
+    };
+    membersContainer.ondragleave = () => {
+      membersContainer.classList.remove('drag-over');
+    };
+    membersContainer.ondrop = (e) => {
+      e.preventDefault();
+      membersContainer.classList.remove('drag-over');
+      const memberName = e.dataTransfer.getData('text/plain');
+      reassignMember(memberName, teamName);
+    };
+
     members.forEach(member => {
       const pill = document.createElement('div');
       pill.className = 'mini-pill';
       pill.textContent = member[0];
       pill.onclick = () => showReassignPopup(member, teamName);
+      
+      // Drag and drop for pill
+      pill.draggable = true;
+      pill.ondragstart = (e) => {
+        e.dataTransfer.setData('text/plain', member[0]);
+        pill.classList.add('dragging');
+      };
+      pill.ondragend = () => {
+        pill.classList.remove('dragging');
+      };
+
       membersContainer.appendChild(pill);
     });
     tdMembers.appendChild(membersContainer);
@@ -2703,6 +2782,34 @@ function buildPersonnelActivityTable() {
     teamLeadPill.onclick = () => {
         if (teamLeadRow) showTeamLeadSwapPopup(teamLeadRow, teamName);
     };
+
+    // Drag and drop for Team Lead pill (drop target)
+    teamLeadPill.ondragover = (e) => {
+      e.preventDefault();
+      teamLeadPill.classList.add('drag-over');
+    };
+    teamLeadPill.ondragleave = () => {
+      teamLeadPill.classList.remove('drag-over');
+    };
+    teamLeadPill.ondrop = (e) => {
+      e.preventDefault();
+      teamLeadPill.classList.remove('drag-over');
+      const memberName = e.dataTransfer.getData('text/plain');
+      promoteToTeamLead(memberName, teamName);
+    };
+
+    // Drag for team lead (draggable)
+    if (teamLead) {
+      teamLeadPill.draggable = true;
+      teamLeadPill.ondragstart = (e) => {
+        e.dataTransfer.setData('text/plain', teamLead);
+        teamLeadPill.classList.add('dragging');
+      };
+      teamLeadPill.ondragend = () => {
+        teamLeadPill.classList.remove('dragging');
+      };
+    }
+
     teamLeadContainer.appendChild(teamLeadPill);
     tdTeamLead.appendChild(teamLeadContainer);
     tr.appendChild(tdTeamLead);
@@ -2711,6 +2818,22 @@ function buildPersonnelActivityTable() {
     tdMembers.dataset.label = 'Members';
     const membersContainer = document.createElement('div');
     membersContainer.className = 'pill-container';
+
+    // Drag and drop for Members container (drop target)
+    membersContainer.ondragover = (e) => {
+      e.preventDefault();
+      membersContainer.classList.add('drag-over');
+    };
+    membersContainer.ondragleave = () => {
+      membersContainer.classList.remove('drag-over');
+    };
+    membersContainer.ondrop = (e) => {
+      e.preventDefault();
+      membersContainer.classList.remove('drag-over');
+      const memberName = e.dataTransfer.getData('text/plain');
+      reassignMember(memberName, teamName);
+    };
+
     members.forEach(member => {
       // Members who are team leads do not need to be in the Members column
       if (member[0] === teamLead) return;
@@ -2719,6 +2842,17 @@ function buildPersonnelActivityTable() {
       pill.className = 'mini-pill';
       pill.textContent = member[0];
       pill.onclick = () => showReassignPopup(member, teamName);
+      
+      // Drag for member (draggable)
+      pill.draggable = true;
+      pill.ondragstart = (e) => {
+        e.dataTransfer.setData('text/plain', member[0]);
+        pill.classList.add('dragging');
+      };
+      pill.ondragend = () => {
+        pill.classList.remove('dragging');
+      };
+
       membersContainer.appendChild(pill);
     });
     tdMembers.appendChild(membersContainer);
