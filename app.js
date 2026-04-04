@@ -4,6 +4,31 @@ const DEFAULT_DYNAMIC_COLS = 3;
 const BUNDLE_STORAGE_KEY = 'pill-table-bundle-v1';
 const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
+const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
+const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
+const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
+const KVDB_BASE_URL = 'https://kvdb.io';
+const DEFAULT_BUCKET = 'sar-sync-' + Math.random().toString(36).substr(2, 6);
+
+function getSyncBucket() {
+    let bucket = localStorage.getItem(SYNC_BUCKET_STORAGE_KEY);
+    if (!bucket) {
+        // If they had an old sync URL, maybe we can derive a bucket from it? 
+        // But better to just start fresh or let them set it.
+        bucket = DEFAULT_BUCKET;
+        localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+    }
+    return bucket;
+}
+
+function getDeviceId() {
+    let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (!id) {
+        id = 'device-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+        localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+    }
+    return id;
+}
 
 const PAGE_DEFS = [
   { key: 'index', title: 'Regions', href: 'index.html' },
@@ -177,6 +202,7 @@ function showTimePrompt(title, onConfirm, onCancel) {
 function setCurrentUser(user) {
   if (user) {
     sessionStorage.setItem('sar-current-user', JSON.stringify(user));
+    notifyActiveUser(user);
   } else {
     sessionStorage.removeItem('sar-current-user');
   }
@@ -255,6 +281,7 @@ function defaultBundle() {
     teamLeaveTimes: {},
     teamAssignmentTimes: {},
     parCheckFrequency: 20,
+    dismissedNotifications: [],
     arrivedTeams: [],
     forms: {},
     uploads: [],
@@ -383,6 +410,7 @@ function sanitizeBundle(bundle) {
     : {};
 
   const arrivedTeams = Array.isArray(bundle.arrivedTeams) ? bundle.arrivedTeams : [];
+  const dismissedNotifications = Array.isArray(bundle.dismissedNotifications) ? bundle.dismissedNotifications : [];
 
   const pages = {};
   for (const page of PAGE_DEFS) {
@@ -525,6 +553,7 @@ function sanitizeBundle(bundle) {
     teamLeaveTimes, 
     teamAssignmentTimes, 
     arrivedTeams, 
+    dismissedNotifications,
     parCheckFrequency, 
     showTips, 
     pages, 
@@ -553,6 +582,7 @@ function saveBundle(bundle) {
   const newName = sanitized.fileName;
 
   localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
+  pushBundleToServer(sanitized);
   
   // Also update in the list if it's there
   const files = getSavedFiles();
@@ -815,82 +845,6 @@ function focusCell(row, col) {
   focusSelector(`.pill-cell[data-row="${row}"][data-col="${col}"]`);
 }
 
-function buildProfilePage() {
-  const container = document.getElementById('profile-form-container');
-  if (!container) return;
-
-  const bundle = loadBundle();
-  const profile = bundle.profile || {
-    incidentNumber: '',
-    lostPersonName: '',
-    lostPersonAge: '',
-    lostPersonGender: '',
-    lostPersonDescription: '',
-    lostPersonClothing: '',
-    lostPersonPhysical: ''
-  };
-
-  container.innerHTML = `
-    <div class="profile-form" style="max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px;">
-      
-      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
-        <div class="form-group" style="grid-column: span 3;">
-          <h3 style="margin: 0; color: var(--text);">Lost Person Information</h3>
-        </div>
-        
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Incident #</label>
-          <input type="text" id="profile-incident-num" class="pill-input" value="${profile.incidentNumber}" placeholder="e.g. 2024-001">
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Name</label>
-          <input type="text" id="profile-name" class="pill-input" value="${profile.lostPersonName}">
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Age</label>
-          <input type="text" id="profile-age" class="pill-input" value="${profile.lostPersonAge}">
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Gender</label>
-          <input type="text" id="profile-gender" class="pill-input" value="${profile.lostPersonGender}">
-        </div>
-      </div>
-
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Physical Description (Height, Weight, Hair, Eyes)</label>
-          <textarea id="profile-physical" class="pill-input" style="min-height: 80px; resize: vertical;">${profile.lostPersonPhysical || ''}</textarea>
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Clothing Description</label>
-          <textarea id="profile-clothing" class="pill-input" style="min-height: 80px; resize: vertical;">${profile.lostPersonClothing || ''}</textarea>
-        </div>
-        <div class="form-group" style="grid-column: span 2;">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Other Information / Description</label>
-          <textarea id="profile-description" class="pill-input" style="min-height: 100px; resize: vertical;">${profile.lostPersonDescription}</textarea>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Add event listeners for auto-save
-  const inputs = container.querySelectorAll('input, textarea');
-  inputs.forEach(input => {
-    input.oninput = () => {
-      const bundle = loadBundle();
-      bundle.profile = {
-        incidentNumber: document.getElementById('profile-incident-num').value,
-        lostPersonName: document.getElementById('profile-name').value,
-        lostPersonAge: document.getElementById('profile-age').value,
-        lostPersonGender: document.getElementById('profile-gender').value,
-        lostPersonPhysical: document.getElementById('profile-physical').value,
-        lostPersonClothing: document.getElementById('profile-clothing').value,
-        lostPersonDescription: document.getElementById('profile-description').value
-      };
-      saveBundle(bundle);
-    };
-  });
-}
 
 let highlightedRowIndex = -1;
 
@@ -2041,6 +1995,12 @@ function buildPersonnelAllMembersTable() {
   const sortLabel = document.getElementById('personnel-sort-label');
   const data = loadData();
 
+  // Ensure first row has 'Off Duty' if it's empty
+  if (data.length > 0 && !data[0][0] && !data[0][1]) {
+    data[0][1] = 'Off Duty';
+    saveCurrentPageData(data);
+  }
+
   const filterOnScene = onSceneToggle && onSceneToggle.checked;
   const sortByTeam = sortToggle && sortToggle.checked;
 
@@ -2112,7 +2072,9 @@ function buildPersonnelAllMembersTable() {
 
       if (c === 0) {
         const cell = document.createElement('div');
-        cell.className = 'pill-cell';
+        cell.className = 'mini-pill';
+        cell.style.width = '100%';
+        cell.style.cursor = 'text';
         cell.contentEditable = 'true';
         cell.spellcheck = false;
         cell.textContent = filteredData[r][c] || '';
@@ -2121,13 +2083,29 @@ function buildPersonnelAllMembersTable() {
           if (data[originalRowIndex][c] !== newName) {
             data[originalRowIndex][c] = newName;
             saveCurrentPageData(data);
+            if (!window.pendingEmptyCellFocus) {
+               buildPersonnelTable();
+            }
+          }
+        });
+        cell.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const newName = cell.textContent.trim();
+            if (data[originalRowIndex][c] !== newName) {
+              data[originalRowIndex][c] = newName;
+              saveCurrentPageData(data);
+            }
+            window.pendingEmptyCellFocus = { colLabel: 'Name' };
             buildPersonnelTable();
           }
         });
         cellContainer.appendChild(cell);
       } else if (c === 1) {
         const select = document.createElement('select');
-        select.className = 'pill-cell personnel-select';
+        select.className = 'mini-pill personnel-select';
+        select.style.width = '100%';
+        select.style.cursor = 'pointer';
         const emptyOpt = document.createElement('option');
         emptyOpt.value = ''; emptyOpt.textContent = '-- Select Team --';
         select.appendChild(emptyOpt);
@@ -2155,7 +2133,9 @@ function buildPersonnelAllMembersTable() {
         cellContainer.appendChild(select);
       } else if (c === 2) {
         const selectLead = document.createElement('select');
-        selectLead.className = 'pill-cell personnel-select';
+        selectLead.className = 'mini-pill personnel-select';
+        selectLead.style.width = '100%';
+        selectLead.style.cursor = 'pointer';
         const emptyOptLead = document.createElement('option');
         emptyOptLead.value = ''; emptyOptLead.textContent = '-- Select Leader --';
         selectLead.appendChild(emptyOptLead);
@@ -2267,7 +2247,7 @@ function buildPersonnelAllMembersTable() {
     setTimeout(() => {
       const highlightedRow = tableBody.querySelector('.new-row-highlight');
       if (highlightedRow) {
-        const nameCell = highlightedRow.querySelector('.pill-cell[contenteditable="true"]');
+        const nameCell = highlightedRow.querySelector('.mini-pill[contenteditable="true"]');
         if (nameCell) {
           nameCell.focus();
           const range = document.createRange();
@@ -2280,9 +2260,24 @@ function buildPersonnelAllMembersTable() {
     }, 100);
   };
   addRowContainer.appendChild(addRowBtn);
-  const existing = document.querySelector('.add-row-container');
-  if (existing) existing.remove();
+  const existingAllMem = document.querySelector('.add-row-container');
+  if (existingAllMem) existingAllMem.remove();
   tableBody.parentElement.after(addRowContainer);
+
+  if (window.pendingEmptyCellFocus) {
+    const colLabel = window.pendingEmptyCellFocus.colLabel;
+    window.pendingEmptyCellFocus = null;
+    setTimeout(() => {
+      const rows = tableBody.querySelectorAll('tr');
+      for (const row of rows) {
+        const targetCell = row.querySelector(`td[data-label="${colLabel}"] .mini-pill[contenteditable="true"]`);
+        if (targetCell && !targetCell.textContent.trim()) {
+          targetCell.focus();
+          return;
+        }
+      }
+    }, 100);
+  }
 }
 
 function getLatestPSR(region, segment) {
@@ -2655,14 +2650,16 @@ function buildPersonnelActivityTable() {
 
     const assignmentText = bundle.currentAssignments[teamName] || 'None';
     const assignPill = document.createElement('div');
-    assignPill.className = 'mini-pill readonly-pill';
+    assignPill.className = 'mini-pill clickable-pill';
     assignPill.textContent = assignmentText;
+    assignPill.onclick = () => showTeamUpdatePopup(teamName);
     assignStatusContainer.appendChild(assignPill);
 
     const statusPill = document.createElement('div');
-    statusPill.className = 'mini-pill readonly-pill';
+    statusPill.className = 'mini-pill clickable-pill';
     const statusText = bundle.teamStatuses[teamName] || '';
     statusPill.textContent = statusText;
+    statusPill.onclick = () => showTeamUpdatePopup(teamName);
     
     if (assignmentText !== 'None' && assignmentText !== 'Base' && assignmentText !== '') {
       const progress = getTaskProgressPercent(statusText);
@@ -5710,6 +5707,41 @@ function buildSettingsPage() {
       status.textContent = 'Background reset to default.';
     };
   }
+
+  const syncUrlInput = document.getElementById('sync-url-input');
+  const saveSyncBtn = document.getElementById('save-sync-url-btn');
+  const syncStatusMsg = document.getElementById('sync-status-msg');
+
+  if (syncUrlInput && saveSyncBtn) {
+    const syncBucketInput = document.getElementById('sync-bucket-input');
+    if (syncBucketInput) syncBucketInput.value = getSyncBucket();
+
+    saveSyncBtn.onclick = async () => {
+      if (syncBucketInput) {
+        const bucket = syncBucketInput.value.trim();
+        if (bucket) {
+           localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+           syncStatusMsg.textContent = 'Sync bucket saved! Testing connection...';
+           
+           try {
+             // Test connection by trying to get the bundle
+             const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+             const resp = await fetch(`${bucketUrl}/bundle`);
+             if (resp.ok) {
+                syncStatusMsg.textContent = 'Sync connection successful! Data found in bucket.';
+             } else if (resp.status === 404) {
+                syncStatusMsg.textContent = 'Connected! This is a new bucket, data will be pushed on next change.';
+             } else {
+                syncStatusMsg.textContent = `Server returned status ${resp.status}. Bucket might be invalid.`;
+             }
+             syncWithServer();
+           } catch (err) {
+             syncStatusMsg.textContent = 'Could not reach sync service (kvdb.io). Check your internet connection.';
+           }
+        }
+      }
+    };
+  }
 }
 
 function buildProfilePage() {
@@ -5761,7 +5793,7 @@ function buildProfilePage() {
 
   const addGroup = (label, key, type = 'text') => {
     const grp = document.createElement('div');
-    grp.className = 'form-group';
+    grp.className = 'form-group ' + (type === 'textarea' ? 'large' : 'small');
     grp.innerHTML = `<label>${label}</label>`;
     
     let input;
@@ -5782,7 +5814,6 @@ function buildProfilePage() {
     };
     
     grp.appendChild(input);
-    if (type === 'textarea') grp.style.gridColumn = 'span 2';
     form.appendChild(grp);
   };
 
@@ -7630,13 +7661,29 @@ function showToastNotification(title, text, action, extraClass = '') {
     });
     toast.style.top = offset + 'px';
 
+    const toastKey = title + text;
+
     toast.innerHTML = `
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-        <div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent); flex-shrink:0;"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <div style="flex-grow:1; margin-right:10px;">
             <div style="font-weight:700; font-size:0.9rem;">${title}</div>
             <div style="font-size:0.8rem; opacity:0.8;">${text}</div>
         </div>
+        <button class="toast-close-btn" title="Dismiss" style="background:none; border:none; color:inherit; cursor:pointer; padding:5px; margin:-5px; opacity:0.6;">✕</button>
     `;
+
+    const closeBtn = toast.querySelector('.toast-close-btn');
+    closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        const bundle = loadBundle();
+        if (!bundle.dismissedNotifications.includes(toastKey)) {
+            bundle.dismissedNotifications.push(toastKey);
+            saveBundle(bundle);
+        }
+        toast.remove();
+        repositionToasts();
+    };
+
     toast.onclick = () => {
         action();
         toast.remove();
@@ -7699,9 +7746,9 @@ function updateNotifications() {
     const item = document.createElement('div');
     item.className = 'notification-item ' + extraClass;
     item.innerHTML = `
-      <div style="display:flex; gap:10px; align-items:flex-start;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-        <div>
+      <div style="display:flex; gap:10px; align-items:flex-start; width:100%;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <div style="flex-grow:1;">
           <div class="notification-item-title">${title}</div>
           <div class="notification-item-text">${text}</div>
         </div>
@@ -7714,7 +7761,7 @@ function updateNotifications() {
     list.appendChild(item);
 
     const toastKey = title + text;
-    if (!window._shownToasts.has(toastKey)) {
+    if (!window._shownToasts.has(toastKey) && !bundle.dismissedNotifications.includes(toastKey)) {
         window._shownToasts.add(toastKey);
         showToastNotification(title, text, action, extraClass);
     }
@@ -8810,37 +8857,37 @@ function buildUserAccountPage() {
     }
 
     container.innerHTML = `
-        <div class="profile-form" style="display: flex; flex-direction: column; gap: 20px; max-width: 600px; margin: 0 auto; background: rgba(0,0,0,0.2); padding: 30px; border-radius: 32px; border: 1px solid rgba(255,255,255,0.1);">
-            <div class="form-group">
+        <div class="profile-form" style="max-width: 800px; margin: 0 auto; background: rgba(0,0,0,0.2); padding: 30px; border-radius: 32px; border: 1px solid rgba(255,255,255,0.1);">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">First Name</label>
                 <input type="text" id="user-first-name" class="pill-input" value="${userToEdit.firstName || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Last Name</label>
                 <input type="text" id="user-last-name" class="pill-input" value="${userToEdit.lastName || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">User PIN</label>
                 <input type="text" id="user-pin" class="pill-input" value="${userToEdit.pin || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Handle</label>
                 <input type="text" id="user-handle" class="pill-input" value="${userToEdit.handle || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group large">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Theme Preference</label>
                 <div style="display: flex; gap: 10px;">
                     <button id="theme-dark-btn" class="mini-pill ${userToEdit.theme !== 'light' ? 'active' : ''}" style="flex: 1;">Dark Mode</button>
                     <button id="theme-light-btn" class="mini-pill ${userToEdit.theme === 'light' ? 'active' : ''}" style="flex: 1;">Grey Mode</button>
                 </div>
             </div>
-            <div class="form-group">
+            <div class="form-group large">
                 <label style="display: block; margin-bottom: 12px; color: var(--text); font-weight: bold;">Highlight Color</label>
                 <div id="color-selection" style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;">
                     <!-- Color buttons will be here -->
                 </div>
             </div>
-            <div class="tool-actions" style="margin-top: 20px; justify-content: center;">
+            <div class="tool-actions" style="margin-top: 20px; justify-content: center; grid-column: span 6;">
                 <button id="save-user-btn" class="update-pill" style="padding: 12px 40px; font-size: 1rem;">Update Account</button>
                 <button id="switch-user-btn" class="mini-pill" style="padding: 12px 20px; font-size: 1rem; margin-left: 10px; background: rgba(235, 87, 87, 0.1); border-color: rgba(235, 87, 87, 0.4);">Switch User</button>
             </div>
@@ -9252,26 +9299,16 @@ function buildMapsPage() {
     }
   };
 
-  fetchShapesBtn.onclick = async () => {
+    fetchShapesBtn.onclick = async () => {
     if (!activeMapId) return;
     fetchShapesBtn.disabled = true;
     fetchShapesBtn.textContent = 'Fetching...';
     
     try {
-      // First, try fetching via the local middleman proxy to avoid CORS and login issues
-      let response;
-      try {
-        response = await fetch(`http://localhost:5050/api/proxy?mapId=${activeMapId}&domain=${activeMapDomain}`);
-        if (!response.ok) {
-          throw new Error(`Proxy error: ${response.status}`);
-        }
-      } catch (proxyErr) {
-        console.log('Proxy fetch failed, falling back to direct fetch. Run middleman.py to avoid CORS issues.');
-        // Fallback: direct fetch (may still fail due to CORS if SarTopo doesn't explicitly allow our origin)
-        response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
-          credentials: 'include'
-        });
-      }
+      // Direct fetch (may fail due to CORS if SarTopo doesn't explicitly allow our origin)
+      const response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
+        credentials: 'include'
+      });
       
       if (!response.ok) {
         if (response.status === 403 || response.status === 401) {
@@ -9306,3 +9343,111 @@ function buildMapsPage() {
 
   renderMaps(true);
 }
+
+let isSyncing = false;
+
+async function syncWithServer() {
+    if (isSyncing) return;
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    
+    isSyncing = true;
+    try {
+        const currentUser = getCurrentUser();
+        const deviceId = getDeviceId();
+        
+        // 1. Check active user status
+        if (currentUser && currentUser.pin) {
+            const resp = await fetch(`${bucketUrl}/user-${currentUser.pin}`);
+            if (resp.ok) {
+                const remoteDeviceId = await resp.text();
+                if (remoteDeviceId && remoteDeviceId !== deviceId) {
+                    // Different device is active!
+                    alert("This user has been selected on another device. Switching user...");
+                    sessionStorage.removeItem('sar-current-user');
+                    window.location.href = 'home.html';
+                    return;
+                }
+            }
+        }
+        
+        // 2. Sync bundle
+        const resp = await fetch(`${bucketUrl}/bundle`);
+        if (resp.ok) {
+            const serverBundle = await resp.json();
+            
+            if (serverBundle) {
+                const localBundle = loadBundle();
+                // Simple check: if server bundle is different, update local
+                if (JSON.stringify(serverBundle) !== JSON.stringify(localBundle)) {
+                    localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                    
+                    // Update file list if needed
+                    const files = getSavedFiles();
+                    if (serverBundle.fileName) {
+                        files[serverBundle.fileName] = {
+                            bundle: serverBundle,
+                            lastModified: new Date().toLocaleString()
+                        };
+                        localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+                    }
+                    
+                    // Refresh UI if on a page that shows data
+                    if (typeof recalculateEverything === 'function') recalculateEverything();
+                    
+                    const pk = pageKey();
+                    if (pk === 'index') {
+                        if (typeof buildRegionsTable === 'function') buildRegionsTable();
+                    } else if (pk === 'page2') {
+                        if (typeof buildSegmentsTable === 'function') buildSegmentsTable();
+                    } else if (pk === 'page3') {
+                        if (typeof buildPersonnelTable === 'function') buildPersonnelTable();
+                    } else if (pk === 'page4') {
+                        if (typeof buildSearchLogTable === 'function') buildSearchLogTable();
+                    } else if (pk === 'home') {
+                        if (typeof buildHomePage === 'function') buildHomePage();
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Sync failed:", err);
+    } finally {
+        isSyncing = false;
+    }
+}
+
+async function pushBundleToServer(bundle) {
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    
+    try {
+        await fetch(`${bucketUrl}/bundle`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bundle)
+        });
+    } catch (err) {
+        console.error("Push to sync service failed:", err);
+    }
+}
+
+async function notifyActiveUser(user) {
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    if (!user || !user.pin) return;
+    
+    try {
+        await fetch(`${bucketUrl}/user-${user.pin}`, {
+            method: 'PUT',
+            body: getDeviceId()
+        });
+    } catch (err) {
+        console.error("Notify active user failed:", err);
+    }
+}
+
+// Start sync loop
+setInterval(syncWithServer, 5000);
+// Initial sync
+setTimeout(syncWithServer, 1000);
