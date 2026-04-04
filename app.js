@@ -48,8 +48,10 @@ const checkProxyHealth = async () => {
 
     // Derived health endpoint from proxyUrl
     // Assuming proxyUrl is like https://sarwebtheory2-production.up.railway.app/api/proxy
-    let healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
-    if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
+    let healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '').replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
+    if (!healthUrl.endsWith('/api/health')) {
+        healthUrl = healthUrl.replace(/\/$/, '') + '/api/health';
+    }
 
     try {
         console.log('[PROXY] Checking health:', healthUrl);
