@@ -31,6 +31,106 @@ const getFilePath = (bucket, key) => {
     return path.join(bucketDir, `${safeKey}.json`);
 };
 
+// List all keys in a bucket
+app.get('/api/v1/:bucket', (req, res) => {
+    const {bucket} = req.params;
+    const bucketDir = path.join(DATA_DIR, bucket);
+
+    if (!fs.existsSync(bucketDir)) {
+        return res.json([]);
+    }
+
+    try {
+        const files = fs.readdirSync(bucketDir);
+        const keys = files
+            .filter(f => f.endsWith('.json'))
+            .map(f => f.replace('.json', ''));
+        res.json(keys);
+    } catch (err) {
+        res.status(500).json({error: 'Failed to list keys'});
+    }
+});
+
+// Get the most recently updated file in a bucket
+app.get('/api/v1/:bucket/latest', (req, res) => {
+    const {bucket} = req.params;
+    const bucketDir = path.join(DATA_DIR, bucket);
+
+    if (!fs.existsSync(bucketDir)) {
+        return res.status(404).json({error: 'Bucket not found'});
+    }
+
+    try {
+        const files = fs.readdirSync(bucketDir)
+            .filter(f => f.endsWith('.json') && f !== 'all-files.json' && f !== 'bundle.json');
+        
+        if (files.length === 0) {
+            // Fallback to bundle.json if it exists
+            const bundlePath = path.join(bucketDir, 'bundle.json');
+            if (fs.existsSync(bundlePath)) {
+                return res.json(JSON.parse(fs.readFileSync(bundlePath, 'utf8')));
+            }
+            return res.status(404).json({error: 'No data files found'});
+        }
+
+        let latestFile = null;
+        let latestTime = 0;
+
+        files.forEach(f => {
+            const filePath = path.join(bucketDir, f);
+            const metaPath = filePath + '.meta';
+            let updatedAt = 0;
+
+            if (fs.existsSync(metaPath)) {
+                try {
+                    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+                    updatedAt = new Date(meta.updatedAt).getTime();
+                } catch (e) {
+                    updatedAt = fs.statSync(filePath).mtimeMs;
+                }
+            } else {
+                updatedAt = fs.statSync(filePath).mtimeMs;
+            }
+
+            if (updatedAt > latestTime) {
+                latestTime = updatedAt;
+                latestFile = f;
+            }
+        });
+
+        // Also check bundle.json for its time
+        const bundlePath = path.join(bucketDir, 'bundle.json');
+        if (fs.existsSync(bundlePath)) {
+            const bundleMetaPath = bundlePath + '.meta';
+            let bundleTime = 0;
+            if (fs.existsSync(bundleMetaPath)) {
+                try {
+                    bundleTime = new Date(JSON.parse(fs.readFileSync(bundleMetaPath, 'utf8')).updatedAt).getTime();
+                } catch (e) {
+                    bundleTime = fs.statSync(bundlePath).mtimeMs;
+                }
+            } else {
+                bundleTime = fs.statSync(bundlePath).mtimeMs;
+            }
+
+            if (bundleTime > latestTime) {
+                latestTime = bundleTime;
+                latestFile = 'bundle.json';
+            }
+        }
+
+        if (latestFile) {
+            const data = fs.readFileSync(path.join(bucketDir, latestFile), 'utf8');
+            res.json(JSON.parse(data));
+        } else {
+            res.status(404).json({error: 'No files found'});
+        }
+    } catch (err) {
+        console.error('Error finding latest file:', err);
+        res.status(500).json({error: 'Internal server error'});
+    }
+});
+
 // Get a value
 app.get('/api/v1/:bucket/:key', (req, res) => {
     const {bucket, key} = req.params;
@@ -126,26 +226,6 @@ app.put('/api/v1/:bucket/:key', (req, res) => {
         res.json({success: true});
     } catch (err) {
         res.status(500).json({error: 'Failed to save data'});
-    }
-});
-
-// List all keys in a bucket
-app.get('/api/v1/:bucket', (req, res) => {
-    const {bucket} = req.params;
-    const bucketDir = path.join(DATA_DIR, bucket);
-
-    if (!fs.existsSync(bucketDir)) {
-        return res.json([]);
-    }
-
-    try {
-        const files = fs.readdirSync(bucketDir);
-        const keys = files
-            .filter(f => f.endsWith('.json'))
-            .map(f => f.replace('.json', ''));
-        res.json(keys);
-    } catch (err) {
-        res.status(500).json({error: 'Failed to list keys'});
     }
 });
 

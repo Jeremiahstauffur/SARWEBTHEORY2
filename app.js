@@ -345,7 +345,7 @@ function defaultRegionsData() {
 function defaultBundle() {
   return {
     fileName: DEFAULT_FILE_NAME,
-    lastModified: new Date().toISOString(),
+    lastModified: new Date(0).toISOString(),
     deleteMode: false,
     theme: 'dark',
     showTips: true,
@@ -4581,15 +4581,18 @@ function buildSearchLogTable() {
   // Recalculate PSR After for all entries (now handled by recalculateEverything above)
   saveCurrentPageData(data);
 
-  const isAscending = sortToggle && sortToggle.checked;
-  if (sortLabel) {
-    sortLabel.textContent = isAscending ? 'Sort Chronologically' : 'Sort Chronologically';
+  const user = getCurrentUser();
+  const account = user ? (bundle.accounts || []).find(a => a.pin === user.pin) : null;
+
+  const isRecentFirst = account ? !!account.searchLogSortRecentFirst : (sortToggle && sortToggle.checked);
+  if (sortToggle) {
+    sortToggle.checked = isRecentFirst;
   }
 
-  // To sort properly, we map row to an object with original index for stable editing if needed
-  // but since we save back the entire array, sorting here might make editing complex if index changes.
-  // HOWEVER, for a log, usually sorting is fine.
-  
+  if (sortLabel) {
+    sortLabel.textContent = isRecentFirst ? 'Sorted by Most Recent at Top' : 'Sorted Chronologically (Oldest at Top)';
+  }
+
   const sortedData = [...data].sort((a, b) => {
     // Column 1: MM-DD-YYYY, Column 2: HH:mm
     const [m1, d1, y1] = (a[1] || '').split('-').map(Number);
@@ -4600,7 +4603,11 @@ function buildSearchLogTable() {
     const date1 = new Date(y1 || 0, (m1 || 1) - 1, d1 || 1, h1 || 0, min1 || 0);
     const date2 = new Date(y2 || 0, (m2 || 1) - 1, d2 || 1, h2 || 0, min2 || 0);
 
-    return isAscending ? date1 - date2 : date2 - date1;
+    if (isRecentFirst) {
+      return date2 - date1; // Newest at Top (Descending)
+    } else {
+      return date1 - date2; // Oldest at Top (Ascending)
+    }
   });
 
   const params = new URLSearchParams(window.location.search);
@@ -4884,6 +4891,19 @@ function buildSearchLogTable() {
 
   if (sortToggle) {
     sortToggle.onchange = () => {
+        const user = getCurrentUser();
+        if (user) {
+            const b = loadBundle();
+            const acc = (b.accounts || []).find(a => a.pin === user.pin);
+            if (acc) {
+                acc.searchLogSortRecentFirst = sortToggle.checked;
+                saveBundle(b);
+                
+                // Update session storage too
+                user.searchLogSortRecentFirst = sortToggle.checked;
+                setCurrentUser(user);
+            }
+        }
         buildSearchLogTable();
     };
   }
@@ -7973,8 +7993,14 @@ function initPageTransitions() {
     });
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     initPageTransitions();
+    
+    // For new devices, attempt an immediate sync to get the latest file from the server
+    if (!localStorage.getItem(BUNDLE_STORAGE_KEY)) {
+        await syncWithServer();
+    }
+    
     const bundle = loadBundle();
     applyTheme(bundle);
     applyBackground(bundle);
@@ -9612,6 +9638,7 @@ async function syncWithServer() {
     try {
         const currentUser = getCurrentUser();
         const deviceId = getDeviceId();
+        const isNewDevice = !localStorage.getItem(BUNDLE_STORAGE_KEY);
         
         // 1. Check active user status
         if (currentUser && currentUser.pin) {
@@ -9629,7 +9656,8 @@ async function syncWithServer() {
         }
         
         // 2. Sync active bundle
-        const resp = await fetch(`${apiBase}/bundle`);
+        const endpoint = isNewDevice ? 'latest' : 'bundle';
+        const resp = await fetch(`${apiBase}/${endpoint}`);
         if (resp.ok) {
             const serverBundle = await resp.json();
             if (serverBundle) {
@@ -9648,11 +9676,11 @@ async function syncWithServer() {
                         localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
                     }
                     refreshSyncUI();
-                } else if (lMod > sMod) {
+                } else if (lMod > sMod && !isNewDevice) {
                     pushBundleToServer(localBundle);
                 }
             }
-        } else if (resp.status === 404) {
+        } else if (resp.status === 404 && !isNewDevice) {
             pushBundleToServer(loadBundle());
         }
 
@@ -9760,6 +9788,21 @@ async function notifyActiveUser(user) {
     } catch (err) {
         console.error("Notify active user failed:", err);
     }
+}
+
+function refreshSyncUI() {
+    if (isHomePage()) buildHomePage();
+    else if (isRegionsPage()) buildRegionsTable();
+    else if (isSegmentsPage()) buildSegmentsTable();
+    else if (isPersonnelPage()) buildPersonnelTable();
+    else if (isSearchLogPage()) buildSearchLogTable();
+    else if (isFormsPage()) buildFormsPage();
+    else if (isProfilePage()) buildProfilePage();
+    else if (isPage8()) buildUserAccountPage();
+    else if (isPage9()) buildUserManagementPage();
+    else if (isMapsPage()) buildMapsPage();
+    else if (isUploadsPage()) buildUploadsPage();
+    else buildStandardTable();
 }
 
 // Start sync loop

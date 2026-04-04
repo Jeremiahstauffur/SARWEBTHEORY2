@@ -994,15 +994,15 @@ footer {
 
 /* Animations removed */
 
-/* Notification Slide-in */
-@keyframes notifSlideIn {
-  from { transform: translateX(120%); opacity: 0; }
-  to { transform: translateX(0); opacity: 1; }
+/* Notification Fade-in */
+@keyframes notifFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
-@keyframes notifSlideOut {
-  from { transform: translateX(0); opacity: 1; }
-  to { transform: translateX(120%); opacity: 0; }
+@keyframes notifFadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 .notif-toast {
@@ -1019,14 +1019,14 @@ footer {
   z-index: 2000 !important;
   cursor: pointer;
   max-width: 300px;
-  animation: notifSlideIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  animation: notifFadeIn 0.3s ease-out forwards;
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
 .notif-toast.dismissing {
-  animation: notifSlideOut 0.4s ease-in forwards !important;
+  animation: notifFadeOut 0.4s ease-in forwards !important;
 }
 
 .notif-toast:hover {
@@ -2496,52 +2496,25 @@ tr.log-sweeps-due::after {
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--line);
   z-index: 1000;
-  flex-direction: column;
-  transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-  transform: translateY(130px); /* Hide the 2 rows of extra buttons by default */
-}
-
-.bottom-nav.expanded {
-  transform: translateY(0);
-}
-
-.bottom-nav-main {
   height: 65px;
   display: flex;
   justify-content: space-around;
   align-items: center;
-  order: 1; /* Main items are at the top of the container */
-  width: 100%;
-}
-
-.bottom-nav-extra {
-  height: 130px; /* Two rows of extra items */
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  order: 2; /* Extra items are below the main items */
-  width: 100%;
-  border-top: 1px solid var(--line);
-  background: rgba(0, 0, 0, 0.1);
-  padding: 5px 0;
 }
 
 .bottom-nav a {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   text-decoration: none;
   color: var(--muted);
   font-size: 0.65rem;
   gap: 4px;
-  padding: 5px;
   transition: all 0.3s ease;
-  flex: 1 1 0;
+  flex: 1;
   min-width: 0;
-}
-
-.bottom-nav-extra a {
-  height: 60px;
-  justify-content: center;
+  height: 100%;
 }
 
 .bottom-nav a svg {
@@ -2555,7 +2528,7 @@ tr.log-sweeps-due::after {
 }
 
 .bottom-nav a.active svg {
-  transform: translateY(-4px);
+  transform: translateY(-2px);
   stroke: var(--accent);
 }
 
