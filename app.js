@@ -242,7 +242,6 @@ function checkAccess() {
 
     if (actualUser && actualUser.visiblePages) {
         // Everyone is allowed access to everything now
-        return;
     }
 }
 
@@ -1794,8 +1793,7 @@ function buildPersonnelTable() {
   const subNavBtns = [btnAll, btnAct, btnTeamRep, btnMemRep];
   const containers = [controls, baseContainer, teamReportsContainer, memberReportsContainer, searchTeamsContainer];
 
-  const user = getCurrentUser();
-  const isSubAllowed = (sub) => {
+    const isSubAllowed = (_sub) => {
       return true;
   };
 
@@ -2133,8 +2131,7 @@ function buildPersonnelAllMembersTable() {
           
           // Auto-switch team lead to new team's lead
           const existingTeamMember = data.find(row => row[1] === newTeam && row[2]);
-          const newLead = existingTeamMember ? existingTeamMember[2] : '';
-          data[originalRowIndex][2] = newLead;
+            data[originalRowIndex][2] = existingTeamMember ? existingTeamMember[2] : '';
           
           saveCurrentPageData(data);
           addActivityLogEntry(newTeam || 'Personnel', `${memberName} moved from team ${oldTeam || 'none'} to ${newTeam || 'none'}`);
@@ -2554,7 +2551,7 @@ function buildPersonnelActivityTable() {
   const baseTeamsMap = new Map();
   const baseTeamNames = ['Base Support', 'Off Duty', 'Command'];
 
-  data.forEach((row, idx) => {
+    data.forEach((row) => {
     if (row[1] && row[6] === 'true') {
       if (baseTeamNames.includes(row[1])) {
         if (!baseTeamsMap.has(row[1])) baseTeamsMap.set(row[1], []);
@@ -3179,8 +3176,8 @@ function showMissingStepsPopup(teamName, targetStatus, onComplete) {
   list.style.paddingRight = '5px';
   
   const stepData = [];
-  
-  missingSteps.forEach((step, i) => {
+
+    missingSteps.forEach((step) => {
     const item = document.createElement('div');
     item.style.display = 'flex';
     item.style.alignItems = 'center';
@@ -4173,7 +4170,7 @@ function printCurrentReport(type) {
 
   let htmlContent = `
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
       <title>${title}</title>
       <style>${style}</style>
@@ -4234,7 +4231,7 @@ function printAllReports(type) {
 
     let htmlContent = `
       <!DOCTYPE html>
-      <html>
+      <html lang="en">
       <head>
         <title>All Reports</title>
         <style>${style}</style>
@@ -4653,8 +4650,6 @@ function buildSearchLogTable() {
             formatted = val.slice(0, 2) + '-' + val.slice(2);
           }
           if (cell.textContent !== formatted) {
-            const selection = window.getSelection();
-            const offset = selection.focusOffset;
             cell.textContent = formatted;
             // Simple caret restoration (approximate)
             try {
@@ -5185,7 +5180,7 @@ function showCalendarPopup() {
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
 
-    const [m, d, y] = selectedChartDate.split('-').map(Number);
+    const [m, , y] = selectedChartDate.split('-').map(Number);
     let viewMonth = m - 1;
     let viewYear = y;
 
@@ -5523,7 +5518,8 @@ function buildHomePage() {
         try {
           const importedBundle = JSON.parse(event.target.result);
           if (!importedBundle.pages || !importedBundle.fileName) {
-            throw new Error('Invalid search file format. Missing pages or fileName.');
+              alert('Invalid search file format. Missing pages or fileName.');
+              return;
           }
           logCreation('Imported Search File', importedBundle.fileName, importedBundle);
           saveBundle(importedBundle);
@@ -6056,7 +6052,6 @@ function buildTaskAssignmentForm() {
 
 function renderTaskForm(container, taskNum, formData) {
   const bundle = loadBundle();
-  const searchLog = bundle.pages.page4 || [];
   const profile = bundle.profile || {};
   const taskTag = '#' + taskNum;
 
@@ -6147,12 +6142,9 @@ function renderTaskForm(container, taskNum, formData) {
   }
 
   // 3. 20 Minute Status (Par Checks)
-  const parCheckLogs = [...bundle.activityLog]
+    formData.parChecksRaw = [...bundle.activityLog]
     .filter(l => (l.tag === taskTag || l.tag.startsWith(taskTag + ' - ')) && (l.action.toLowerCase().includes('par check') || l.action.toLowerCase().includes('check-in')))
     .reverse();
-  
-  // We'll store the log objects themselves to render later
-  formData.parChecksRaw = parCheckLogs;
 
   if (changed) save();
 
@@ -6798,6 +6790,10 @@ function getTaskFormPrintHTML(num, f) {
                             }
                         </div>
                     </div>
+
+                    <div style="font-size: 8pt; color: #555; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px;">
+                        * Personnel Markers: (L) Team Lead, (R) Radio, (G) GPS, (M) Medic
+                    </div>
                 </div>
     `;
 }
@@ -6818,7 +6814,7 @@ function printSingleTaskForm(taskNum) {
 
     printWindow.document.write(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>Task Assignment Form - Task #${taskNum}</title>
     <style>${TASK_FORM_PRINT_STYLES}</style>
@@ -6865,7 +6861,7 @@ function downloadAllForms() {
 
   printWindow.document.write(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>All Task Assignment Forms</title>
     <style>${TASK_FORM_PRINT_STYLES}</style>
@@ -6913,7 +6909,7 @@ function printSearchFile() {
 
     printWindow.document.write(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>Search File Printout - ${fileName}</title>
     <style>
@@ -7033,14 +7029,14 @@ function printSearchFile() {
             const userName = tagPart.includes(' - ') ? tagPart.split(' - ')[1] : '';
             const div = document.createElement('div');
             div.className = 'activity-log-entry';
-            div.innerHTML = \`<span class="activity-log-time">[\${entry.date} \${entry.time} \${displayTag}\${userName ? ' (' + userName + ')' : ''}]</span> Team \${entry.team} (\${entry.members}): \${entry.action}\`;
+            div.innerHTML = '<span class="activity-log-time">[' + entry.date + ' ' + entry.time + ' ' + displayTag + (userName ? ' (' + userName + ')' : '') + ']</span> Team ' + entry.team + ' (' + (entry.members || '') + '): ' + entry.action;
             alBody.appendChild(div);
         });
 
         // Charts
         function formatHourOffset(offset) {
             const hrs = Math.floor(offset);
-            return \`\${hrs.toString().padStart(2, '0')}\`;
+            return hrs.toString().padStart(2, '0');
         }
 
         function drawLineChart(containerId, data, color, isPOS) {
@@ -7055,7 +7051,7 @@ function printSearchFile() {
             const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
             svg.setAttribute("width", "100%");
             svg.setAttribute("height", "100%");
-            svg.setAttribute("viewBox", \`0 0 \${width} \${height}\`);
+            svg.setAttribute("viewBox", "0 0 " + width + " " + height);
             
             // Y-axis ticks
             for (let i = 0; i <= 4; i++) {
@@ -7098,12 +7094,12 @@ function printSearchFile() {
                     y: height - padding.bottom - (val / max) * chartHeight
                 }));
                 const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                let d = \`M \${points[0].x} \${points[0].y}\`;
+                let d = 'M ' + points[0].x + ' ' + points[0].y;
                 for (let i = 0; i < points.length - 1; i++) {
                     const curr = points[i]; const next = points[i + 1];
                     const cp1x = curr.x + (next.x - curr.x) / 3;
                     const cp2x = curr.x + 2 * (next.x - curr.x) / 3;
-                    d += \` C \${cp1x} \${curr.y}, \${cp2x} \${next.y}, \${next.x} \${next.y}\`;
+                    d += ' C ' + cp1x + ' ' + curr.y + ', ' + cp2x + ' ' + next.y + ', ' + next.x + ' ' + next.y;
                 }
                 path.setAttribute("d", d); path.setAttribute("fill", "none");
                 path.setAttribute("stroke", color); path.setAttribute("stroke-width", "2");
@@ -7115,7 +7111,7 @@ function printSearchFile() {
         drawLineChart('pos-chart', posData, '#fd7e14', true);
 
         // Auto-print
-        setTimeout(() => {
+        setTimeout(function() {
             window.print();
         }, 1000);
     </script>
@@ -7509,11 +7505,6 @@ function checkParChecksAndNotify(skipTableRefresh = false) {
 
     if (startTime > 0 && (now - startTime) >= freqMs) {
       totalDue++;
-      const lastCheckTime = lastPar 
-        ? new Date(lastPar.lastTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : (new Date(startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      
-      const lastNote = lastPar?.lastNote || 'No previous par check note.';
       
       const notifyKey = teamName + '_' + (lastPar?.lastTime || startTime);
       if (!window._notifiedParChecks[notifyKey]) {
@@ -8292,7 +8283,6 @@ function showImportSegmentsPopup() {
 
     const areaKeys = ['acres', 'area', 'size', 'sqmi', 'sq_mi', 'shape_area', 'st_area', 'hectares', 'ha', 'gis_acres', 'acres_total', 'sqft', 'sq_ft', 'sqkm', 'sq_km', 'total_acres'];
     const lengthKeys = ['length', 'len', 'leng', 'shape_leng', 'distance', 'mi', 'miles', 'shape_length', 'st_length', 'dist', 'width', 'height', 'ft', 'feet', 'km', 'meters', 'm', 'shape_len'];
-    const nameKeys = ['name', 'segment', 'label', 'id', 'title', 'id_number', 'unit_id', 'objectid', 'fid'];
 
     files.forEach(file => {
       let jsonText = '';
@@ -9292,7 +9282,6 @@ function buildMapsPage() {
     
     try {
       let data = null;
-      let usedProxy = false;
       const proxyUrl = getSartopoProxy();
 
       if (proxyUrl) {
@@ -9300,7 +9289,6 @@ function buildMapsPage() {
           const proxyResp = await fetch(`${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`);
           if (proxyResp.ok) {
             data = await proxyResp.json();
-            usedProxy = true;
           } else {
             const errData = await proxyResp.json().catch(() => ({}));
             console.warn('Proxy fetch failed, falling back to direct fetch', errData);
@@ -9320,9 +9308,11 @@ function buildMapsPage() {
           if (response.status === 403 || response.status === 401 || response.status === 404) {
              let details = '';
              if (response.status === 404) details = ' (Map not found or requires login)';
-             throw new Error(`Login Required or Access Denied${details}. This is usually a CORS issue. Please run the middleman.py proxy and configure it in Settings.`);
+              alert(`Login Required or Access Denied${details}. This is usually a CORS issue. Please run the middleman.py proxy and configure it in Settings.`);
+              return;
           }
-          throw new Error(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+            alert(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+            return;
         }
         data = await response.json();
       }
