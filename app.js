@@ -6704,8 +6704,16 @@ const TASK_FORM_PRINT_STYLES = `
 `;
 
 function getTaskFormPrintHTML(num, f) {
-    const members = (f.teamMembers || []).map(m => `${m.name} ${m.leader ? '(L)' : ''}`).join(', ');
-
+    const members = (f.teamMembers || []).map(m => {
+        const details = [];
+        if (m.leader) details.push('L');
+        if (m.radio) details.push('R');
+        if (m.gps) details.push('G');
+        if (m.medic) details.push('M');
+        const detailStr = details.length > 0 ? ` (${details.join(',')})` : '';
+        return `${m.name}${detailStr}`;
+    }).join(', ');
+    
     // Team Types string
     const activeTypes = [];
     if (f.teamTypes) {
