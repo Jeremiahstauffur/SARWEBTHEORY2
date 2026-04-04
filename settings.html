@@ -117,11 +117,13 @@
               </button>
             </div>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-              If you are getting CORS errors when fetching shapes, you must run the <code>middleman.py</code> proxy server. 
-              Enter the Proxy URL below (e.g., <code>http://localhost:5050/api/proxy</code>).
+                If you are getting CORS errors when fetching shapes, you must use a proxy server.
+                Enter the Web Proxy URL below (e.g.,
+                <code>http://sartopo-proxy-production.up.railway.app:5050/api/proxy</code>).
             </p>
             <div class="home-row">
-              <input type="text" id="sartopo-proxy-input" class="pill-input" style="flex-grow: 1;" placeholder="e.g., http://localhost:5050/api/proxy">
+                <input class="pill-input" id="sartopo-proxy-input" placeholder="e.g., http://sartopo-proxy-production.up.railway.app:5050/api/proxy" style="flex-grow: 1;"
+                       type="text">
               <button id="save-proxy-btn" class="clear-btn" type="button">Save Proxy Settings</button>
             </div>
           </div>

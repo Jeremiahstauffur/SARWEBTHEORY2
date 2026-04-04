@@ -23,7 +23,7 @@ function getSyncBucket() {
 }
 
 function getSartopoProxy() {
-    return localStorage.getItem(SARTOPO_PROXY_STORAGE_KEY) || 'http://localhost:5050/api/proxy';
+    return localStorage.getItem(SARTOPO_PROXY_STORAGE_KEY) || 'http://sartopo-proxy-production.up.railway.app:5050/api/proxy';
 }
 
 function setSartopoProxy(url) {
@@ -8613,28 +8613,25 @@ function startSartopoSetupWalkthrough(step = 1) {
         title = "Welcome to SarTopo Integration (1/4)";
         body = `
       <p>This guide will help you set up <strong>SarTopo/CalTopo</strong> integration correctly.</p>
-      <p style="margin-top:10px;">To fetch shapes (polygons and assignments) directly from SarTopo, we use a small <strong>Proxy Server</strong> to avoid browser security (CORS) issues.</p>
-      <p style="margin-top:10px;"><strong>Goal:</strong> Get your map data flowing into the Segments table!</p>
+      <p style="margin-top:10px;">To fetch shapes (polygons and assignments) directly from SarTopo, we use a <strong>Web Proxy</strong> to avoid browser security (CORS) issues.</p>
+      <p style="margin-top:10px;"><strong>Goal:</strong> Get your map data flowing into the Segments table without needing to run any scripts locally!</p>
     `;
     } else if (step === 2) {
-        title = "Step 1: Run the Proxy Server (2/4)";
+        title = "Step 1: Web-Hosted Middleman (2/4)";
         body = `
-      <p>You need to run the <code>middleman.py</code> script on your computer.</p>
-      <ol style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
-        <li>Open a terminal or command prompt in your project folder.</li>
-        <li>Run: <code>python middleman.py</code></li>
-        <li>Keep this terminal window open while you use the map features.</li>
-      </ol>
-      <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This script acts as a bridge between this web page and SarTopo's servers.</p>
+      <p>We have moved the "middleman" to the web. You no longer need to run <code>middleman.py</code> on your computer.</p>
+      <p style="margin-top:10px;">The proxy is hosted at:</p>
+      <code style="display:block; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; margin: 10px 0;">http://sartopo-proxy-production.up.railway.app:5050</code>
+      <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This service handles all SarTopo traffic securely and enables this site to fetch your private or public map data.</p>
     `;
     } else if (step === 3) {
         title = "Step 2: Configure Proxy URL (3/4)";
         body = `
-      <p>Now, ensure this software knows where to find your proxy.</p>
+      <p>Now, ensure this software knows where to find the web proxy.</p>
       <ul style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
         <li>Go to the <strong>Settings</strong> page.</li>
         <li>Look for <strong>SarTopo Proxy Settings</strong>.</li>
-        <li>Ensure it is set to <code>http://localhost:5050/api/proxy</code></li>
+        <li>Ensure it is set to <code>http://sartopo-proxy-production.up.railway.app:5050/api/proxy</code></li>
         <li>Click <strong>Save Proxy Settings</strong>.</li>
       </ul>
       <div style="margin-top:15px; padding: 10px; background: rgba(255,165,0,0.1); border-radius: 4px; font-size: 0.9rem;">
@@ -8647,11 +8644,11 @@ function startSartopoSetupWalkthrough(step = 1) {
       <p>Final Step: Connect your map!</p>
       <ol style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
         <li>Go to the <strong>Maps</strong> page.</li>
-        <li>Enter your <strong>Map ID</strong> (the code at the end of your SarTopo URL).</li>
-        <li>Click <strong>Add Map</strong> and then click on the map name to view it.</li>
-        <li>Click <strong>Fetch Shapes</strong> to import your polygons as Segments!</li>
+        <li>Check the <strong>Proxy Status</strong> indicator (it should be green/Online).</li>
+        <li>Enter your <strong>Map ID</strong> and click <strong>Add Map</strong>.</li>
+        <li>Click <strong>Fetch Shapes</strong>. All data now flows securely through the web middleman!</li>
       </ol>
-      <p style="margin-top:10px;">You're all set! If shapes don't appear or it stalls, check if <code>middleman.py</code> is still running and check your <strong>Proxy Terminal</strong> for logs. Also check your <strong>Browser Console (F12)</strong> for any red error messages.</p>
+      <p style="margin-top:10px;">If the status is "Offline", check your internet connection or the Proxy URL in Settings.</p>
     `;
         btnText = "Finish";
         nextStep = null;
@@ -9200,6 +9197,11 @@ function buildMapsPage() {
         <div>
           <p style="margin: 0; font-size: 0.95rem;"><strong>Tip:</strong> We use 'Full Site' mode by default to provide full controls and avoid login issues (403 Errors).</p>
           <p style="margin: 5px 0 0; font-size: 0.9rem; color: var(--muted);">If you still see a login prompt, click the <strong>'Login'</strong> button to open a secure login window. Once logged in, click <strong>'Refresh'</strong> here.</p>
+          <div id="proxy-status-container" style="margin-top: 10px; font-size: 0.9rem; display: flex; align-items: center; gap: 8px;">
+            <span>Proxy Status:</span>
+            <span id="proxy-status-dot" style="width: 10px; height: 10px; border-radius: 50%; background: #ccc;"></span>
+            <span id="proxy-status-text">Checking...</span>
+          </div>
         </div>
         <button id="map-help-setup-btn" class="clear-btn" style="background: var(--accent); color: white; border: none; white-space: nowrap; padding: 8px 16px;">Help Me Setup</button>
       </div>
@@ -9255,6 +9257,40 @@ function buildMapsPage() {
   const loginMapBtn = document.getElementById('login-map-btn');
   const refreshMapBtn = document.getElementById('refresh-map-btn');
   const clearMapBtn = document.getElementById('clear-map-btn');
+
+    const checkProxyHealth = async () => {
+        const proxyUrl = getSartopoProxy();
+        const dot = document.getElementById('proxy-status-dot');
+        const text = document.getElementById('proxy-status-text');
+        if (!dot || !text) return;
+
+        if (!proxyUrl) {
+            dot.style.background = '#ff6b6b';
+            text.textContent = 'Not Configured';
+            return;
+        }
+
+        // Derived health endpoint from proxyUrl
+        // Assuming proxyUrl is like http://sartopo-proxy-production.up.railway.app:5050/api/proxy
+        let healthUrl = proxyUrl.replace('/api/proxy', '/api/health');
+        if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('/api/')[0] + '/api/health';
+
+        try {
+            const resp = await fetch(healthUrl);
+            if (resp.ok) {
+                dot.style.background = '#40c057';
+                text.textContent = 'Online';
+            } else {
+                dot.style.background = '#ff6b6b';
+                text.textContent = 'Error';
+            }
+        } catch (err) {
+            dot.style.background = '#ff6b6b';
+            text.textContent = 'Offline';
+        }
+    };
+
+    checkProxyHealth();
 
   let activeMapId = null;
   let activeMapDomain = 'sartopo.com';
@@ -9397,35 +9433,23 @@ function buildMapsPage() {
             data = await proxyResp.json();
           } else {
             const errData = await proxyResp.json().catch(() => ({}));
-            console.warn('Proxy fetch failed, falling back to direct fetch', errData);
+              console.error('Proxy fetch failed', errData);
+              alert(`Proxy Error: ${errData.error || proxyResp.statusText}\n\nMiddleman is required for all SarTopo correspondence. Ensure the web proxy is reachable.`);
+              return;
           }
         } catch (proxyErr) {
             if (proxyErr.name === 'AbortError') {
                 console.error('Proxy request timed out');
-                alert('The proxy server took too long to respond. Please check if middleman.py is running and if the map is not excessively large.');
+                alert('The proxy server took too long to respond. Please check your internet connection or if the map is excessively large.');
                 return;
             }
-          console.warn('Proxy unreachable, falling back to direct fetch', proxyErr);
-        }
-      }
-
-      if (!data) {
-        // Direct fetch (may fail due to CORS if SarTopo doesn't explicitly allow our origin)
-        const response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
-          credentials: 'include'
-        });
-        
-        if (!response.ok) {
-          if (response.status === 403 || response.status === 401 || response.status === 404) {
-             let details = '';
-             if (response.status === 404) details = ' (Map not found or requires login)';
-              alert(`Login Required or Access Denied${details}. This is usually a CORS issue. Please run the middleman.py proxy and configure it in Settings.`);
-              return;
-          }
-            alert(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+            console.error('Proxy unreachable', proxyErr);
+            alert('Web Middleman is not reachable. All SarTopo correspondence must go through the proxy.\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
             return;
         }
-        data = await response.json();
+      } else {
+          alert('No SarTopo Proxy configured. All SarTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., http://sartopo-proxy-production.up.railway.app:5050/api/proxy).');
+          return;
       }
       
       const features = (data.features || []).filter(f => {
