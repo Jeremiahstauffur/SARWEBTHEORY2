@@ -2371,6 +2371,20 @@ tr.log-sweeps-due::after {
 }
 
 @media (max-width: 400px) {
+    header {
+        display: none !important;
+    }
+
+    .chart-stack-row {
+        flex-direction: column !important;
+        height: auto !important;
+        aspect-ratio: auto !important;
+    }
+
+    .chart-stack-row > div {
+        height: 200px !important;
+    }
+
     .nav-wrap {
         padding: 8px 5px !important;
     }
@@ -2472,9 +2486,16 @@ tr.log-sweeps-due::after {
   border-top: 1px solid var(--line);
   height: 65px;
   z-index: 1000;
-  justify-content: space-around;
+  justify-content: flex-start;
   align-items: center;
   padding: 0 10px;
+  overflow-x: auto;
+  scrollbar-width: none; /* Hide scrollbar for Firefox */
+  -ms-overflow-style: none; /* Hide scrollbar for IE/Edge */
+}
+
+.bottom-nav::-webkit-scrollbar {
+  display: none; /* Hide scrollbar for Chrome/Safari */
 }
 
 .bottom-nav a {
@@ -2485,9 +2506,10 @@ tr.log-sweeps-due::after {
   color: var(--muted);
   font-size: 0.65rem;
   gap: 4px;
-  padding: 5px;
+  padding: 5px 15px;
   transition: all 0.3s ease;
-  flex: 1;
+  flex: 0 0 auto;
+  min-width: 65px;
 }
 
 .bottom-nav a svg {

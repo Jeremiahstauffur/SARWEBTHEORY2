@@ -16,7 +16,7 @@ if (!fs.existsSync(DATA_DIR)) {
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Name', 'X-User-Pin']
 }));
 app.use(express.json({limit: '50mb'}));
 
@@ -52,9 +52,77 @@ app.get('/api/v1/:bucket/:key', (req, res) => {
 app.put('/api/v1/:bucket/:key', (req, res) => {
     const {bucket, key} = req.params;
     const filePath = getFilePath(bucket, key);
+    const metaPath = filePath + '.meta';
+
+    const userName = req.headers['x-user-name'] || 'Unknown';
+    const userPin = req.headers['x-user-pin'] || '';
+    const isSuperAdmin = userPin === '1976';
+
+    let incomingLastModified = 0;
+    if (req.body) {
+        if (req.body.lastModified) {
+            incomingLastModified = new Date(req.body.lastModified).getTime();
+        } else if (typeof req.body === 'object') {
+            // Try to find latest modified time in a collection of files
+            for (const key in req.body) {
+                if (req.body[key] && req.body[key].lastModified) {
+                    const m = new Date(req.body[key].lastModified).getTime();
+                    if (m > incomingLastModified) incomingLastModified = m;
+                }
+            }
+        }
+    }
+
+    if (fs.existsSync(metaPath)) {
+        try {
+            const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+            const currentIsSuperAdmin = meta.userPin === '1976';
+            const existingLastModified = new Date(meta.updatedAt).getTime();
+
+            // Super-Admin priority
+            if (currentIsSuperAdmin && !isSuperAdmin) {
+                return res.status(403).json({
+                    error: 'Conflict',
+                    message: 'Changes by Super-Admin cannot be overwritten by a regular user.'
+                });
+            }
+
+            // Conflict resolution (same level or Super-Admin overwriting anyone)
+            if (isSuperAdmin === currentIsSuperAdmin) {
+                if (incomingLastModified < existingLastModified) {
+                    return res.status(403).json({
+                        error: 'Conflict',
+                        message: 'Incoming data is older than server data.'
+                    });
+                }
+                
+                if (incomingLastModified === existingLastModified) {
+                    const incoming = userName.toLowerCase();
+                    const existing = meta.userName.toLowerCase();
+                    if (incoming !== existing && incoming > existing) {
+                        return res.status(403).json({
+                            error: 'Conflict',
+                            message: `Changes by ${meta.userName} have priority (alphabetically closer to A).`
+                        });
+                    }
+                }
+            }
+        } catch (err) {
+            console.error('Failed to read meta file:', err);
+        }
+    }
+
+    const saveTime = (incomingLastModified && incomingLastModified > 0) 
+        ? new Date(incomingLastModified).toISOString() 
+        : new Date().toISOString();
 
     try {
         fs.writeFileSync(filePath, JSON.stringify(req.body, null, 2));
+        fs.writeFileSync(metaPath, JSON.stringify({
+            userName,
+            userPin,
+            updatedAt: saveTime
+        }, null, 2));
         res.json({success: true});
     } catch (err) {
         res.status(500).json({error: 'Failed to save data'});

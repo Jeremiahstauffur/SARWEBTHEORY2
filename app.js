@@ -345,6 +345,7 @@ function defaultRegionsData() {
 function defaultBundle() {
   return {
     fileName: DEFAULT_FILE_NAME,
+    lastModified: new Date().toISOString(),
     deleteMode: false,
     theme: 'dark',
     showTips: true,
@@ -518,6 +519,7 @@ function sanitizeBundle(bundle) {
   const parCheckFrequency = (bundle.parCheckFrequency !== undefined) ? bundle.parCheckFrequency : 20;
   const showTips = (bundle.showTips !== undefined) ? bundle.showTips : true;
   const theme = bundle.theme || 'dark';
+  const lastModified = bundle.lastModified || new Date().toISOString();
   const forms = bundle.forms || {};
   const profile = bundle.profile || fallback.profile;
   const uploads = Array.isArray(bundle.uploads) ? bundle.uploads : [];
@@ -618,6 +620,7 @@ function sanitizeBundle(bundle) {
 
   return { 
     fileName, 
+    lastModified,
     deleteMode, 
     theme, 
     background, 
@@ -651,6 +654,7 @@ function loadBundle() {
 }
 
 function saveBundle(bundle) {
+  bundle.lastModified = new Date().toISOString();
   const sanitized = sanitizeBundle(bundle);
   const oldBundle = loadBundle();
   const oldName = oldBundle.fileName;
@@ -9628,17 +9632,22 @@ async function syncWithServer() {
             const serverBundle = await resp.json();
             if (serverBundle) {
                 const localBundle = loadBundle();
-                if (JSON.stringify(serverBundle) !== JSON.stringify(localBundle)) {
+                const sMod = new Date(serverBundle.lastModified || 0);
+                const lMod = new Date(localBundle.lastModified || 0);
+
+                if (sMod > lMod) {
                     localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
                     const files = getSavedFiles();
                     if (serverBundle.fileName) {
                         files[serverBundle.fileName] = {
                             bundle: serverBundle,
-                            lastModified: new Date().toISOString()
+                            lastModified: serverBundle.lastModified
                         };
                         localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
                     }
                     refreshSyncUI();
+                } else if (lMod > sMod) {
+                    pushBundleToServer(localBundle);
                 }
             }
         } else if (resp.status === 404) {
@@ -9694,10 +9703,17 @@ async function pushBundleToServer(bundle) {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
     
+    const user = getCurrentUser();
+    const headers = { 
+        'Content-Type': 'application/json',
+        'X-User-Name': getAccountName(user),
+        'X-User-Pin': user ? user.pin : ''
+    };
+    
     try {
         await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/bundle`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify(bundle)
         });
     } catch (err) {
@@ -9710,10 +9726,17 @@ async function pushFileListToServer(files) {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
     
+    const user = getCurrentUser();
+    const headers = { 
+        'Content-Type': 'application/json',
+        'X-User-Name': getAccountName(user),
+        'X-User-Pin': user ? user.pin : ''
+    };
+    
     try {
         await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/all-files`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify(files)
         });
     } catch (err) {
@@ -9738,6 +9761,6 @@ async function notifyActiveUser(user) {
 }
 
 // Start sync loop
-setInterval(syncWithServer, 5000);
+setInterval(syncWithServer, 2000);
 // Initial sync
 setTimeout(syncWithServer, 1000);
