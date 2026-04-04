@@ -6,6 +6,7 @@ const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
 const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
+const SARTOPO_PROXY_STORAGE_KEY = 'sar-sartopo-proxy-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
 const KVDB_BASE_URL = 'https://kvdb.io';
 const DEFAULT_BUCKET = 'sar-sync-' + Math.random().toString(36).substr(2, 6);
@@ -19,6 +20,15 @@ function getSyncBucket() {
         localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
     }
     return bucket;
+}
+
+function getSartopoProxy() {
+    return localStorage.getItem(SARTOPO_PROXY_STORAGE_KEY) || 'http://localhost:5050/api/proxy';
+}
+
+function setSartopoProxy(url) {
+    if (url) localStorage.setItem(SARTOPO_PROXY_STORAGE_KEY, url);
+    else localStorage.removeItem(SARTOPO_PROXY_STORAGE_KEY);
 }
 
 function getDeviceId() {
