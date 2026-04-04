@@ -110,7 +110,12 @@
           </div>
 
           <div class="home-panel full-width">
-            <h2>SarTopo Proxy Settings</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <h2 style="margin: 0;">SarTopo Proxy Settings</h2>
+              <button class="clear-btn" id="start-walkthrough-btn"
+                      style="background: var(--accent); color: white; border: none;">Help Me Setup
+              </button>
+            </div>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
               If you are getting CORS errors when fetching shapes, you must run the <code>middleman.py</code> proxy server. 
               Enter the Proxy URL below (e.g., <code>http://localhost:5050/api/proxy</code>).

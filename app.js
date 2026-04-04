@@ -5736,6 +5736,11 @@ function buildSettingsPage() {
     };
   }
 
+    const startWalkthroughBtn = document.getElementById('start-walkthrough-btn');
+    if (startWalkthroughBtn) {
+        startWalkthroughBtn.onclick = () => startSartopoSetupWalkthrough(1);
+    }
+
   if (syncUrlInput && saveSyncBtn) {
     const syncBucketInput = document.getElementById('sync-bucket-input');
     if (syncBucketInput) syncBucketInput.value = getSyncBucket();
@@ -8598,6 +8603,84 @@ function showImportSegmentsPopup() {
   renderFileSelection();
 }
 
+function startSartopoSetupWalkthrough(step = 1) {
+    let title = "SarTopo Setup Guide (1/4)";
+    let body = "";
+    let btnText = "Next";
+    let nextStep = step + 1;
+
+    if (step === 1) {
+        title = "Welcome to SarTopo Integration (1/4)";
+        body = `
+      <p>This guide will help you set up <strong>SarTopo/CalTopo</strong> integration correctly.</p>
+      <p style="margin-top:10px;">To fetch shapes (polygons and assignments) directly from SarTopo, we use a small <strong>Proxy Server</strong> to avoid browser security (CORS) issues.</p>
+      <p style="margin-top:10px;"><strong>Goal:</strong> Get your map data flowing into the Segments table!</p>
+    `;
+    } else if (step === 2) {
+        title = "Step 1: Run the Proxy Server (2/4)";
+        body = `
+      <p>You need to run the <code>middleman.py</code> script on your computer.</p>
+      <ol style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
+        <li>Open a terminal or command prompt in your project folder.</li>
+        <li>Run: <code>python middleman.py</code></li>
+        <li>Keep this terminal window open while you use the map features.</li>
+      </ol>
+      <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This script acts as a bridge between this web page and SarTopo's servers.</p>
+    `;
+    } else if (step === 3) {
+        title = "Step 2: Configure Proxy URL (3/4)";
+        body = `
+      <p>Now, ensure this software knows where to find your proxy.</p>
+      <ul style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
+        <li>Go to the <strong>Settings</strong> page.</li>
+        <li>Look for <strong>SarTopo Proxy Settings</strong>.</li>
+        <li>Ensure it is set to <code>http://localhost:5050/api/proxy</code></li>
+        <li>Click <strong>Save Proxy Settings</strong>.</li>
+      </ul>
+      <div style="margin-top:15px; padding: 10px; background: rgba(255,165,0,0.1); border-radius: 4px; font-size: 0.9rem;">
+        <strong>Note:</strong> If you are already on the Settings page, you can do this now!
+      </div>
+    `;
+    } else if (step === 4) {
+        title = "Step 3: Add Map & Fetch Shapes (4/4)";
+        body = `
+      <p>Final Step: Connect your map!</p>
+      <ol style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
+        <li>Go to the <strong>Maps</strong> page.</li>
+        <li>Enter your <strong>Map ID</strong> (the code at the end of your SarTopo URL).</li>
+        <li>Click <strong>Add Map</strong> and then click on the map name to view it.</li>
+        <li>Click <strong>Fetch Shapes</strong> to import your polygons as Segments!</li>
+      </ol>
+      <p style="margin-top:10px;">You're all set! If shapes don't appear or it stalls, check if <code>middleman.py</code> is still running and check your <strong>Proxy Terminal</strong> for logs. Also check your <strong>Browser Console (F12)</strong> for any red error messages.</p>
+    `;
+        btnText = "Finish";
+        nextStep = null;
+    }
+
+    const popup = createPopup(title, null);
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    const bodyEl = document.createElement('div');
+    bodyEl.style.padding = '10px 0';
+    bodyEl.style.lineHeight = '1.5';
+    bodyEl.innerHTML = body;
+    content.insertBefore(bodyEl, btnContainer);
+
+    btnContainer.innerHTML = '';
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'popup-btn';
+    nextBtn.style.flex = '1';
+    nextBtn.textContent = btnText;
+    nextBtn.onclick = () => {
+        closePopup(popup);
+        if (nextStep) {
+            setTimeout(() => startSartopoSetupWalkthrough(nextStep), 300);
+        }
+    };
+    btnContainer.appendChild(nextBtn);
+}
+
 function showSarTopoShapesPopup(features) {
   const popup = createPopup('Import Shapes from SarTopo', null);
   const content = popup.querySelector('.popup-content');
@@ -9113,9 +9196,12 @@ function buildMapsPage() {
     <section class="hero">
       <h1>Maps Management</h1>
       <p>Manage your SarTopo/CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
-      <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 15px; margin-top: 15px; border-radius: 4px;">
-        <p style="margin: 0; font-size: 0.95rem;"><strong>Tip:</strong> We use 'Full Site' mode by default to provide full controls and avoid login issues (403 Errors).</p>
-        <p style="margin: 5px 0 0; font-size: 0.9rem; color: var(--muted);">If you still see a login prompt, click the <strong>'Login'</strong> button to open a secure login window. Once logged in, click <strong>'Refresh'</strong> here.</p>
+      <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 15px; margin-top: 15px; border-radius: 4px; display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;">
+        <div>
+          <p style="margin: 0; font-size: 0.95rem;"><strong>Tip:</strong> We use 'Full Site' mode by default to provide full controls and avoid login issues (403 Errors).</p>
+          <p style="margin: 5px 0 0; font-size: 0.9rem; color: var(--muted);">If you still see a login prompt, click the <strong>'Login'</strong> button to open a secure login window. Once logged in, click <strong>'Refresh'</strong> here.</p>
+        </div>
+        <button id="map-help-setup-btn" class="clear-btn" style="background: var(--accent); color: white; border: none; white-space: nowrap; padding: 8px 16px;">Help Me Setup</button>
       </div>
     </section>
 
@@ -9152,6 +9238,11 @@ function buildMapsPage() {
 
   const mapIdInput = document.getElementById('map-id-input');
   const mapNameInput = document.getElementById('map-name-input');
+    const mapHelpBtn = document.getElementById('map-help-setup-btn');
+    if (mapHelpBtn) {
+        mapHelpBtn.onclick = () => startSartopoSetupWalkthrough(1);
+    }
+
   const addMapBtn = document.getElementById('add-map-btn');
   const mapsList = document.getElementById('maps-list');
   const mapViewSection = document.getElementById('map-view-section');
@@ -9294,7 +9385,14 @@ function buildMapsPage() {
 
       if (proxyUrl) {
         try {
-          const proxyResp = await fetch(`${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+
+            const proxyResp = await fetch(`${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
           if (proxyResp.ok) {
             data = await proxyResp.json();
           } else {
@@ -9302,6 +9400,11 @@ function buildMapsPage() {
             console.warn('Proxy fetch failed, falling back to direct fetch', errData);
           }
         } catch (proxyErr) {
+            if (proxyErr.name === 'AbortError') {
+                console.error('Proxy request timed out');
+                alert('The proxy server took too long to respond. Please check if middleman.py is running and if the map is not excessively large.');
+                return;
+            }
           console.warn('Proxy unreachable, falling back to direct fetch', proxyErr);
         }
       }

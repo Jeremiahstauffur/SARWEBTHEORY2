@@ -4,8 +4,16 @@ import json
 import urllib.request
 import urllib.error
 import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler, SimpleHTTPRequestHandler
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import socketserver
 from urllib.parse import urlparse, parse_qs
+
+# Try to use ThreadingHTTPServer for better performance (Python 3.7+)
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        pass
 
 # Middleman server/sync
 
@@ -51,11 +59,14 @@ def save_active_users(users):
         json.dump(users, f)
 
 class ProxyHandler(SimpleHTTPRequestHandler):
-    def do_OPTIONS(self):
-        self.send_response(200, "ok")
+    def _send_cors_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type")
+
+    def do_OPTIONS(self):
+        self.send_response(200, "ok")
+        self._send_cors_headers()
         self.end_headers()
 
     def do_GET(self):
@@ -66,11 +77,18 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             domain = qs.get('domain', ['sartopo.com'])[0]
 
             if not map_id:
-                self.send_error(400, "Missing mapId")
+                print(f"[ERROR] Proxy request missing mapId: {self.path}")
+                self.send_response(400)
+                self._send_cors_headers()
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Missing mapId"}).encode('utf-8'))
                 return
 
             # Fetch from SarTopo
             url = f"https://{domain}/api/v1/map/{map_id}/features"
+            print(f"[PROXY] Fetching shapes from {url}...")
+            
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 SARWebTheory/1.0'})
             
             cookie = get_session_cookie()
@@ -78,11 +96,21 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 req.add_header('Cookie', f'id={cookie}')
 
             try:
-                with urllib.request.urlopen(req) as response:
-                    data = json.loads(response.read().decode('utf-8'))
+                # Added 15-second timeout to prevent stalling
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = response.read()
+                    print(f"[PROXY] Success: Received {len(data)} bytes from SarTopo.")
+                    
+                    self.send_response(200)
+                    self._send_cors_headers()
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
             except urllib.error.HTTPError as e:
+                print(f"[PROXY] HTTP Error {e.code} from SarTopo: {e.reason}")
                 self.send_response(e.code)
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self._send_cors_headers()
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 error_msg = {"error": f"HTTP Error {e.code}: {e.reason}", "status": e.code}
@@ -91,23 +119,19 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps(error_msg).encode('utf-8'))
                 return
             except Exception as e:
+                print(f"[PROXY] General Error: {str(e)}")
                 self.send_response(500)
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self._send_cors_headers()
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e), "status": 500}).encode('utf-8'))
                 return
-
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(data).encode('utf-8'))
         
         elif parsed_path.path == '/api/bundle':
+            print(f"[API] Getting shared bundle")
             bundle = get_bundle()
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._send_cors_headers()
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(bundle).encode('utf-8'))
@@ -115,11 +139,12 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         elif parsed_path.path == '/api/active-user':
             qs = parse_qs(parsed_path.query)
             pin = qs.get('pin', [''])[0]
+            print(f"[API] Getting active user for PIN: {pin}")
             users = get_active_users()
             device_id = users.get(pin, None)
             
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._send_cors_headers()
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"deviceId": device_id}).encode('utf-8'))
@@ -132,10 +157,12 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         post_data = self.rfile.read(content_length)
         
         if parsed_path.path == '/api/bundle':
+            print(f"[API] Saving shared bundle...")
             data = json.loads(post_data.decode('utf-8'))
             save_bundle(data)
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._send_cors_headers()
+            self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
             
@@ -143,6 +170,7 @@ class ProxyHandler(SimpleHTTPRequestHandler):
             data = json.loads(post_data.decode('utf-8'))
             pin = data.get('pin')
             device_id = data.get('deviceId')
+            print(f"[API] Registering active user: {pin} -> {device_id}")
             
             if pin and device_id:
                 users = get_active_users()
@@ -150,11 +178,14 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 save_active_users(users)
                 
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._send_cors_headers()
+            self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
         else:
+            print(f"[API] 404 Not Found: {self.path}")
             self.send_response(404)
+            self._send_cors_headers()
             self.end_headers()
 
 def get_ip():
@@ -171,7 +202,7 @@ def get_ip():
 
 def run(port=5050):
     server_address = ('', port)
-    httpd = HTTPServer(server_address, ProxyHandler)
+    httpd = ThreadingHTTPServer(server_address, ProxyHandler)
     local_ip = get_ip()
     print(f"Middleman server/sync running on port {port}...")
     print(f"Local Access: http://localhost:{port}")
