@@ -3,16 +3,19 @@ import os
 import json
 import urllib.request
 import urllib.error
-import socket
-from http.server import HTTPServer, BaseHTTPRequestHandler, SimpleHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-# Middleman server/sync
+try:
+    import geopandas as gpd
+    from shapely.geometry import shape
+    import pyproj
+except ImportError:
+    print("Missing dependencies. Please install: pip install geopandas shapely pyproj pyogrio")
+    sys.exit(1)
 
 # To handle login issues, we allow the user to provide a session cookie via a config file.
 CONFIG_FILE = "sartopo_config.json"
-BUNDLE_FILE = "shared_bundle.json"
-ACTIVE_USERS_FILE = "active_users.json"
 
 def get_session_cookie():
     if os.path.exists(CONFIG_FILE):
@@ -24,33 +27,7 @@ def get_session_cookie():
             pass
     return ''
 
-def get_bundle():
-    if os.path.exists(BUNDLE_FILE):
-        try:
-            with open(BUNDLE_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return None
-
-def save_bundle(data):
-    with open(BUNDLE_FILE, 'w') as f:
-        json.dump(data, f)
-
-def get_active_users():
-    if os.path.exists(ACTIVE_USERS_FILE):
-        try:
-            with open(ACTIVE_USERS_FILE, 'r') as f:
-                return json.load(f)
-        except:
-            pass
-    return {}
-
-def save_active_users(users):
-    with open(ACTIVE_USERS_FILE, 'w') as f:
-        json.dump(users, f)
-
-class ProxyHandler(SimpleHTTPRequestHandler):
+class ProxyHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200, "ok")
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -86,8 +63,8 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 error_msg = {"error": f"HTTP Error {e.code}: {e.reason}", "status": e.code}
-                if e.code in [401, 403, 404]:
-                    error_msg["details"] = "Login required or map not found. Map is private and no valid session cookie was provided."
+                if e.code in [401, 403]:
+                    error_msg["details"] = "Login required. Map is private and no valid session cookie was provided."
                 self.wfile.write(json.dumps(error_msg).encode('utf-8'))
                 return
             except Exception as e:
@@ -98,85 +75,22 @@ class ProxyHandler(SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e), "status": 500}).encode('utf-8'))
                 return
 
+            # For the frontend to use its existing showSarTopoShapesPopup, 
+            # we need to return the raw data!
             self.send_response(200)
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(data).encode('utf-8'))
-        
-        elif parsed_path.path == '/api/bundle':
-            bundle = get_bundle()
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(bundle).encode('utf-8'))
-
-        elif parsed_path.path == '/api/active-user':
-            qs = parse_qs(parsed_path.query)
-            pin = qs.get('pin', [''])[0]
-            users = get_active_users()
-            device_id = users.get(pin, None)
-            
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"deviceId": device_id}).encode('utf-8'))
-        else:
-            return super().do_GET()
-
-    def do_POST(self):
-        parsed_path = urlparse(self.path)
-        content_length = int(self.headers['Content-Length'])
-        post_data = self.rfile.read(content_length)
-        
-        if parsed_path.path == '/api/bundle':
-            data = json.loads(post_data.decode('utf-8'))
-            save_bundle(data)
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
-            
-        elif parsed_path.path == '/api/active-user':
-            data = json.loads(post_data.decode('utf-8'))
-            pin = data.get('pin')
-            device_id = data.get('deviceId')
-            
-            if pin and device_id:
-                users = get_active_users()
-                users[pin] = device_id
-                save_active_users(users)
-                
-            self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode('utf-8'))
         else:
             self.send_response(404)
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-
-def get_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # doesn't even have to be reachable
-        s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
-    except Exception:
-        IP = '127.0.0.1'
-    finally:
-        s.close()
-    return IP
 
 def run(port=5050):
     server_address = ('', port)
     httpd = HTTPServer(server_address, ProxyHandler)
-    local_ip = get_ip()
-    print(f"Middleman server/sync running on port {port}...")
-    print(f"Local Access: http://localhost:{port}")
-    print(f"Network Access (from phone): http://{local_ip}:{port}")
-    print(f"To sync your phone, use the Network Access URL in the app settings.")
+    print(f"Middleman proxy server running on port {port}...")
     httpd.serve_forever()
 
 if __name__ == '__main__':

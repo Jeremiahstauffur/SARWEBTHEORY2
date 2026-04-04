@@ -812,15 +812,6 @@ footer {
   background: var(--pill-focus);
 }
 
-.mini-pill[contenteditable="true"]:focus,
-.mini-pill.personnel-select:focus {
-  background: var(--pill-focus);
-  border-color: rgba(125, 198, 255, 0.65);
-  box-shadow: 0 0 0 3px rgba(125, 198, 255, 0.16);
-  outline: none;
-  white-space: normal;
-}
-
 .mini-pill.active {
   background: rgba(125, 198, 255, 0.25) !important;
   border-color: var(--accent) !important;
@@ -1020,11 +1011,6 @@ footer {
 
 .notif-toast:hover {
   background: var(--pill-focus);
-}
-
-.toast-close-btn:hover {
-  opacity: 1 !important;
-  color: #ff4444 !important;
 }
 
 .calendar-day {
@@ -1555,19 +1541,11 @@ tr.log-sweeps-due::after {
 }
 
 /* Task Assignment Form Styles */
-.task-form, .profile-form {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
+.task-form {
+  display: flex;
+  flex-direction: column;
   gap: 20px;
   color: var(--text);
-}
-
-.form-group.small {
-  grid-column: span 2;
-}
-
-.form-group.large {
-  grid-column: span 3;
 }
 
 .form-card {
@@ -1578,7 +1556,6 @@ tr.log-sweeps-due::after {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 20px;
-  grid-column: span 6;
 }
 
 .form-section {
@@ -1690,13 +1667,10 @@ tr.log-sweeps-due::after {
   .home-panel.full-width {
     grid-column: span 1;
   }
-  .task-form, .profile-form {
+  .task-form {
     display: flex;
     flex-direction: column;
     gap: 15px;
-  }
-  .form-group.small, .form-group.large {
-    grid-column: span 1;
   }
   .form-card {
     grid-template-columns: repeat(2, 1fr);
@@ -1790,11 +1764,8 @@ tr.log-sweeps-due::after {
     padding: 8px 10px;
     font-size: 0.85rem;
   }
-  .task-form, .profile-form {
+  .task-form {
     grid-template-columns: 1fr;
-  }
-  .form-group.small, .form-group.large {
-    grid-column: span 1;
   }
   .form-section {
     grid-column: span 1;
