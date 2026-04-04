@@ -9456,7 +9456,12 @@ function buildMapsPage() {
           } else {
             const errData = await proxyResp.json().catch(() => ({}));
               console.error('Proxy fetch failed', errData);
-              alert(`Proxy Error: ${errData.error || proxyResp.statusText}\n\nMiddleman is required for all SarTopo correspondence. Ensure the web proxy is reachable.`);
+              const errMsg = errData.message || errData.error || proxyResp.statusText;
+              if (proxyResp.status === 403) {
+                  alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in SARTopo/CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
+              } else {
+                  alert(`Proxy Error: ${errMsg}\n\nMiddleman is required for all SarTopo correspondence. Ensure the web proxy is reachable.`);
+              }
               return;
           }
         } catch (proxyErr) {
