@@ -97,7 +97,7 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// SarTopo Proxy endpoint
+// CalTopo Proxy endpoint
 const fetchMapHandler = async (req, res) => {
     const {mapId, domain} = req.query;
     if (!mapId) {
@@ -121,7 +121,7 @@ const fetchMapHandler = async (req, res) => {
 
         // Return detailed JSON for better debugging in the website
         res.status(responseStatus).json({
-            error: error.response ? `SARTopo Error ${responseStatus}` : "Proxy Connection Error",
+            error: error.response ? `CalTopo Error ${responseStatus}` : "Proxy Connection Error",
             message: error.message,
             targetUrl: targetUrl,
             mapId: mapId

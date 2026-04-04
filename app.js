@@ -6,7 +6,7 @@ const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
 const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
-const SAR_TOPO_PROXY_STORAGE_KEY = 'sar-sartopo-proxy-v1';
+const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
 const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin || 'default').replace(/[^a-zA-Z0-9]/g, '').substring(0, 12);
 
@@ -24,18 +24,27 @@ function getSyncBucket() {
     return bucket;
 }
 
-function getSarTopoProxy() {
-    let proxy = localStorage.getItem(SAR_TOPO_PROXY_STORAGE_KEY);
+function getCalTopoProxy() {
+    let proxy = localStorage.getItem(CALTOPO_PROXY_STORAGE_KEY);
+    // Migration: Migrate from old SARTopo key if needed
+    if (!proxy) {
+        const oldProxy = localStorage.getItem('sar-sartopo-proxy-v1');
+        if (oldProxy) {
+            proxy = oldProxy;
+            localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
+            localStorage.removeItem('sar-sartopo-proxy-v1');
+        }
+    }
     // Migration: Migrate to the standard HTTPS URL (Railway default)
     if (proxy && proxy.includes(':5050')) {
         proxy = proxy.replace('http://', 'https://').replace(':5050', '');
-        localStorage.setItem(SAR_TOPO_PROXY_STORAGE_KEY, proxy);
+        localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
     }
     return proxy || 'https://sarwebtheory2-production.up.railway.app/api/proxy';
 }
 
 const checkProxyHealth = async () => {
-    const proxyUrl = getSarTopoProxy();
+    const proxyUrl = getCalTopoProxy();
     const dot = document.getElementById('proxy-status-dot');
     const text = document.getElementById('proxy-status-text');
     if (!dot || !text) return;
@@ -47,10 +56,16 @@ const checkProxyHealth = async () => {
     }
 
     // Derived health endpoint from proxyUrl
-    // Assuming proxyUrl is like https://sarwebtheory2-production.up.railway.app/api/proxy
-    let healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '').replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
-    if (!healthUrl.endsWith('/api/health')) {
-        healthUrl = healthUrl.replace(/\/$/, '') + '/api/health';
+    let healthUrl;
+    if (proxyUrl.includes('.php')) {
+        // For PHP scripts, we use ?health=1 (it also works with my proxy.php)
+        healthUrl = proxyUrl.split('?')[0] + (proxyUrl.includes('?') ? '&' : '?') + 'health=1';
+    } else {
+        // For Node.js/Express proxies (e.g., Railway)
+        healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '').replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
+        if (!healthUrl.endsWith('/api/health')) {
+            healthUrl = healthUrl.replace(/\/$/, '') + '/api/health';
+        }
     }
 
     try {
@@ -81,9 +96,9 @@ const checkProxyHealth = async () => {
     }
 };
 
-function setSarTopoProxy(url) {
-    if (url) localStorage.setItem(SAR_TOPO_PROXY_STORAGE_KEY, url);
-    else localStorage.removeItem(SAR_TOPO_PROXY_STORAGE_KEY);
+function setCalTopoProxy(url) {
+    if (url) localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, url);
+    else localStorage.removeItem(CALTOPO_PROXY_STORAGE_KEY);
 }
 
 function getDeviceId() {
@@ -5361,6 +5376,9 @@ function buildSavedFilesTable() {
         nameBtn.textContent = name;
         nameBtn.onclick = () => {
             saveBundle(fileInfo.bundle);
+            // Sync bucket ID when switching files
+            const bucketName = name.replace(/\.json$/i, '');
+            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
             window.location.reload();
         };
         tdName.appendChild(nameBtn);
@@ -5486,6 +5504,9 @@ function buildHomePage() {
 
             logCreation('New Search File', newBundle.fileName, newBundle);
             saveBundle(newBundle);
+            // Sync bucket ID with new file name
+            const bucketName = newBundle.fileName.replace(/\.json$/i, '');
+            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
             window.location.reload();
         };
         
@@ -5583,6 +5604,9 @@ function buildHomePage() {
           logCreation('Imported Search File', importedBundle.fileName, importedBundle);
           saveBundle(importedBundle);
           saveFileToList(importedBundle.fileName, importedBundle);
+            // Sync bucket ID with imported file name
+            const bucketName = importedBundle.fileName.replace(/\.json$/i, '');
+            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
           window.location.reload();
         } catch (err) {
           alert('Error importing file: ' + err.message);
@@ -5603,7 +5627,11 @@ function buildHomePage() {
     
     currentBundle.fileName = nextName;
     saveBundle(currentBundle);
-    
+
+      // Sync bucket ID with new file name
+      const bucketName = nextName.replace(/\.json$/i, '');
+      localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
+
     // If not already in the list, add it
     if (!files[nextName] && !files[oldName]) {
         saveFileToList(nextName, currentBundle);
@@ -5776,15 +5804,15 @@ function buildSettingsPage() {
   const syncUrlInput = document.getElementById('sync-url-input');
   const saveSyncBtn = document.getElementById('save-sync-url-btn');
   const syncStatusMsg = document.getElementById('sync-status-msg');
-  const proxyInput = document.getElementById('sartopo-proxy-input');
+    const proxyInput = document.getElementById('caltopo-proxy-input');
   const saveProxyBtn = document.getElementById('save-proxy-btn');
     const testProxyBtn = document.getElementById('test-proxy-btn');
 
   if (proxyInput && saveProxyBtn) {
-      proxyInput.value = getSarTopoProxy();
+      proxyInput.value = getCalTopoProxy();
     saveProxyBtn.onclick = () => {
-        setSarTopoProxy(proxyInput.value.trim());
-      status.textContent = 'SarTopo Proxy URL saved.';
+        setCalTopoProxy(proxyInput.value.trim());
+        status.textContent = 'CalTopo Proxy URL saved.';
         checkProxyHealth();
     };
   }
@@ -5801,8 +5829,13 @@ function buildSettingsPage() {
             testProxyBtn.disabled = true;
 
             // 1. Health check first
-            let healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
-            if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
+            let healthUrl;
+            if (proxyUrl.includes('.php')) {
+                healthUrl = proxyUrl.split('?')[0] + (proxyUrl.includes('?') ? '&' : '?') + 'health=1';
+            } else {
+                healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
+                if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
+            }
 
             try {
                 const resp = await fetch(healthUrl);
@@ -5826,7 +5859,7 @@ function buildSettingsPage() {
 
     const startWalkthroughBtn = document.getElementById('start-walkthrough-btn');
     if (startWalkthroughBtn) {
-        startWalkthroughBtn.onclick = () => startSarTopoSetupWalkthrough(1);
+        startWalkthroughBtn.onclick = () => startCalTopoSetupWalkthrough(1);
     }
 
   if (syncUrlInput && saveSyncBtn) {
@@ -8698,17 +8731,17 @@ function showImportSegmentsPopup() {
   renderFileSelection();
 }
 
-function startSarTopoSetupWalkthrough(step = 1) {
-    let title = "SarTopo Setup Guide (1/4)";
+function startCalTopoSetupWalkthrough(step = 1) {
+    let title = "CalTopo Setup Guide (1/4)";
     let body = "";
     let btnText = "Next";
     let nextStep = step + 1;
 
     if (step === 1) {
-        title = "Welcome to SarTopo Integration (1/4)";
+        title = "Welcome to CalTopo Integration (1/4)";
         body = `
-      <p>This guide will help you set up <strong>SarTopo/CalTopo</strong> integration correctly.</p>
-      <p style="margin-top:10px;">To fetch shapes (polygons and assignments) directly from SarTopo, we use a <strong>Web Proxy</strong> to avoid browser security (CORS) issues.</p>
+      <p>This guide will help you set up <strong>CalTopo</strong> integration correctly.</p>
+      <p style="margin-top:10px;">To fetch shapes (polygons and assignments) directly from CalTopo, we use a <strong>Web Proxy</strong> to avoid browser security (CORS) issues.</p>
       <p style="margin-top:10px;"><strong>Goal:</strong> Get your map data flowing into the Segments table without needing to run any scripts locally!</p>
     `;
     } else if (step === 2) {
@@ -8717,7 +8750,7 @@ function startSarTopoSetupWalkthrough(step = 1) {
       <p>We have moved the "middleman" to the web. You no longer need to run <code>middleman.py</code> on your computer.</p>
       <p style="margin-top:10px;">The proxy is hosted at:</p>
       <code style="display:block; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; margin: 10px 0;">https://sarwebtheory2-production.up.railway.app</code>
-      <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This service handles all SarTopo traffic securely and enables this site to fetch your private or public map data.</p>
+      <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This service handles all CalTopo traffic securely and enables this site to fetch your private or public map data.</p>
     `;
     } else if (step === 3) {
         title = "Step 2: Configure Proxy URL (3/4)";
@@ -8725,7 +8758,7 @@ function startSarTopoSetupWalkthrough(step = 1) {
       <p>Now, ensure this software knows where to find the web proxy.</p>
       <ul style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
         <li>Go to the <strong>Settings</strong> page.</li>
-        <li>Look for <strong>SarTopo Proxy Settings</strong>.</li>
+        <li>Look for <strong>CalTopo Proxy Settings</strong>.</li>
         <li>Ensure it is set to <code>https://sarwebtheory2-production.up.railway.app/api/proxy</code></li>
         <li>Click <strong>Save Proxy Settings</strong>.</li>
       </ul>
@@ -8767,14 +8800,14 @@ function startSarTopoSetupWalkthrough(step = 1) {
     nextBtn.onclick = () => {
         closePopup(popup);
         if (nextStep) {
-            setTimeout(() => startSarTopoSetupWalkthrough(nextStep), 300);
+            setTimeout(() => startCalTopoSetupWalkthrough(nextStep), 300);
         }
     };
     btnContainer.appendChild(nextBtn);
 }
 
-function showSarTopoShapesPopup(features) {
-  const popup = createPopup('Import Shapes from SarTopo', null);
+function showCalTopoShapesPopup(features) {
+    const popup = createPopup('Import Shapes from CalTopo', null);
   const content = popup.querySelector('.popup-content');
   const btnContainer = popup.querySelector('.popup-buttons');
 
@@ -8899,14 +8932,14 @@ function showSarTopoShapesPopup(features) {
           alert("No shapes selected.");
           return;
       }
-      
-      importSarTopoSegments(selected);
+
+      importCalTopoSegments(selected);
       closePopup(popup);
   };
   btnContainer.appendChild(submitBtn);
 }
 
-function importSarTopoSegments(selected) {
+function importCalTopoSegments(selected) {
     const b = loadBundle();
     if (!b.pages.page2) b.pages.page2 = defaultSegmentsData();
     
@@ -8938,7 +8971,7 @@ function importSarTopoSegments(selected) {
     });
 
     if (importedNames.length > 0) {
-        addActivityLogEntry('System', 'Imported SarTopo shapes as segments: ' + importedNames.join(', '), b);
+        addActivityLogEntry('System', 'Imported CalTopo shapes as segments: ' + importedNames.join(', '), b);
     }
 
     saveBundle(b);
@@ -9287,7 +9320,7 @@ function buildMapsPage() {
   container.innerHTML = `
     <section class="hero">
       <h1>Maps Management</h1>
-      <p>Manage your SarTopo/CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
+      <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
       <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 15px; margin-top: 15px; border-radius: 4px; display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;">
         <div>
           <p style="margin: 0; font-size: 0.95rem;"><strong>Tip:</strong> We use 'Full Site' mode by default to provide full controls and avoid login issues (403 Errors).</p>
@@ -9305,8 +9338,9 @@ function buildMapsPage() {
     <section class="table-card">
       <div class="table-tools">
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; width: 100%;">
-          <input id="map-id-input" class="pill-input" type="text" placeholder="Map ID (e.g. 0A1B2)" style="flex: 1; min-width: 200px;">
-          <input id="map-name-input" class="pill-input" type="text" placeholder="Map Name (Optional)" style="flex: 1; min-width: 200px;">
+          <input id="map-id-input" class="pill-input" type="text" placeholder="Map ID (e.g. 0A1B2)" style="flex: 1.5; min-width: 150px;">
+          <input id="team-id-input" class="pill-input" type="text" placeholder="Team ID (6 chars, optional)" style="flex: 1; min-width: 150px;">
+          <input id="map-name-input" class="pill-input" type="text" placeholder="Map Name (Optional)" style="flex: 1.5; min-width: 150px;">
           <button id="add-map-btn" class="clear-btn">Add Map</button>
         </div>
       </div>
@@ -9334,10 +9368,11 @@ function buildMapsPage() {
   `;
 
   const mapIdInput = document.getElementById('map-id-input');
+    const teamIdInput = document.getElementById('team-id-input');
   const mapNameInput = document.getElementById('map-name-input');
     const mapHelpBtn = document.getElementById('map-help-setup-btn');
     if (mapHelpBtn) {
-        mapHelpBtn.onclick = () => startSarTopoSetupWalkthrough(1);
+        mapHelpBtn.onclick = () => startCalTopoSetupWalkthrough(1);
     }
 
   const addMapBtn = document.getElementById('add-map-btn');
@@ -9356,7 +9391,8 @@ function buildMapsPage() {
     checkProxyHealth();
 
   let activeMapId = null;
-  let activeMapDomain = 'sartopo.com';
+    let activeMapTeamId = null;
+    let activeMapDomain = 'caltopo.com';
   let isFullMode = true;
 
   const renderMaps = (skipScroll = false) => {
@@ -9366,18 +9402,20 @@ function buildMapsPage() {
       mapViewSection.style.display = 'none';
       mapIframe.src = '';
       activeMapId = null;
+        activeMapTeamId = null;
       return;
     }
     const map = bundle.maps[0];
     mapsList.innerHTML = '';
     mapsList.style.display = 'none';
-    
-    viewMap(map.id, map.name, map.domain, skipScroll);
+
+      viewMap(map.id, map.name, map.domain, map.teamId, skipScroll);
   };
 
-  const viewMap = (id, name, domain, skipScroll = false) => {
+    const viewMap = (id, name, domain, teamId, skipScroll = false) => {
     activeMapId = id;
-    activeMapDomain = domain || 'sartopo.com';
+        activeMapTeamId = teamId || null;
+        activeMapDomain = domain || 'caltopo.com';
     currentMapTitle.textContent = name || id;
     const suffix = isFullMode ? '' : '/embed';
     mapIframe.src = `https://${activeMapDomain}/m/${id}${suffix}`;
@@ -9388,13 +9426,14 @@ function buildMapsPage() {
   };
 
   const popOutMap = (id, domain) => {
-    const activeDomain = domain || 'sartopo.com';
+      const activeDomain = domain || 'caltopo.com';
     const url = `https://${activeDomain}/m/${id}`;
     window.open(url, `map_${id}`, 'width=1100,height=850,menubar=no,toolbar=no,location=no,status=no');
   };
 
   addMapBtn.onclick = () => {
     const rawInput = mapIdInput.value.trim();
+      const teamId = teamIdInput.value.trim();
     const name = mapNameInput.value.trim();
     if (!rawInput) {
       alert('Please enter a Map ID or URL');
@@ -9402,15 +9441,13 @@ function buildMapsPage() {
     }
     
     let id = rawInput;
-    let domain = 'sartopo.com';
-    
-    if (rawInput.includes('caltopo.com')) {
+      let domain = 'caltopo.com';
+
+      if (rawInput.includes('caltopo.com') || rawInput.includes('sartopo.com')) {
       domain = 'caltopo.com';
-    } else if (rawInput.includes('sartopo.com')) {
-      domain = 'sartopo.com';
     }
-    
-    // Extract ID from URL like https://sartopo.com/m/ABCDE or https://sartopo.com/m/ABCDE/embed
+
+      // Extract ID from URL like https://caltopo.com/m/ABCDE or https://caltopo.com/m/ABCDE/embed
     const urlMatch = rawInput.match(/\/m\/([A-Za-z0-9-]+)/i);
     if (urlMatch) {
       id = urlMatch[1];
@@ -9421,12 +9458,13 @@ function buildMapsPage() {
     }
     
     if (bundle.maps && bundle.maps.length > 0) {
-        bundle.maps = [{ id, name, domain }];
+        bundle.maps = [{id, name, domain, teamId}];
     } else {
-        bundle.maps = [{ id, name, domain }];
+        bundle.maps = [{id, name, domain, teamId}];
     }
     saveBundle(bundle);
     mapIdInput.value = '';
+      teamIdInput.value = '';
     mapNameInput.value = '';
     renderMaps();
   };
@@ -9469,7 +9507,7 @@ function buildMapsPage() {
 
   loginMapBtn.onclick = () => {
     if (activeMapId) {
-      window.open(`https://${activeMapDomain}/login`, 'sartopo_login', 'width=500,height=600');
+        window.open(`https://${activeMapDomain}/login`, 'caltopo_login', 'width=500,height=600');
     }
   };
 
@@ -9480,14 +9518,19 @@ function buildMapsPage() {
     
     try {
       let data = null;
-        const proxyUrl = getSarTopoProxy();
+        const proxyUrl = getCalTopoProxy();
 
       if (proxyUrl) {
         try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
 
-            const proxyResp = await fetch(`${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`, {
+            let finalProxyUrl = `${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`;
+            if (activeMapTeamId) {
+                finalProxyUrl += `&teamId=${activeMapTeamId}`;
+            }
+
+            const proxyResp = await fetch(finalProxyUrl, {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
@@ -9500,11 +9543,11 @@ function buildMapsPage() {
               const errMsg = errData.message || errData.error || proxyResp.statusText;
 
               if (proxyResp.status === 403) {
-                  alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in SARTopo/CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
+                  alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
               } else if (proxyResp.status === 404) {
                   alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
               } else {
-                  alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nMiddleman is reachable, but the request to SARTopo failed. Ensure the map is public.`);
+                  alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nMiddleman is reachable, but the request to CalTopo failed. Ensure the map is public.`);
               }
               return;
           }
@@ -9515,11 +9558,11 @@ function buildMapsPage() {
                 return;
             }
             console.error('Proxy unreachable', proxyErr);
-            alert('Web Proxy is not reachable. All SarTopo correspondence must go through the proxy.\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
+            alert('Web Proxy is not reachable. All CalTopo correspondence must go through the proxy.\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
             return;
         }
       } else {
-          alert('No SarTopo Proxy configured. All SarTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., https://sarwebtheory2-production.up.railway.app/api/proxy).');
+          alert('No CalTopo Proxy configured. All CalTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., https://sarwebtheory2-production.up.railway.app/api/proxy).');
           return;
       }
       
@@ -9535,11 +9578,11 @@ function buildMapsPage() {
       if (features.length === 0) {
           alert('No compatible shapes (Assignments or Polygons) found on this map.');
       } else {
-          showSarTopoShapesPopup(features);
+          showCalTopoShapesPopup(features);
       }
     } catch (err) {
       console.error(err);
-      alert(`Could not fetch shapes: ${err.message}\n\nThis is usually caused by browser security (CORS) when the map is private.\n\nTo resolve:\n1. Recommended: In SarTopo, go to "Map Settings" and set "Access" to "Anyone with the link can view".\n2. If it must stay private, ensure you are logged in AND click the EYE ICON (or lock icon) in the address bar to "Allow cookies" for this site.\n3. Make sure you are using HTTPS if SarTopo is HTTPS.`);
+        alert(`Could not fetch shapes: ${err.message}\n\nThis is usually caused by browser security (CORS) when the map is private.\n\nTo resolve:\n1. Recommended: In CalTopo, go to "Map Settings" and set "Access" to "Anyone with the link can view".\n2. If it must stay private, ensure you are logged in AND click the EYE ICON (or lock icon) in the address bar to "Allow cookies" for this site.\n3. Make sure you are using HTTPS if CalTopo is HTTPS.`);
     } finally {
       fetchShapesBtn.disabled = false;
       fetchShapesBtn.textContent = 'Fetch Shapes';

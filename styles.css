@@ -379,7 +379,7 @@ tr.unfinished-row::after {
   left: 0;
   right: 0;
   background: rgba(128, 128, 128, 0.25);
-  border-radius: 999px;
+    border-radius: 12px;
   z-index: -1;
   pointer-events: none;
   margin: -8px -10px; /* Offset to cover the spacing and rounded cells */
@@ -1426,7 +1426,7 @@ tr.log-sweeps-due::after {
   left: 0;
   right: 0;
   background: rgba(235, 87, 87, 0.28);
-  border-radius: 999px;
+    border-radius: 12px;
   z-index: -1;
   pointer-events: none;
   margin: -8px -10px;
@@ -1672,6 +1672,14 @@ tr.log-sweeps-due::after {
 }
 
 
+.chart-stack-row {
+    display: flex;
+    gap: 20px;
+    aspect-ratio: 4 / 1;
+    margin-top: 10px;
+    height: 180px;
+}
+
 /* Responsive Improvements */
 @media (max-width: 1024px) {
   .hero-columns {
@@ -1684,6 +1692,11 @@ tr.log-sweeps-due::after {
 }
 
 @media (max-width: 768px) {
+    .chart-stack-row {
+        flex-direction: column;
+        height: auto;
+        aspect-ratio: auto;
+    }
   .dashboard-grid {
     grid-template-columns: 1fr;
   }
@@ -2351,4 +2364,86 @@ tr.log-sweeps-due::after {
 
 .new-row-highlight .pill-cell {
   animation: greenFadeOut 7s forwards;
+}
+
+@media (max-width: 400px) {
+    .nav-wrap {
+        padding: 8px 5px !important;
+    }
+
+    .brand {
+        font-size: 0.85rem !important;
+        white-space: normal !important;
+        text-align: center !important;
+    }
+
+    nav {
+        gap: 2px !important;
+        justify-content: center !important;
+    }
+
+    nav a {
+        padding: 6px 3px !important;
+        font-size: 0.7rem !important;
+        gap: 2px !important;
+    }
+
+    .hero-columns {
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+    }
+
+    .hero h1 {
+        font-size: 1.1rem !important;
+        margin-bottom: 5px !important;
+    }
+
+    .hero-col-right {
+        justify-content: flex-start !important;
+        width: 100% !important;
+    }
+
+    .home-panel {
+        padding: 10px !important;
+    }
+
+    .dashboard-grid {
+        gap: 12px !important;
+    }
+
+    .pill-input {
+        min-width: 0 !important;
+        width: 100% !important;
+    }
+
+    #task-pills-container .mini-pill {
+        font-size: 0.75rem !important;
+        padding: 6px 8px !important;
+        white-space: normal !important;
+        text-align: left !important;
+    }
+
+    .table-card {
+        padding: 8px !important;
+        border-radius: 8px !important;
+    }
+
+    .home-row {
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+
+    .home-row button {
+        flex: 1 1 auto !important;
+        min-width: 80px !important;
+    }
+
+    .home-panel.full-width h2 {
+        font-size: 1rem !important;
+    }
+
+    #dashboard-stats > div {
+        font-size: 0.85rem !important;
+        padding: 8px 12px !important;
+    }
 }
