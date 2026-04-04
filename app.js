@@ -12,7 +12,7 @@ const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin || 'default').r
 
 function getSyncServerUrl() {
     let url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
-    return url || 'https://sar-sync-server-production.up.railway.app';
+    return url || 'https://sarwebtheory2-production.up.railway.app';
 }
 
 function getSyncBucket() {
@@ -31,8 +31,53 @@ function getSarTopoProxy() {
         proxy = proxy.replace('http://', 'https://').replace(':5050', '');
         localStorage.setItem(SAR_TOPO_PROXY_STORAGE_KEY, proxy);
     }
-    return proxy || 'https://sartopo-proxy-production.up.railway.app/fetch-map';
+    return proxy || 'https://sarwebtheory2-production.up.railway.app/api/proxy';
 }
+
+const checkProxyHealth = async () => {
+    const proxyUrl = getSarTopoProxy();
+    const dot = document.getElementById('proxy-status-dot');
+    const text = document.getElementById('proxy-status-text');
+    if (!dot || !text) return;
+
+    if (!proxyUrl) {
+        dot.style.background = '#ff6b6b';
+        text.textContent = 'Not Configured';
+        return;
+    }
+
+    // Derived health endpoint from proxyUrl
+    // Assuming proxyUrl is like https://sarwebtheory2-production.up.railway.app/api/proxy
+    let healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
+    if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
+
+    try {
+        console.log('[PROXY] Checking health:', healthUrl);
+        const resp = await fetch(healthUrl);
+        if (resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            dot.style.background = '#40c057';
+            text.textContent = 'Online' + (data.version ? ` (${data.version})` : '');
+            text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}`;
+        } else {
+            console.warn('[PROXY] Health check returned error:', resp.status);
+            dot.style.background = '#ff6b6b';
+            text.textContent = 'Error ' + resp.status;
+        }
+    } catch (err) {
+        console.error('[PROXY] Health check failed:', err);
+        dot.style.background = '#ff6b6b';
+        text.textContent = 'Offline';
+
+        // Helpful tip for mixed content or unreachable
+        if (window.location.protocol === 'https:' && healthUrl.startsWith('http:')) {
+            console.error('[PROXY] Mixed content detected! Site is HTTPS but proxy is HTTP.');
+            text.textContent = 'Offline (Security)';
+        } else if (healthUrl.includes(':5050')) {
+            console.info('[PROXY] Using port 5050. Ensure the proxy is listening on this port and it is publicly accessible.');
+        }
+    }
+};
 
 function setSarTopoProxy(url) {
     if (url) localStorage.setItem(SAR_TOPO_PROXY_STORAGE_KEY, url);
@@ -5731,14 +5776,51 @@ function buildSettingsPage() {
   const syncStatusMsg = document.getElementById('sync-status-msg');
   const proxyInput = document.getElementById('sartopo-proxy-input');
   const saveProxyBtn = document.getElementById('save-proxy-btn');
+    const testProxyBtn = document.getElementById('test-proxy-btn');
 
   if (proxyInput && saveProxyBtn) {
       proxyInput.value = getSarTopoProxy();
     saveProxyBtn.onclick = () => {
         setSarTopoProxy(proxyInput.value.trim());
       status.textContent = 'SarTopo Proxy URL saved.';
+        checkProxyHealth();
     };
   }
+
+    if (testProxyBtn) {
+        testProxyBtn.onclick = async () => {
+            const proxyUrl = proxyInput.value.trim();
+            if (!proxyUrl) {
+                alert('Please enter a Proxy URL first.');
+                return;
+            }
+
+            testProxyBtn.textContent = 'Testing...';
+            testProxyBtn.disabled = true;
+
+            // 1. Health check first
+            let healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
+            if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
+
+            try {
+                const resp = await fetch(healthUrl);
+                const data = await resp.json().catch(() => ({}));
+                if (resp.ok) {
+                    alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and working.`);
+                    checkProxyHealth();
+                } else {
+                    alert(`Proxy Error ${resp.status}\n\nThe server is there, but it returned an error. Make sure you deployed the latest code.`);
+                }
+            } catch (err) {
+                alert(`Connection Failed\n\nCould not reach ${healthUrl}.\n\nError: ${err.message}\n\nThis usually means the URL is wrong or the Railway service is down.`);
+            } finally {
+                testProxyBtn.textContent = 'Test Connection';
+                testProxyBtn.disabled = false;
+            }
+        };
+    }
+
+    checkProxyHealth();
 
     const startWalkthroughBtn = document.getElementById('start-walkthrough-btn');
     if (startWalkthroughBtn) {
@@ -8632,7 +8714,7 @@ function startSarTopoSetupWalkthrough(step = 1) {
         body = `
       <p>We have moved the "middleman" to the web. You no longer need to run <code>middleman.py</code> on your computer.</p>
       <p style="margin-top:10px;">The proxy is hosted at:</p>
-      <code style="display:block; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; margin: 10px 0;">https://sartopo-proxy-production.up.railway.app</code>
+      <code style="display:block; padding: 10px; background: rgba(0,0,0,0.05); border-radius: 4px; margin: 10px 0;">https://sarwebtheory2-production.up.railway.app</code>
       <p style="margin-top:10px; font-size: 0.9rem; color: var(--muted);">This service handles all SarTopo traffic securely and enables this site to fetch your private or public map data.</p>
     `;
     } else if (step === 3) {
@@ -8642,7 +8724,7 @@ function startSarTopoSetupWalkthrough(step = 1) {
       <ul style="margin-left: 20px; margin-top: 10px; line-height: 1.6;">
         <li>Go to the <strong>Settings</strong> page.</li>
         <li>Look for <strong>SarTopo Proxy Settings</strong>.</li>
-        <li>Ensure it is set to <code>https://sartopo-proxy-production.up.railway.app/fetch-map</code></li>
+        <li>Ensure it is set to <code>https://sarwebtheory2-production.up.railway.app/api/proxy</code></li>
         <li>Click <strong>Save Proxy Settings</strong>.</li>
       </ul>
       <div style="margin-top:15px; padding: 10px; background: rgba(255,165,0,0.1); border-radius: 4px; font-size: 0.9rem;">
@@ -9269,49 +9351,6 @@ function buildMapsPage() {
   const refreshMapBtn = document.getElementById('refresh-map-btn');
   const clearMapBtn = document.getElementById('clear-map-btn');
 
-    const checkProxyHealth = async () => {
-        const proxyUrl = getSarTopoProxy();
-        const dot = document.getElementById('proxy-status-dot');
-        const text = document.getElementById('proxy-status-text');
-        if (!dot || !text) return;
-
-        if (!proxyUrl) {
-            dot.style.background = '#ff6b6b';
-            text.textContent = 'Not Configured';
-            return;
-        }
-
-        // Derived health endpoint from proxyUrl
-        // Assuming proxyUrl is like https://sartopo-proxy-production.up.railway.app/fetch-map
-        let healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
-        if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
-
-        try {
-            console.log('[PROXY] Checking health:', healthUrl);
-            const resp = await fetch(healthUrl);
-            if (resp.ok) {
-                dot.style.background = '#40c057';
-                text.textContent = 'Online';
-            } else {
-                console.warn('[PROXY] Health check returned error:', resp.status);
-                dot.style.background = '#ff6b6b';
-                text.textContent = 'Error ' + resp.status;
-            }
-        } catch (err) {
-            console.error('[PROXY] Health check failed:', err);
-            dot.style.background = '#ff6b6b';
-            text.textContent = 'Offline';
-
-            // Helpful tip for mixed content or unreachable
-            if (window.location.protocol === 'https:' && healthUrl.startsWith('http:')) {
-                console.error('[PROXY] Mixed content detected! Site is HTTPS but proxy is HTTP.');
-                text.textContent = 'Offline (Security)';
-            } else if (healthUrl.includes(':5050')) {
-                console.info('[PROXY] Using port 5050. Ensure the proxy is listening on this port and it is publicly accessible.');
-            }
-        }
-    };
-
     checkProxyHealth();
 
   let activeMapId = null;
@@ -9457,10 +9496,13 @@ function buildMapsPage() {
             const errData = await proxyResp.json().catch(() => ({}));
               console.error('Proxy fetch failed', errData);
               const errMsg = errData.message || errData.error || proxyResp.statusText;
+
               if (proxyResp.status === 403) {
                   alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in SARTopo/CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
+              } else if (proxyResp.status === 404) {
+                  alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
               } else {
-                  alert(`Proxy Error: ${errMsg}\n\nMiddleman is required for all SarTopo correspondence. Ensure the web proxy is reachable.`);
+                  alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nMiddleman is reachable, but the request to SARTopo failed. Ensure the map is public.`);
               }
               return;
           }
@@ -9471,11 +9513,11 @@ function buildMapsPage() {
                 return;
             }
             console.error('Proxy unreachable', proxyErr);
-            alert('Web Middleman is not reachable. All SarTopo correspondence must go through the proxy.\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
+            alert('Web Proxy is not reachable. All SarTopo correspondence must go through the proxy.\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
             return;
         }
       } else {
-          alert('No SarTopo Proxy configured. All SarTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., https://sartopo-proxy-production.up.railway.app/fetch-map).');
+          alert('No SarTopo Proxy configured. All SarTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., https://sarwebtheory2-production.up.railway.app/api/proxy).');
           return;
       }
       

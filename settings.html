@@ -112,6 +112,12 @@
           <div class="home-panel full-width">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <h2 style="margin: 0;">SarTopo Proxy Settings</h2>
+              <div id="proxy-status-container"
+                   style="font-size: 0.9rem; display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.05); padding: 5px 12px; border-radius: 20px;">
+                <span id="proxy-status-dot"
+                      style="width: 10px; height: 10px; border-radius: 50%; background: #ccc;"></span>
+                <span id="proxy-status-text">Checking...</span>
+              </div>
               <button class="clear-btn" id="start-walkthrough-btn"
                       style="background: var(--accent); color: white; border: none;">Help Me Setup
               </button>
@@ -119,13 +125,16 @@
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
                 If you are getting CORS errors when fetching shapes, you must use a proxy server.
                 Enter the Web Proxy URL below (e.g.,
-              <code>https://sartopo-proxy-production.up.railway.app/fetch-map</code>).
+              <code>https://sarwebtheory2-production.up.railway.app/api/proxy</code>).
             </p>
             <div class="home-row">
               <input class="pill-input" id="sartopo-proxy-input"
-                     placeholder="e.g., https://sartopo-proxy-production.up.railway.app/fetch-map" style="flex-grow: 1;"
+                     placeholder="e.g., https://sarwebtheory2-production.up.railway.app/api/proxy" style="flex-grow: 1;"
                        type="text">
               <button id="save-proxy-btn" class="clear-btn" type="button">Save Proxy Settings</button>
+              <button class="clear-btn" id="test-proxy-btn" style="margin-left: 10px; border-color: var(--accent); color: var(--accent);"
+                      type="button">Test Connection
+              </button>
             </div>
           </div>
 
