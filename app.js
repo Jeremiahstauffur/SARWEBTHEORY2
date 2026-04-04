@@ -7794,6 +7794,15 @@ function showToastNotification(title, text, action, extraClass = '') {
         <button class="toast-close-btn" title="Dismiss" style="background:none; border:none; color:inherit; cursor:pointer; padding:5px; margin:-5px; opacity:0.6;">✕</button>
     `;
 
+    const dismiss = () => {
+        if (toast.classList.contains('dismissing')) return;
+        toast.classList.add('dismissing');
+        setTimeout(() => {
+            toast.remove();
+            repositionToasts();
+        }, 400);
+    };
+
     const closeBtn = toast.querySelector('.toast-close-btn');
     closeBtn.onclick = (e) => {
         e.stopPropagation();
@@ -7802,24 +7811,17 @@ function showToastNotification(title, text, action, extraClass = '') {
             bundle.dismissedNotifications.push(toastKey);
             saveBundle(bundle);
         }
-        toast.remove();
-        repositionToasts();
+        dismiss();
     };
 
     toast.onclick = () => {
         action();
-        toast.remove();
-        // Reposition remaining toasts
-        repositionToasts();
+        dismiss();
     };
     document.body.appendChild(toast);
     setTimeout(() => {
         if (toast.parentElement) {
-            toast.style.animation = 'notifSlideIn 0.4s reverse forwards';
-            setTimeout(() => {
-                toast.remove();
-                repositionToasts();
-            }, 400);
+            dismiss();
         }
     }, 5000);
 }
