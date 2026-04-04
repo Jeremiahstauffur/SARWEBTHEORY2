@@ -5721,6 +5721,16 @@ function buildSettingsPage() {
   const syncUrlInput = document.getElementById('sync-url-input');
   const saveSyncBtn = document.getElementById('save-sync-url-btn');
   const syncStatusMsg = document.getElementById('sync-status-msg');
+  const proxyInput = document.getElementById('sartopo-proxy-input');
+  const saveProxyBtn = document.getElementById('save-proxy-btn');
+
+  if (proxyInput && saveProxyBtn) {
+    proxyInput.value = getSartopoProxy();
+    saveProxyBtn.onclick = () => {
+      setSartopoProxy(proxyInput.value.trim());
+      status.textContent = 'SarTopo Proxy URL saved.';
+    };
+  }
 
   if (syncUrlInput && saveSyncBtn) {
     const syncBucketInput = document.getElementById('sync-bucket-input');
@@ -9315,19 +9325,42 @@ function buildMapsPage() {
     fetchShapesBtn.textContent = 'Fetching...';
     
     try {
-      // Direct fetch (may fail due to CORS if SarTopo doesn't explicitly allow our origin)
-      const response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        if (response.status === 403 || response.status === 401) {
-          throw new Error(`Login Required or Access Denied (403). Make sure the map is either Public (Linkable) or you have allowed third-party cookies for ${activeMapDomain}.`);
+      let data = null;
+      let usedProxy = false;
+      const proxyUrl = getSartopoProxy();
+
+      if (proxyUrl) {
+        try {
+          const proxyResp = await fetch(`${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`);
+          if (proxyResp.ok) {
+            data = await proxyResp.json();
+            usedProxy = true;
+          } else {
+            const errData = await proxyResp.json().catch(() => ({}));
+            console.warn('Proxy fetch failed, falling back to direct fetch', errData);
+          }
+        } catch (proxyErr) {
+          console.warn('Proxy unreachable, falling back to direct fetch', proxyErr);
         }
-        throw new Error(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+      }
+
+      if (!data) {
+        // Direct fetch (may fail due to CORS if SarTopo doesn't explicitly allow our origin)
+        const response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
+          credentials: 'include'
+        });
+        
+        if (!response.ok) {
+          if (response.status === 403 || response.status === 401 || response.status === 404) {
+             let details = '';
+             if (response.status === 404) details = ' (Map not found or requires login)';
+             throw new Error(`Login Required or Access Denied${details}. This is usually a CORS issue. Please run the middleman.py proxy and configure it in Settings.`);
+          }
+          throw new Error(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+        }
+        data = await response.json();
       }
       
-      const data = await response.json();
       const features = (data.features || []).filter(f => {
         if (!f.geometry) return false;
         const props = f.properties || {};
