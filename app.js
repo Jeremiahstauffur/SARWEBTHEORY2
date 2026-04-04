@@ -4,6 +4,41 @@ const DEFAULT_DYNAMIC_COLS = 3;
 const BUNDLE_STORAGE_KEY = 'pill-table-bundle-v1';
 const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
+const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
+const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
+const SARTOPO_PROXY_STORAGE_KEY = 'sar-sartopo-proxy-v1';
+const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
+const KVDB_BASE_URL = 'https://kvdb.io';
+const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin).replace(/[^a-zA-Z0-9]/g, '').substr(0, 12);
+
+function getSyncBucket() {
+    let bucket = localStorage.getItem(SYNC_BUCKET_STORAGE_KEY);
+    if (!bucket) {
+        // If they had an old sync URL, maybe we can derive a bucket from it? 
+        // But better to just start fresh or let them set it.
+        bucket = DEFAULT_BUCKET;
+        localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+    }
+    return bucket;
+}
+
+function getSartopoProxy() {
+    return localStorage.getItem(SARTOPO_PROXY_STORAGE_KEY) || 'http://localhost:5050/api/proxy';
+}
+
+function setSartopoProxy(url) {
+    if (url) localStorage.setItem(SARTOPO_PROXY_STORAGE_KEY, url);
+    else localStorage.removeItem(SARTOPO_PROXY_STORAGE_KEY);
+}
+
+function getDeviceId() {
+    let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (!id) {
+        id = 'device-' + Math.random().toString(36).substr(2, 9) + '-' + Date.now();
+        localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+    }
+    return id;
+}
 
 const PAGE_DEFS = [
   { key: 'index', title: 'Regions', href: 'index.html' },
@@ -177,6 +212,7 @@ function showTimePrompt(title, onConfirm, onCancel) {
 function setCurrentUser(user) {
   if (user) {
     sessionStorage.setItem('sar-current-user', JSON.stringify(user));
+    notifyActiveUser(user);
   } else {
     sessionStorage.removeItem('sar-current-user');
   }
@@ -206,7 +242,6 @@ function checkAccess() {
 
     if (actualUser && actualUser.visiblePages) {
         // Everyone is allowed access to everything now
-        return;
     }
 }
 
@@ -255,6 +290,7 @@ function defaultBundle() {
     teamLeaveTimes: {},
     teamAssignmentTimes: {},
     parCheckFrequency: 20,
+    dismissedNotifications: [],
     arrivedTeams: [],
     forms: {},
     uploads: [],
@@ -383,6 +419,7 @@ function sanitizeBundle(bundle) {
     : {};
 
   const arrivedTeams = Array.isArray(bundle.arrivedTeams) ? bundle.arrivedTeams : [];
+  const dismissedNotifications = Array.isArray(bundle.dismissedNotifications) ? bundle.dismissedNotifications : [];
 
   const pages = {};
   for (const page of PAGE_DEFS) {
@@ -525,6 +562,7 @@ function sanitizeBundle(bundle) {
     teamLeaveTimes, 
     teamAssignmentTimes, 
     arrivedTeams, 
+    dismissedNotifications,
     parCheckFrequency, 
     showTips, 
     pages, 
@@ -553,6 +591,7 @@ function saveBundle(bundle) {
   const newName = sanitized.fileName;
 
   localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
+  pushBundleToServer(sanitized);
   
   // Also update in the list if it's there
   const files = getSavedFiles();
@@ -560,14 +599,16 @@ function saveBundle(bundle) {
       // Rename case
       files[newName] = files[oldName];
       files[newName].bundle = sanitized;
-      files[newName].lastModified = new Date().toLocaleString();
+      files[newName].lastModified = new Date().toISOString();
       delete files[oldName];
       localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+      pushFileListToServer(files);
   } else if (files[newName]) {
       // Update case
       files[newName].bundle = sanitized;
-      files[newName].lastModified = new Date().toLocaleString();
+      files[newName].lastModified = new Date().toISOString();
       localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+      pushFileListToServer(files);
   }
   updateFileNameDisplay();
 }
@@ -589,9 +630,10 @@ function saveFileToList(fileName, bundle) {
     }
     files[fileName] = {
         bundle: sanitizeBundle(bundle),
-        lastModified: new Date().toLocaleString()
+        lastModified: new Date().toISOString()
     };
     localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+    pushFileListToServer(files);
 }
 
 function deleteFileFromList(fileName) {
@@ -599,6 +641,7 @@ function deleteFileFromList(fileName) {
     logDeletion('File', fileName);
     delete files[fileName];
     localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+    pushFileListToServer(files);
 }
 
 function confirmDeleteRow(rowElement, onConfirm) {
@@ -815,82 +858,6 @@ function focusCell(row, col) {
   focusSelector(`.pill-cell[data-row="${row}"][data-col="${col}"]`);
 }
 
-function buildProfilePage() {
-  const container = document.getElementById('profile-form-container');
-  if (!container) return;
-
-  const bundle = loadBundle();
-  const profile = bundle.profile || {
-    incidentNumber: '',
-    lostPersonName: '',
-    lostPersonAge: '',
-    lostPersonGender: '',
-    lostPersonDescription: '',
-    lostPersonClothing: '',
-    lostPersonPhysical: ''
-  };
-
-  container.innerHTML = `
-    <div class="profile-form" style="max-width: 800px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px;">
-      
-      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
-        <div class="form-group" style="grid-column: span 3;">
-          <h3 style="margin: 0; color: var(--text);">Lost Person Information</h3>
-        </div>
-        
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Incident #</label>
-          <input type="text" id="profile-incident-num" class="pill-input" value="${profile.incidentNumber}" placeholder="e.g. 2024-001">
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Name</label>
-          <input type="text" id="profile-name" class="pill-input" value="${profile.lostPersonName}">
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Age</label>
-          <input type="text" id="profile-age" class="pill-input" value="${profile.lostPersonAge}">
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Gender</label>
-          <input type="text" id="profile-gender" class="pill-input" value="${profile.lostPersonGender}">
-        </div>
-      </div>
-
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Physical Description (Height, Weight, Hair, Eyes)</label>
-          <textarea id="profile-physical" class="pill-input" style="min-height: 80px; resize: vertical;">${profile.lostPersonPhysical || ''}</textarea>
-        </div>
-        <div class="form-group">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Clothing Description</label>
-          <textarea id="profile-clothing" class="pill-input" style="min-height: 80px; resize: vertical;">${profile.lostPersonClothing || ''}</textarea>
-        </div>
-        <div class="form-group" style="grid-column: span 2;">
-          <label style="display: block; margin-bottom: 8px; color: var(--text);">Other Information / Description</label>
-          <textarea id="profile-description" class="pill-input" style="min-height: 100px; resize: vertical;">${profile.lostPersonDescription}</textarea>
-        </div>
-      </div>
-    </div>
-  `;
-
-  // Add event listeners for auto-save
-  const inputs = container.querySelectorAll('input, textarea');
-  inputs.forEach(input => {
-    input.oninput = () => {
-      const bundle = loadBundle();
-      bundle.profile = {
-        incidentNumber: document.getElementById('profile-incident-num').value,
-        lostPersonName: document.getElementById('profile-name').value,
-        lostPersonAge: document.getElementById('profile-age').value,
-        lostPersonGender: document.getElementById('profile-gender').value,
-        lostPersonPhysical: document.getElementById('profile-physical').value,
-        lostPersonClothing: document.getElementById('profile-clothing').value,
-        lostPersonDescription: document.getElementById('profile-description').value
-      };
-      saveBundle(bundle);
-    };
-  });
-}
 
 let highlightedRowIndex = -1;
 
@@ -1830,8 +1797,7 @@ function buildPersonnelTable() {
   const subNavBtns = [btnAll, btnAct, btnTeamRep, btnMemRep];
   const containers = [controls, baseContainer, teamReportsContainer, memberReportsContainer, searchTeamsContainer];
 
-  const user = getCurrentUser();
-  const isSubAllowed = (sub) => {
+    const isSubAllowed = (_sub) => {
       return true;
   };
 
@@ -2041,6 +2007,12 @@ function buildPersonnelAllMembersTable() {
   const sortLabel = document.getElementById('personnel-sort-label');
   const data = loadData();
 
+  // Ensure first row has 'Off Duty' if it's empty
+  if (data.length > 0 && !data[0][0] && !data[0][1]) {
+    data[0][1] = 'Off Duty';
+    saveCurrentPageData(data);
+  }
+
   const filterOnScene = onSceneToggle && onSceneToggle.checked;
   const sortByTeam = sortToggle && sortToggle.checked;
 
@@ -2112,7 +2084,9 @@ function buildPersonnelAllMembersTable() {
 
       if (c === 0) {
         const cell = document.createElement('div');
-        cell.className = 'pill-cell';
+        cell.className = 'mini-pill';
+        cell.style.width = '100%';
+        cell.style.cursor = 'text';
         cell.contentEditable = 'true';
         cell.spellcheck = false;
         cell.textContent = filteredData[r][c] || '';
@@ -2121,13 +2095,29 @@ function buildPersonnelAllMembersTable() {
           if (data[originalRowIndex][c] !== newName) {
             data[originalRowIndex][c] = newName;
             saveCurrentPageData(data);
+            if (!window.pendingEmptyCellFocus) {
+               buildPersonnelTable();
+            }
+          }
+        });
+        cell.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const newName = cell.textContent.trim();
+            if (data[originalRowIndex][c] !== newName) {
+              data[originalRowIndex][c] = newName;
+              saveCurrentPageData(data);
+            }
+            window.pendingEmptyCellFocus = { colLabel: 'Name' };
             buildPersonnelTable();
           }
         });
         cellContainer.appendChild(cell);
       } else if (c === 1) {
         const select = document.createElement('select');
-        select.className = 'pill-cell personnel-select';
+        select.className = 'mini-pill personnel-select';
+        select.style.width = '100%';
+        select.style.cursor = 'pointer';
         const emptyOpt = document.createElement('option');
         emptyOpt.value = ''; emptyOpt.textContent = '-- Select Team --';
         select.appendChild(emptyOpt);
@@ -2145,8 +2135,7 @@ function buildPersonnelAllMembersTable() {
           
           // Auto-switch team lead to new team's lead
           const existingTeamMember = data.find(row => row[1] === newTeam && row[2]);
-          const newLead = existingTeamMember ? existingTeamMember[2] : '';
-          data[originalRowIndex][2] = newLead;
+            data[originalRowIndex][2] = existingTeamMember ? existingTeamMember[2] : '';
           
           saveCurrentPageData(data);
           addActivityLogEntry(newTeam || 'Personnel', `${memberName} moved from team ${oldTeam || 'none'} to ${newTeam || 'none'}`);
@@ -2155,7 +2144,9 @@ function buildPersonnelAllMembersTable() {
         cellContainer.appendChild(select);
       } else if (c === 2) {
         const selectLead = document.createElement('select');
-        selectLead.className = 'pill-cell personnel-select';
+        selectLead.className = 'mini-pill personnel-select';
+        selectLead.style.width = '100%';
+        selectLead.style.cursor = 'pointer';
         const emptyOptLead = document.createElement('option');
         emptyOptLead.value = ''; emptyOptLead.textContent = '-- Select Leader --';
         selectLead.appendChild(emptyOptLead);
@@ -2267,7 +2258,7 @@ function buildPersonnelAllMembersTable() {
     setTimeout(() => {
       const highlightedRow = tableBody.querySelector('.new-row-highlight');
       if (highlightedRow) {
-        const nameCell = highlightedRow.querySelector('.pill-cell[contenteditable="true"]');
+        const nameCell = highlightedRow.querySelector('.mini-pill[contenteditable="true"]');
         if (nameCell) {
           nameCell.focus();
           const range = document.createRange();
@@ -2280,9 +2271,24 @@ function buildPersonnelAllMembersTable() {
     }, 100);
   };
   addRowContainer.appendChild(addRowBtn);
-  const existing = document.querySelector('.add-row-container');
-  if (existing) existing.remove();
+  const existingAllMem = document.querySelector('.add-row-container');
+  if (existingAllMem) existingAllMem.remove();
   tableBody.parentElement.after(addRowContainer);
+
+  if (window.pendingEmptyCellFocus) {
+    const colLabel = window.pendingEmptyCellFocus.colLabel;
+    window.pendingEmptyCellFocus = null;
+    setTimeout(() => {
+      const rows = tableBody.querySelectorAll('tr');
+      for (const row of rows) {
+        const targetCell = row.querySelector(`td[data-label="${colLabel}"] .mini-pill[contenteditable="true"]`);
+        if (targetCell && !targetCell.textContent.trim()) {
+          targetCell.focus();
+          return;
+        }
+      }
+    }, 100);
+  }
 }
 
 function getLatestPSR(region, segment) {
@@ -2549,7 +2555,7 @@ function buildPersonnelActivityTable() {
   const baseTeamsMap = new Map();
   const baseTeamNames = ['Base Support', 'Off Duty', 'Command'];
 
-  data.forEach((row, idx) => {
+    data.forEach((row) => {
     if (row[1] && row[6] === 'true') {
       if (baseTeamNames.includes(row[1])) {
         if (!baseTeamsMap.has(row[1])) baseTeamsMap.set(row[1], []);
@@ -2655,14 +2661,16 @@ function buildPersonnelActivityTable() {
 
     const assignmentText = bundle.currentAssignments[teamName] || 'None';
     const assignPill = document.createElement('div');
-    assignPill.className = 'mini-pill readonly-pill';
+    assignPill.className = 'mini-pill clickable-pill';
     assignPill.textContent = assignmentText;
+    assignPill.onclick = () => showTeamUpdatePopup(teamName);
     assignStatusContainer.appendChild(assignPill);
 
     const statusPill = document.createElement('div');
-    statusPill.className = 'mini-pill readonly-pill';
+    statusPill.className = 'mini-pill clickable-pill';
     const statusText = bundle.teamStatuses[teamName] || '';
     statusPill.textContent = statusText;
+    statusPill.onclick = () => showTeamUpdatePopup(teamName);
     
     if (assignmentText !== 'None' && assignmentText !== 'Base' && assignmentText !== '') {
       const progress = getTaskProgressPercent(statusText);
@@ -3172,8 +3180,8 @@ function showMissingStepsPopup(teamName, targetStatus, onComplete) {
   list.style.paddingRight = '5px';
   
   const stepData = [];
-  
-  missingSteps.forEach((step, i) => {
+
+    missingSteps.forEach((step) => {
     const item = document.createElement('div');
     item.style.display = 'flex';
     item.style.alignItems = 'center';
@@ -4166,7 +4174,7 @@ function printCurrentReport(type) {
 
   let htmlContent = `
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
       <title>${title}</title>
       <style>${style}</style>
@@ -4227,7 +4235,7 @@ function printAllReports(type) {
 
     let htmlContent = `
       <!DOCTYPE html>
-      <html>
+      <html lang="en">
       <head>
         <title>All Reports</title>
         <style>${style}</style>
@@ -4646,8 +4654,6 @@ function buildSearchLogTable() {
             formatted = val.slice(0, 2) + '-' + val.slice(2);
           }
           if (cell.textContent !== formatted) {
-            const selection = window.getSelection();
-            const offset = selection.focusOffset;
             cell.textContent = formatted;
             // Simple caret restoration (approximate)
             try {
@@ -5178,7 +5184,7 @@ function showCalendarPopup() {
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
 
-    const [m, d, y] = selectedChartDate.split('-').map(Number);
+    const [m, , y] = selectedChartDate.split('-').map(Number);
     let viewMonth = m - 1;
     let viewYear = y;
 
@@ -5314,7 +5320,11 @@ function buildSavedFilesTable() {
         tdDate.setAttribute('data-label', 'Last Modified');
         tdDate.style.padding = '12px 15px';
         tdDate.style.color = 'var(--muted)';
-        tdDate.textContent = fileInfo.lastModified;
+        try {
+            tdDate.textContent = new Date(fileInfo.lastModified).toLocaleString();
+        } catch(e) {
+            tdDate.textContent = fileInfo.lastModified;
+        }
         tr.appendChild(tdDate);
 
         // Size
@@ -5516,7 +5526,8 @@ function buildHomePage() {
         try {
           const importedBundle = JSON.parse(event.target.result);
           if (!importedBundle.pages || !importedBundle.fileName) {
-            throw new Error('Invalid search file format. Missing pages or fileName.');
+              alert('Invalid search file format. Missing pages or fileName.');
+              return;
           }
           logCreation('Imported Search File', importedBundle.fileName, importedBundle);
           saveBundle(importedBundle);
@@ -5710,6 +5721,51 @@ function buildSettingsPage() {
       status.textContent = 'Background reset to default.';
     };
   }
+
+  const syncUrlInput = document.getElementById('sync-url-input');
+  const saveSyncBtn = document.getElementById('save-sync-url-btn');
+  const syncStatusMsg = document.getElementById('sync-status-msg');
+  const proxyInput = document.getElementById('sartopo-proxy-input');
+  const saveProxyBtn = document.getElementById('save-proxy-btn');
+
+  if (proxyInput && saveProxyBtn) {
+    proxyInput.value = getSartopoProxy();
+    saveProxyBtn.onclick = () => {
+      setSartopoProxy(proxyInput.value.trim());
+      status.textContent = 'SarTopo Proxy URL saved.';
+    };
+  }
+
+  if (syncUrlInput && saveSyncBtn) {
+    const syncBucketInput = document.getElementById('sync-bucket-input');
+    if (syncBucketInput) syncBucketInput.value = getSyncBucket();
+
+    saveSyncBtn.onclick = async () => {
+      if (syncBucketInput) {
+        const bucket = syncBucketInput.value.trim();
+        if (bucket) {
+           localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+           syncStatusMsg.textContent = 'Sync bucket saved! Testing connection...';
+           
+           try {
+             // Test connection by trying to get the bundle
+             const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+             const resp = await fetch(`${bucketUrl}/bundle`);
+             if (resp.ok) {
+                syncStatusMsg.textContent = 'Sync connection successful! Data found in bucket.';
+             } else if (resp.status === 404) {
+                syncStatusMsg.textContent = 'Connected! This is a new bucket, data will be pushed on next change.';
+             } else {
+                syncStatusMsg.textContent = `Server returned status ${resp.status}. Bucket might be invalid.`;
+             }
+             syncWithServer();
+           } catch (err) {
+             syncStatusMsg.textContent = 'Could not reach sync service (kvdb.io). Check your internet connection.';
+           }
+        }
+      }
+    };
+  }
 }
 
 function buildProfilePage() {
@@ -5761,7 +5817,7 @@ function buildProfilePage() {
 
   const addGroup = (label, key, type = 'text') => {
     const grp = document.createElement('div');
-    grp.className = 'form-group';
+    grp.className = 'form-group ' + (type === 'textarea' ? 'large' : 'small');
     grp.innerHTML = `<label>${label}</label>`;
     
     let input;
@@ -5782,7 +5838,6 @@ function buildProfilePage() {
     };
     
     grp.appendChild(input);
-    if (type === 'textarea') grp.style.gridColumn = 'span 2';
     form.appendChild(grp);
   };
 
@@ -5856,7 +5911,13 @@ function buildFormsPage() {
       const printBtn = document.createElement('button');
       printBtn.className = 'sub-nav-btn active';
       printBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Print Form';
-      printBtn.onclick = () => window.print();
+        printBtn.onclick = () => {
+            if (currentTaskNumber) {
+                printSingleTaskForm(currentTaskNumber);
+            } else {
+                alert("Please select a task first.");
+            }
+        };
       printContainer.appendChild(printBtn);
     }
     buildTaskAssignmentForm();
@@ -5999,7 +6060,6 @@ function buildTaskAssignmentForm() {
 
 function renderTaskForm(container, taskNum, formData) {
   const bundle = loadBundle();
-  const searchLog = bundle.pages.page4 || [];
   const profile = bundle.profile || {};
   const taskTag = '#' + taskNum;
 
@@ -6090,12 +6150,9 @@ function renderTaskForm(container, taskNum, formData) {
   }
 
   // 3. 20 Minute Status (Par Checks)
-  const parCheckLogs = [...bundle.activityLog]
+    formData.parChecksRaw = [...bundle.activityLog]
     .filter(l => (l.tag === taskTag || l.tag.startsWith(taskTag + ' - ')) && (l.action.toLowerCase().includes('par check') || l.action.toLowerCase().includes('check-in')))
     .reverse();
-  
-  // We'll store the log objects themselves to render later
-  formData.parChecksRaw = parCheckLogs;
 
   if (changed) save();
 
@@ -6647,7 +6704,27 @@ const TASK_FORM_PRINT_STYLES = `
 `;
 
 function getTaskFormPrintHTML(num, f) {
-    const members = (f.teamMembers || []).map(m => `${m.name} ${m.leader ? '(L)' : ''}`).join(', ');
+    const members = (f.teamMembers || []).map(m => {
+        const details = [];
+        if (m.leader) details.push('L');
+        if (m.radio) details.push('R');
+        if (m.gps) details.push('G');
+        if (m.medic) details.push('M');
+        const detailStr = details.length > 0 ? ` (${details.join(',')})` : '';
+        return `${m.name}${detailStr}`;
+    }).join(', ');
+    
+    // Team Types string
+    const activeTypes = [];
+    if (f.teamTypes) {
+        Object.entries(f.teamTypes).forEach(([type, active]) => {
+            if (active) {
+                activeTypes.push(type === 'other' ? (f.otherTeamType || 'Other') : type.toUpperCase());
+            }
+        });
+    }
+    const teamTypeStr = activeTypes.length > 0 ? activeTypes.join(', ') : '';
+
     return `
                 <div class="task-form">
                     <div class="form-header">
@@ -6674,6 +6751,10 @@ function getTaskFormPrintHTML(num, f) {
                         <div class="form-row">
                              <div class="form-field"><span class="field-label">Description / Clothing</span><div class="field-value">${f.lostPersonDescription || ''} ${f.lostPersonClothing || ''}</div></div>
                         </div>
+                        <div class="form-row">
+                             <div class="form-field"><span class="field-label">Physical / Medical Information</span><div class="field-value">${f.lostPersonPhysical || ''}</div></div>
+                             <div class="form-field" style="flex:0.4;"><span class="field-label">On Scene</span><div class="field-value">${[f.onSceneFamily ? 'Family' : '', f.onSceneMedia ? 'Media' : ''].filter(Boolean).join(', ') || 'None'}</div></div>
+                        </div>
                     </div>
 
                     <div class="form-section">
@@ -6681,9 +6762,15 @@ function getTaskFormPrintHTML(num, f) {
                         <div class="form-row">
                              <div class="form-field"><span class="field-label">Region/Segment</span><div class="field-value">${f.segment || ''}</div></div>
                              <div class="form-field"><span class="field-label">Team ID</span><div class="field-value">${f.teamName || ''}</div></div>
+                             <div class="form-field" style="flex:0.6;"><span class="field-label">Team Type</span><div class="field-value">${teamTypeStr}</div></div>
                         </div>
                         <div class="form-row">
                              <div class="form-field"><span class="field-label">Task Objective</span><div class="field-value">${f.instructions || ''}</div></div>
+                        </div>
+                        <div class="form-row">
+                             <div class="form-field"><span class="field-label">Briefed By</span><div class="field-value">${f.briefedBy || ''}</div></div>
+                             <div class="form-field" style="flex:0.3;"><span class="field-label">Radio #</span><div class="field-value">${f.radioNumber || ''}</div></div>
+                             <div class="form-field" style="flex:0.3;"><span class="field-label">GPS #</span><div class="field-value">${f.gpsNumber || ''}</div></div>
                         </div>
                     </div>
                     
@@ -6711,6 +6798,10 @@ function getTaskFormPrintHTML(num, f) {
                             }
                         </div>
                     </div>
+
+                    <div style="font-size: 8pt; color: #555; margin-top: 20px; border-top: 1px solid #eee; padding-top: 5px;">
+                        * Personnel Markers: (L) Team Lead, (R) Radio, (G) GPS, (M) Medic
+                    </div>
                 </div>
     `;
 }
@@ -6731,7 +6822,7 @@ function printSingleTaskForm(taskNum) {
 
     printWindow.document.write(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>Task Assignment Form - Task #${taskNum}</title>
     <style>${TASK_FORM_PRINT_STYLES}</style>
@@ -6778,7 +6869,7 @@ function downloadAllForms() {
 
   printWindow.document.write(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>All Task Assignment Forms</title>
     <style>${TASK_FORM_PRINT_STYLES}</style>
@@ -6812,6 +6903,12 @@ function printSearchFile() {
     const psrcData = metrics.map(m => m.totalPSRc);
     const posData = metrics.map(m => m.totalPOS);
 
+    const forms = bundle.forms || {};
+    const taskFormsHTML = Object.keys(forms)
+        .sort((a, b) => parseInt(a) - parseInt(b))
+        .map(num => `<div class="print-section">${getTaskFormPrintHTML(num, forms[num])}</div>`)
+        .join('');
+
     const printWindow = window.open('', '_blank');
     if (!printWindow) {
         alert("Please allow popups to view the printout.");
@@ -6820,7 +6917,7 @@ function printSearchFile() {
 
     printWindow.document.write(`
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <title>Search File Printout - ${fileName}</title>
     <style>
@@ -6909,7 +7006,9 @@ function printSearchFile() {
         </div>
 
         <!-- Task Forms -->
-        <div id="forms-body"></div>
+        <div id="forms-body">
+            ${taskFormsHTML}
+        </div>
     </div>
 
     <script>
@@ -6938,14 +7037,14 @@ function printSearchFile() {
             const userName = tagPart.includes(' - ') ? tagPart.split(' - ')[1] : '';
             const div = document.createElement('div');
             div.className = 'activity-log-entry';
-            div.innerHTML = \`<span class="activity-log-time">[\${entry.date} \${entry.time} \${displayTag}\${userName ? ' (' + userName + ')' : ''}]</span> Team \${entry.team} (\${entry.members}): \${entry.action}\`;
+            div.innerHTML = '<span class="activity-log-time">[' + entry.date + ' ' + entry.time + ' ' + displayTag + (userName ? ' (' + userName + ')' : '') + ']</span> Team ' + entry.team + ' (' + (entry.members || '') + '): ' + entry.action;
             alBody.appendChild(div);
         });
 
         // Charts
         function formatHourOffset(offset) {
             const hrs = Math.floor(offset);
-            return \`\${hrs.toString().padStart(2, '0')}\`;
+            return hrs.toString().padStart(2, '0');
         }
 
         function drawLineChart(containerId, data, color, isPOS) {
@@ -6960,7 +7059,7 @@ function printSearchFile() {
             const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
             svg.setAttribute("width", "100%");
             svg.setAttribute("height", "100%");
-            svg.setAttribute("viewBox", \`0 0 \${width} \${height}\`);
+            svg.setAttribute("viewBox", "0 0 " + width + " " + height);
             
             // Y-axis ticks
             for (let i = 0; i <= 4; i++) {
@@ -7003,12 +7102,12 @@ function printSearchFile() {
                     y: height - padding.bottom - (val / max) * chartHeight
                 }));
                 const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-                let d = \`M \${points[0].x} \${points[0].y}\`;
+                let d = 'M ' + points[0].x + ' ' + points[0].y;
                 for (let i = 0; i < points.length - 1; i++) {
                     const curr = points[i]; const next = points[i + 1];
                     const cp1x = curr.x + (next.x - curr.x) / 3;
                     const cp2x = curr.x + 2 * (next.x - curr.x) / 3;
-                    d += \` C \${cp1x} \${curr.y}, \${cp2x} \${next.y}, \${next.x} \${next.y}\`;
+                    d += ' C ' + cp1x + ' ' + curr.y + ', ' + cp2x + ' ' + next.y + ', ' + next.x + ' ' + next.y;
                 }
                 path.setAttribute("d", d); path.setAttribute("fill", "none");
                 path.setAttribute("stroke", color); path.setAttribute("stroke-width", "2");
@@ -7019,86 +7118,8 @@ function printSearchFile() {
         drawLineChart('psrc-chart', psrcData, '#007bff', false);
         drawLineChart('pos-chart', posData, '#fd7e14', true);
 
-        // Render Task Forms
-        const formsBody = document.getElementById('forms-body');
-        const forms = bundle.forms || {};
-        Object.keys(forms).sort((a,b) => parseInt(a)-parseInt(b)).forEach(num => {
-            const f = forms[num];
-            const section = document.createElement('div');
-            section.className = 'print-section';
-            
-            const members = (f.teamMembers || []).map(m => \`\${m.name} \${m.leader ? '(L)' : ''}\`).join(', ');
-
-            section.innerHTML = \`
-                <div class="task-form">
-                    <div class="form-header">
-                        <span style="font-weight: bold; font-size: 16pt;">Task Assignment Form</span>
-                        <span style="font-weight: bold; font-size: 16pt;">Task # \${num}</span>
-                    </div>
-                    
-                    <div class="form-section">
-                        <div class="form-section-title">1. INCIDENT OVERVIEW</div>
-                        <div class="form-row">
-                            <div class="form-field"><span class="field-label">Incident Name</span><div class="field-value">\${f.incidentNumber || ''}</div></div>
-                            <div class="form-field" style="flex:0.3;"><span class="field-label">Op Period</span><div class="field-value">\${f.opPeriod || ''}</div></div>
-                            <div class="form-field" style="flex:0.5;"><span class="field-label">Date/Time</span><div class="field-value">\${f.dateTime || ''}</div></div>
-                        </div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">2. SUBJECT INFORMATION</div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Subject Name</span><div class="field-value">\${f.lostPersonName || ''}</div></div>
-                             <div class="form-field" style="flex:0.2;"><span class="field-label">Age</span><div class="field-value">\${f.lostPersonAge || ''}</div></div>
-                             <div class="form-field" style="flex:0.2;"><span class="field-label">Gender</span><div class="field-value">\${f.lostPersonGender || ''}</div></div>
-                        </div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Description / Clothing</span><div class="field-value">\${f.lostPersonDescription || ''} \${f.lostPersonClothing || ''}</div></div>
-                        </div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">3. ASSIGNMENT DETAILS</div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Region/Segment</span><div class="field-value">\${f.segment || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Team ID</span><div class="field-value">\${f.teamName || ''}</div></div>
-                        </div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Task Objective</span><div class="field-value">\${f.instructions || ''}</div></div>
-                        </div>
-                    </div>
-                    
-                    <div class="form-section">
-                        <div class="form-section-title">4. PERSONNEL</div>
-                        <div class="form-field"><span class="field-label">Team Members</span><div class="field-value">\${members}</div></div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">5. TIMESTAMPS</div>
-                        <div class="form-row">
-                             <div class="form-field"><span class="field-label">Leave Base</span><div class="field-value">\${f.leaveBase || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Begin Search</span><div class="field-value">\${f.beginSearch || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Finish Search</span><div class="field-value">\${f.completeSearch || ''}</div></div>
-                             <div class="form-field"><span class="field-label">Return Base</span><div class="field-value">\${f.returnBase || ''}</div></div>
-                        </div>
-                    </div>
-
-                    <div class="form-section">
-                        <div class="form-section-title">6. PAR CHECKS (20 MINUTE STATUS)</div>
-                        <div id="par-checks-\${num}">
-                            \${(f.parChecksRaw || []).length > 0 ? 
-                                f.parChecksRaw.map(l => '<div class="par-check-item"><div class="par-check-time">' + l.time + '</div><div class="par-check-action">' + l.action + '</div></div>').join('') : 
-                                '<div style="font-style: italic; color: #888; padding: 5px;">No par checks recorded for this task.</div>'
-                            }
-                        </div>
-                    </div>
-                </div>
-            \`;
-            formsBody.appendChild(section);
-        });
-
         // Auto-print
-        setTimeout(() => {
+        setTimeout(function() {
             window.print();
         }, 1000);
     </script>
@@ -7492,11 +7513,6 @@ function checkParChecksAndNotify(skipTableRefresh = false) {
 
     if (startTime > 0 && (now - startTime) >= freqMs) {
       totalDue++;
-      const lastCheckTime = lastPar 
-        ? new Date(lastPar.lastTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : (new Date(startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-      
-      const lastNote = lastPar?.lastNote || 'No previous par check note.';
       
       const notifyKey = teamName + '_' + (lastPar?.lastTime || startTime);
       if (!window._notifiedParChecks[notifyKey]) {
@@ -7630,13 +7646,29 @@ function showToastNotification(title, text, action, extraClass = '') {
     });
     toast.style.top = offset + 'px';
 
+    const toastKey = title + text;
+
     toast.innerHTML = `
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-        <div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent); flex-shrink:0;"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <div style="flex-grow:1; margin-right:10px;">
             <div style="font-weight:700; font-size:0.9rem;">${title}</div>
             <div style="font-size:0.8rem; opacity:0.8;">${text}</div>
         </div>
+        <button class="toast-close-btn" title="Dismiss" style="background:none; border:none; color:inherit; cursor:pointer; padding:5px; margin:-5px; opacity:0.6;">✕</button>
     `;
+
+    const closeBtn = toast.querySelector('.toast-close-btn');
+    closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        const bundle = loadBundle();
+        if (!bundle.dismissedNotifications.includes(toastKey)) {
+            bundle.dismissedNotifications.push(toastKey);
+            saveBundle(bundle);
+        }
+        toast.remove();
+        repositionToasts();
+    };
+
     toast.onclick = () => {
         action();
         toast.remove();
@@ -7699,9 +7731,9 @@ function updateNotifications() {
     const item = document.createElement('div');
     item.className = 'notification-item ' + extraClass;
     item.innerHTML = `
-      <div style="display:flex; gap:10px; align-items:flex-start;">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
-        <div>
+      <div style="display:flex; gap:10px; align-items:flex-start; width:100%;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path></svg>
+        <div style="flex-grow:1;">
           <div class="notification-item-title">${title}</div>
           <div class="notification-item-text">${text}</div>
         </div>
@@ -7714,7 +7746,7 @@ function updateNotifications() {
     list.appendChild(item);
 
     const toastKey = title + text;
-    if (!window._shownToasts.has(toastKey)) {
+    if (!window._shownToasts.has(toastKey) && !bundle.dismissedNotifications.includes(toastKey)) {
         window._shownToasts.add(toastKey);
         showToastNotification(title, text, action, extraClass);
     }
@@ -8259,7 +8291,6 @@ function showImportSegmentsPopup() {
 
     const areaKeys = ['acres', 'area', 'size', 'sqmi', 'sq_mi', 'shape_area', 'st_area', 'hectares', 'ha', 'gis_acres', 'acres_total', 'sqft', 'sq_ft', 'sqkm', 'sq_km', 'total_acres'];
     const lengthKeys = ['length', 'len', 'leng', 'shape_leng', 'distance', 'mi', 'miles', 'shape_length', 'st_length', 'dist', 'width', 'height', 'ft', 'feet', 'km', 'meters', 'm', 'shape_len'];
-    const nameKeys = ['name', 'segment', 'label', 'id', 'title', 'id_number', 'unit_id', 'objectid', 'fid'];
 
     files.forEach(file => {
       let jsonText = '';
@@ -8810,37 +8841,37 @@ function buildUserAccountPage() {
     }
 
     container.innerHTML = `
-        <div class="profile-form" style="display: flex; flex-direction: column; gap: 20px; max-width: 600px; margin: 0 auto; background: rgba(0,0,0,0.2); padding: 30px; border-radius: 32px; border: 1px solid rgba(255,255,255,0.1);">
-            <div class="form-group">
+        <div class="profile-form" style="max-width: 800px; margin: 0 auto; background: rgba(0,0,0,0.2); padding: 30px; border-radius: 32px; border: 1px solid rgba(255,255,255,0.1);">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">First Name</label>
                 <input type="text" id="user-first-name" class="pill-input" value="${userToEdit.firstName || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Last Name</label>
                 <input type="text" id="user-last-name" class="pill-input" value="${userToEdit.lastName || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">User PIN</label>
                 <input type="text" id="user-pin" class="pill-input" value="${userToEdit.pin || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Handle</label>
                 <input type="text" id="user-handle" class="pill-input" value="${userToEdit.handle || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
-            <div class="form-group">
+            <div class="form-group large">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Theme Preference</label>
                 <div style="display: flex; gap: 10px;">
                     <button id="theme-dark-btn" class="mini-pill ${userToEdit.theme !== 'light' ? 'active' : ''}" style="flex: 1;">Dark Mode</button>
                     <button id="theme-light-btn" class="mini-pill ${userToEdit.theme === 'light' ? 'active' : ''}" style="flex: 1;">Grey Mode</button>
                 </div>
             </div>
-            <div class="form-group">
+            <div class="form-group large">
                 <label style="display: block; margin-bottom: 12px; color: var(--text); font-weight: bold;">Highlight Color</label>
                 <div id="color-selection" style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: center;">
                     <!-- Color buttons will be here -->
                 </div>
             </div>
-            <div class="tool-actions" style="margin-top: 20px; justify-content: center;">
+            <div class="tool-actions" style="margin-top: 20px; justify-content: center; grid-column: span 6;">
                 <button id="save-user-btn" class="update-pill" style="padding: 12px 40px; font-size: 1rem;">Update Account</button>
                 <button id="switch-user-btn" class="mini-pill" style="padding: 12px 20px; font-size: 1rem; margin-left: 10px; background: rgba(235, 87, 87, 0.1); border-color: rgba(235, 87, 87, 0.4);">Switch User</button>
             </div>
@@ -9252,35 +9283,48 @@ function buildMapsPage() {
     }
   };
 
-  fetchShapesBtn.onclick = async () => {
+    fetchShapesBtn.onclick = async () => {
     if (!activeMapId) return;
     fetchShapesBtn.disabled = true;
     fetchShapesBtn.textContent = 'Fetching...';
     
     try {
-      // First, try fetching via the local middleman proxy to avoid CORS and login issues
-      let response;
-      try {
-        response = await fetch(`http://localhost:5050/api/proxy?mapId=${activeMapId}&domain=${activeMapDomain}`);
-        if (!response.ok) {
-          throw new Error(`Proxy error: ${response.status}`);
+      let data = null;
+      const proxyUrl = getSartopoProxy();
+
+      if (proxyUrl) {
+        try {
+          const proxyResp = await fetch(`${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`);
+          if (proxyResp.ok) {
+            data = await proxyResp.json();
+          } else {
+            const errData = await proxyResp.json().catch(() => ({}));
+            console.warn('Proxy fetch failed, falling back to direct fetch', errData);
+          }
+        } catch (proxyErr) {
+          console.warn('Proxy unreachable, falling back to direct fetch', proxyErr);
         }
-      } catch (proxyErr) {
-        console.log('Proxy fetch failed, falling back to direct fetch. Run middleman.py to avoid CORS issues.');
-        // Fallback: direct fetch (may still fail due to CORS if SarTopo doesn't explicitly allow our origin)
-        response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
+      }
+
+      if (!data) {
+        // Direct fetch (may fail due to CORS if SarTopo doesn't explicitly allow our origin)
+        const response = await fetch(`https://${activeMapDomain}/api/v1/map/${activeMapId}/features`, {
           credentials: 'include'
         });
-      }
-      
-      if (!response.ok) {
-        if (response.status === 403 || response.status === 401) {
-          throw new Error(`Login Required or Access Denied (403). Make sure the map is either Public (Linkable) or you have allowed third-party cookies for ${activeMapDomain}.`);
+        
+        if (!response.ok) {
+          if (response.status === 403 || response.status === 401 || response.status === 404) {
+             let details = '';
+             if (response.status === 404) details = ' (Map not found or requires login)';
+              alert(`Login Required or Access Denied${details}. This is usually a CORS issue. Please run the middleman.py proxy and configure it in Settings.`);
+              return;
+          }
+            alert(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+            return;
         }
-        throw new Error(`Failed to fetch from ${activeMapDomain} (Status: ${response.status})`);
+        data = await response.json();
       }
       
-      const data = await response.json();
       const features = (data.features || []).filter(f => {
         if (!f.geometry) return false;
         const props = f.properties || {};
@@ -9306,3 +9350,171 @@ function buildMapsPage() {
 
   renderMaps(true);
 }
+
+let isSyncing = false;
+
+async function syncWithServer() {
+    if (isSyncing) return;
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    
+    isSyncing = true;
+    try {
+        const currentUser = getCurrentUser();
+        const deviceId = getDeviceId();
+        
+        // 1. Check active user status
+        if (currentUser && currentUser.pin) {
+            const resp = await fetch(`${bucketUrl}/user-${currentUser.pin}`);
+            if (resp.ok) {
+                const remoteDeviceId = await resp.text();
+                if (remoteDeviceId && remoteDeviceId !== deviceId) {
+                    // Different device is active!
+                    alert("This user has been selected on another device. Switching user...");
+                    sessionStorage.removeItem('sar-current-user');
+                    window.location.href = 'home.html';
+                    return;
+                }
+            }
+        }
+        
+        // 2. Sync active bundle
+        const resp = await fetch(`${bucketUrl}/bundle`);
+        if (resp.ok) {
+            const serverBundle = await resp.json();
+            
+            if (serverBundle) {
+                const localBundle = loadBundle();
+                // Simple check: if server bundle is different, update local
+                if (JSON.stringify(serverBundle) !== JSON.stringify(localBundle)) {
+                    localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                    
+                    // Update file list if needed
+                    const files = getSavedFiles();
+                    if (serverBundle.fileName) {
+                        files[serverBundle.fileName] = {
+                            bundle: serverBundle,
+                            lastModified: new Date().toISOString()
+                        };
+                        localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+                    }
+                    
+                    // Refresh UI if on a page that shows data
+                    refreshSyncUI();
+                }
+            }
+        }
+
+        // 3. Sync entire file list
+        const listResp = await fetch(`${bucketUrl}/all-files`);
+        if (listResp.ok) {
+            const serverFiles = await listResp.json();
+            const localFiles = getSavedFiles();
+            let localChanged = false;
+            let serverNeedsUpdate = false;
+
+            // 1. Update local from server
+            for (const [name, sInfo] of Object.entries(serverFiles)) {
+                const lInfo = localFiles[name];
+                if (!lInfo || (new Date(sInfo.lastModified) > new Date(lInfo.lastModified))) {
+                    localFiles[name] = sInfo;
+                    localChanged = true;
+                } else if (new Date(sInfo.lastModified) < new Date(lInfo.lastModified)) {
+                    serverNeedsUpdate = true;
+                }
+            }
+
+            // 2. Check for local-only files
+            for (const name of Object.keys(localFiles)) {
+                if (!serverFiles[name]) {
+                    serverNeedsUpdate = true;
+                }
+            }
+
+            if (localChanged) {
+                localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(localFiles));
+                refreshSyncUI();
+            }
+            if (serverNeedsUpdate) {
+                pushFileListToServer(localFiles);
+            }
+        } else if (listResp.status === 404) {
+            const localFiles = getSavedFiles();
+            if (Object.keys(localFiles).length > 0) {
+                pushFileListToServer(localFiles);
+            }
+        }
+    } catch (err) {
+        console.error("Sync failed:", err);
+    } finally {
+        isSyncing = false;
+    }
+}
+
+function refreshSyncUI() {
+    if (typeof recalculateEverything === 'function') recalculateEverything();
+    
+    const pk = pageKey();
+    if (pk === 'index') {
+        if (typeof buildRegionsTable === 'function') buildRegionsTable();
+    } else if (pk === 'page2') {
+        if (typeof buildSegmentsTable === 'function') buildSegmentsTable();
+    } else if (pk === 'page3') {
+        if (typeof buildPersonnelTable === 'function') buildPersonnelTable();
+    } else if (pk === 'page4') {
+        if (typeof buildSearchLogTable === 'function') buildSearchLogTable();
+    } else if (pk === 'home') {
+        if (typeof buildHomePage === 'function') buildHomePage();
+        if (typeof buildSavedFilesTable === 'function') buildSavedFilesTable();
+    }
+}
+
+async function pushBundleToServer(bundle) {
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    
+    try {
+        await fetch(`${bucketUrl}/bundle`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bundle)
+        });
+    } catch (err) {
+        console.error("Push to sync service failed:", err);
+    }
+}
+
+async function pushFileListToServer(files) {
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    
+    try {
+        await fetch(`${bucketUrl}/all-files`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(files)
+        });
+    } catch (err) {
+        console.error("Push file list failed:", err);
+    }
+}
+
+async function notifyActiveUser(user) {
+    const bucket = getSyncBucket();
+    const bucketUrl = `${KVDB_BASE_URL}/${bucket}`;
+    if (!user || !user.pin) return;
+    
+    try {
+        await fetch(`${bucketUrl}/user-${user.pin}`, {
+            method: 'PUT',
+            body: getDeviceId()
+        });
+    } catch (err) {
+        console.error("Notify active user failed:", err);
+    }
+}
+
+// Start sync loop
+setInterval(syncWithServer, 5000);
+// Initial sync
+setTimeout(syncWithServer, 1000);

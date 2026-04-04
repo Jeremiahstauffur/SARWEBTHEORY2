@@ -108,6 +108,33 @@
               <span id="par-freq-label" style="margin-left: 10px;">minutes</span>
             </div>
           </div>
+
+          <div class="home-panel full-width">
+            <h2>SarTopo Proxy Settings</h2>
+            <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
+              If you are getting CORS errors when fetching shapes, you must run the <code>middleman.py</code> proxy server. 
+              Enter the Proxy URL below (e.g., <code>http://localhost:5050/api/proxy</code>).
+            </p>
+            <div class="home-row">
+              <input type="text" id="sartopo-proxy-input" class="pill-input" style="flex-grow: 1;" placeholder="e.g., http://localhost:5050/api/proxy">
+              <button id="save-proxy-btn" class="clear-btn" type="button">Save Proxy Settings</button>
+            </div>
+          </div>
+
+          <div class="home-panel full-width">
+            <h2>Data Synchronization</h2>
+            <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
+              Enter your unique Sync Bucket ID to synchronize data across devices. 
+              Keep this ID private as anyone with it can access your data. 
+              Phones and computers must use the <b>same</b> Bucket ID to talk to each other.
+            </p>
+            <div class="home-row">
+              <input type="text" id="sync-bucket-input" class="pill-input" style="flex-grow: 1;" placeholder="e.g., my-private-sar-sync-123">
+              <input type="hidden" id="sync-url-input">
+              <button id="save-sync-url-btn" class="clear-btn" type="button">Save Sync Settings</button>
+            </div>
+            <div id="sync-status-msg" style="margin-top: 10px; font-size: 0.85rem; color: var(--accent);"></div>
+          </div>
         </div>
 
         <div class="status" id="settings-status">Ready.</div>
