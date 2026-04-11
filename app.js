@@ -9478,15 +9478,31 @@ async function caltopo_api_call(method, endpoint, payload = null) {
       body: JSON.stringify(requestBody)
     });
     
-    if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.message || err.error || 'API Call failed');
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.error || `Server Error ${response.status}`);
+      }
+      return data;
+    } else {
+      const text = await response.text();
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error(`Endpoint not found (404). Your proxy server might be out of date. Please ensure you have the latest sync-server.js running.`);
+        }
+        throw new Error(`Server Error ${response.status}: ${text.substring(0, 100)}`);
+      }
+      // If it's 200 OK but not JSON, still a problem for this API
+      throw new Error(`Expected JSON response but got ${contentType || 'text'}.`);
     }
-    
-    return await response.json();
   } catch (error) {
     console.error('CalTopo API Call Error:', error);
-    alert('CalTopo API Call Error: ' + error.message);
+    if (error.message.includes('Unexpected token')) {
+       alert('CalTopo API Call Error: The server returned an invalid response (not JSON). This usually happens when the proxy URL is incorrect or the server is down.');
+    } else {
+       alert('CalTopo API Call Error: ' + error.message);
+    }
     return null;
   }
 }
