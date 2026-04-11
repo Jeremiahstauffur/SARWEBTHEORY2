@@ -1,7 +1,7 @@
 {
   "name": "sartopo-proxy",
-  "version": "1.0.0",
-  "description": "A cloud proxy for SARTopo data",
+  "version": "1.2.0",
+  "description": "A cloud proxy for signed CalTopo map access",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

@@ -1,38 +1,165 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const cors = require('cors');
+
 const app = express();
+const PORT = process.env.PORT || 3000;
+const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
+const CALTOPO_TIMEOUT_MS = 15000;
+const CALTOPO_SIGNING_WINDOW_MS = 2 * 60 * 1000;
 
-app.use(cors()); // This tells the browser: "It's okay to let my website talk to me!"
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// 1. Health endpoint (used by the website to check if the proxy is alive)
-app.get('/api/health', (req, res) => {
-    res.json({status: 'ok', message: 'Proxy is live and well'});
-});
+const ensureHttpsDomain = (domain) => {
+    const normalized = (domain || CALTOPO_DEFAULT_DOMAIN).trim().toLowerCase();
+    if (!normalized || normalized.includes('/') || normalized.includes('\\') || normalized.includes('?')) {
+        return CALTOPO_DEFAULT_DOMAIN;
+    }
+    return normalized;
+};
 
-// 2. Fetch Map endpoint (now handles mapId and domain)
-app.get('/fetch-map', async (req, res) => {
+const resolveCalTopoCredentials = () => {
+    const credentialId = (process.env.CALTOPO_CREDENTIAL_ID || process.env.SARTOPO_CREDENTIAL_ID || '').trim();
+    const credentialSecret = (process.env.CALTOPO_CREDENTIAL_SECRET || process.env.CALTOPO_SECRET || process.env.SARTOPO_SECRET || '').trim();
+
+    return {
+        credentialId,
+        credentialSecret,
+        configured: Boolean(credentialId && credentialSecret)
+    };
+};
+
+const signCalTopoRequest = (method, endpoint, payloadString, credentialSecret) => {
+    const expires = Date.now() + CALTOPO_SIGNING_WINDOW_MS;
+    const message = `${method.toUpperCase()} ${endpoint}\n${expires}\n${payloadString || ''}`;
+    const secret = Buffer.from(credentialSecret, 'base64');
+    const signature = crypto.createHmac('sha256', secret).update(message).digest('base64');
+
+    return {expires, signature};
+};
+
+const normalizeCalTopoState = (payload) => {
+    if (!payload || typeof payload !== 'object') {
+        return {
+            type: 'FeatureCollection',
+            features: []
+        };
+    }
+
+    if (payload.type === 'FeatureCollection' && Array.isArray(payload.features)) {
+        return payload;
+    }
+
+    if (payload.state && payload.state.type === 'FeatureCollection' && Array.isArray(payload.state.features)) {
+        return payload.state;
+    }
+
+    if (Array.isArray(payload.features)) {
+        return {
+            type: 'FeatureCollection',
+            features: payload.features,
+            ids: payload.ids,
+            timestamp: payload.timestamp
+        };
+    }
+
+    return {
+        type: 'FeatureCollection',
+        features: []
+    };
+};
+
+const fetchMapHandler = async (req, res) => {
     const {mapId, domain} = req.query;
 
     if (!mapId) {
-        return res.status(400).send("Missing mapId parameter. Use /fetch-map?mapId=YOUR_MAP_ID&domain=caltopo.com");
+        return res.status(400).json({
+            error: 'Missing Map ID',
+            message: 'Use /api/proxy?mapId=YOUR_MAP_ID&domain=caltopo.com'
+        });
     }
 
-    const targetDomain = domain || 'caltopo.com';
-    const targetUrl = `https://${targetDomain}/api/v1/map/${mapId}/features`;
+    const trimmedMapId = String(mapId).trim();
+    const targetDomain = ensureHttpsDomain(domain);
+    const endpoint = `/api/v1/map/${encodeURIComponent(trimmedMapId)}/since/0`;
+    const targetUrl = `https://${targetDomain}${endpoint}`;
+    const creds = resolveCalTopoCredentials();
+
+    if (!creds.configured) {
+        return res.status(500).json({
+            error: 'Proxy Not Configured',
+            message: 'This proxy must sign CalTopo API requests server-side. Set CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET in the server environment.',
+            targetUrl,
+            mapId: trimmedMapId,
+            signingRequired: true
+        });
+    }
+
+    const {expires, signature} = signCalTopoRequest('GET', endpoint, '', creds.credentialSecret);
 
     try {
-        console.log(`Fetching ${targetUrl} on behalf of the website...`);
-        // We are asking SARTopo for the data on BEHALF of your website
-        const response = await axios.get(targetUrl);
-        res.json(response.data);
+        console.log(`[PROXY] Fetching shapes from ${targetUrl}`);
+        const response = await axios.get(targetUrl, {
+            timeout: CALTOPO_TIMEOUT_MS,
+            params: {
+                id: creds.credentialId,
+                expires,
+                signature
+            }
+        });
+
+        const normalizedState = normalizeCalTopoState(response.data);
+
+        res.json({
+            type: normalizedState.type,
+            features: normalizedState.features || [],
+            state: normalizedState,
+            source: 'caltopo-signed-proxy',
+            mapId: trimmedMapId,
+            domain: targetDomain
+        });
     } catch (error) {
-        console.error(`Error fetching from ${targetUrl}:`, error.message);
-        res.status(500).send("The waiter couldn't get the food: " + error.message);
+        console.error(`[PROXY] Error fetching from ${targetUrl}:`, error.message);
+
+        const responseStatus = error.response ? error.response.status : 500;
+        const responseBody = error.response && error.response.data ? error.response.data : null;
+        const detailMessage = typeof responseBody === 'string'
+            ? responseBody.slice(0, 400)
+            : responseBody && responseBody.message
+                ? responseBody.message
+                : error.message;
+
+        res.status(responseStatus).json({
+            error: error.response ? `CalTopo Error ${responseStatus}` : 'Proxy Connection Error',
+            message: detailMessage,
+            targetUrl,
+            mapId: trimmedMapId,
+            signingRequired: true,
+            caltopoResponse: responseBody
+        });
     }
+};
+
+app.get('/api/health', (req, res) => {
+    const creds = resolveCalTopoCredentials();
+    res.json({
+        status: 'ok',
+        version: '1.2.0',
+        service: 'SARTopo Proxy',
+        message: 'Proxy is live and ready for signed CalTopo requests',
+        caltopoSigningConfigured: creds.configured,
+        timestamp: new Date().toISOString()
+    });
 });
 
-const PORT = process.env.PORT || 3000; // Railway tells your app which port to use
+app.get('/api/proxy', fetchMapHandler);
+app.get('/fetch-map', fetchMapHandler);
+
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Proxy is live on port ${PORT}`);
+    console.log(`Proxy v1.2.0 is live on port ${PORT}`);
 });
