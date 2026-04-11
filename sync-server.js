@@ -505,35 +505,53 @@ const genericCallHandler = async (req, res) => {
 
     const { expires, signature } = signCalTopoRequest(method, endpoint, payloadString, creds.credentialSecret);
 
+    const isPostLikeWithPayload = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && payloadString.length > 0;
+
     try {
         console.log(`[PROXY] Generic ${method.toUpperCase()} to ${targetUrl}`);
         if (payloadString) console.log(`[PROXY] Payload size: ${payloadString.length} chars`);
         
-        const axiosConfig = {
-            timeout: CALTOPO_TIMEOUT_MS,
-            params: {
-                id: creds.credentialId,
-                expires,
-                signature
-            },
-            headers: {}
-        };
-
-        if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
-            axiosConfig.headers['Content-Type'] = 'application/json';
-        }
-
         let response;
         const upperMethod = method.toUpperCase();
-        if (upperMethod === 'POST') {
-            response = await axios.post(targetUrl, payloadString, axiosConfig);
-        } else if (upperMethod === 'PUT') {
-            response = await axios.put(targetUrl, payloadString, axiosConfig);
-        } else if (upperMethod === 'DELETE') {
-            // DELETE can have a body in some APIs, but let's stick to the signature
-            response = await axios.delete(targetUrl, { ...axiosConfig, data: payloadString });
+
+        if (isPostLikeWithPayload) {
+            // CalTopo expects form-encoded for POST with payload
+            // Parameters (id, expires, signature) and the payload (json) are all in the form body
+            const form = new URLSearchParams();
+            form.append('id', creds.credentialId);
+            form.append('expires', expires.toString());
+            form.append('signature', signature);
+            form.append('json', payloadString);
+
+            response = await axios({
+                method: upperMethod,
+                url: targetUrl,
+                data: form.toString(),
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                timeout: CALTOPO_TIMEOUT_MS
+            });
         } else {
-            response = await axios.get(targetUrl, axiosConfig);
+            // Standard GET, DELETE, or POST without payload (params in URL)
+            const axiosConfig = {
+                timeout: CALTOPO_TIMEOUT_MS,
+                params: {
+                    id: creds.credentialId,
+                    expires,
+                    signature
+                }
+            };
+
+            if (upperMethod === 'POST') {
+                response = await axios.post(targetUrl, payloadString, axiosConfig);
+            } else if (upperMethod === 'PUT') {
+                response = await axios.put(targetUrl, payloadString, axiosConfig);
+            } else if (upperMethod === 'DELETE') {
+                response = await axios.delete(targetUrl, { ...axiosConfig, data: payloadString });
+            } else {
+                response = await axios.get(targetUrl, axiosConfig);
+            }
         }
 
         res.json(response.data);
