@@ -9493,6 +9493,9 @@ async function caltopo_api_call(method, endpoint, payload = null, domain = null)
         }
         
         let errorMsg = data.message || data.error || `Server Error ${response.status}`;
+        if (data.targetUrl) {
+          errorMsg += `\n(Attempted: ${data.targetUrl})`;
+        }
         
         // Specific help for 403 / "write rights" errors
         if (response.status === 403 || errorMsg.toLowerCase().includes('write rights')) {
@@ -9508,9 +9511,23 @@ async function caltopo_api_call(method, endpoint, payload = null, domain = null)
       const text = await response.text();
       if (!response.ok) {
         if (response.status === 404) {
+          if (text.toLowerCase().includes("lost") || text.includes("404image.png") || text.toLowerCase().includes("not found")) {
+             throw new Error(`The CalTopo endpoint '${endpoint}' was not found. This might be because the Team ID is incorrect or the domain '${domain || 'caltopo.com'}' is wrong for this account.`);
+          }
           throw new Error(`Endpoint not found (404). Your proxy server might be out of date. Please ensure you have the latest sync-server.js running.`);
         }
-        throw new Error(`Server Error ${response.status}: ${text.substring(0, 100)}`);
+        
+        // Extract title from HTML if possible
+        let displayError = text.substring(0, 150);
+        const titleMatch = text.match(/<title>(.*?)<\/title>/i);
+        if (titleMatch && titleMatch[1]) {
+           displayError = titleMatch[1];
+        } else {
+           const h2Match = text.match(/<h2>(.*?)<\/h2>/i);
+           if (h2Match && h2Match[1]) displayError = h2Match[1];
+        }
+        
+        throw new Error(`Server Error ${response.status}: ${displayError}`);
       }
       // If it's 200 OK but not JSON, still a problem for this API
       throw new Error(`Expected JSON response but got ${contentType || 'text'}.`);
@@ -9555,8 +9572,13 @@ async function handleCreateMap() {
   statusDiv.textContent = 'Sending request to CalTopo...';
 
   const payload = {
+    type: "Feature",
+    id: null,
+    geometry: null,
     properties: {
-      title: title
+      title: title,
+      class: "CollaborativeMap",
+      accountId: teamId
     }
   };
 
@@ -9616,18 +9638,18 @@ async function verifyCalTopoAccount() {
   resultSmall.textContent = 'Verifying...';
   resultSmall.style.color = 'var(--muted)';
 
-  const endpoint = `/api/v1/acct/${teamId}`;
+  const endpoint = `/api/v1/acct/${teamId}/since/0`;
   const result = await caltopo_api_call('GET', endpoint, null, domain);
 
   verifyBtn.disabled = false;
   verifyBtn.textContent = 'Verify';
 
-  if (result && result.id) {
-      const accountName = (result.properties && result.properties.name) || result.id;
+  if (result && (result.id || (result.features && Array.isArray(result.features)))) {
+      const accountName = (result.properties && result.properties.name) || (result.id) || teamId;
       resultSmall.textContent = `✓ Connected to: ${accountName}`;
       resultSmall.style.color = '#40c057';
   } else {
-      resultSmall.textContent = '✗ Failed to connect. Check Team ID and Proxy settings.';
+      resultSmall.textContent = '✗ Failed to connect. Check Team ID and Domain.';
       resultSmall.style.color = '#ff6b6b';
   }
 }

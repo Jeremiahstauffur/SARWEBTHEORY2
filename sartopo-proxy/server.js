@@ -363,7 +363,8 @@ const genericCallHandler = async (req, res) => {
             }
         }
         
-        res.status(status).json(typeof responseData === 'object' ? responseData : { error: responseData, message: responseData });
+        const targetUrl = `https://${targetDomain}${endpoint}`;
+        res.status(status).json(typeof responseData === 'object' ? { ...responseData, targetUrl } : { error: responseData, message: responseData, targetUrl });
     }
 };
 
