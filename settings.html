@@ -139,6 +139,20 @@
           </div>
 
           <div class="home-panel full-width">
+            <h2>CalTopo Credentials</h2>
+            <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
+                Enter your CalTopo Service Account credentials. These are used to securely sign requests.
+            </p>
+            <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
+              <input class="pill-input" id="caltopo-title-input" placeholder="Title (e.g. My Integration)" style="flex: 1; min-width: 200px;" type="text">
+              <input class="pill-input" id="caltopo-account-id-input" placeholder="Account ID" style="flex: 1; min-width: 200px;" type="password">
+              <input class="pill-input" id="caltopo-credential-id-input" placeholder="Credential ID" style="flex: 1; min-width: 200px;" type="password">
+              <input class="pill-input" id="caltopo-secret-input" placeholder="Credential Secret" style="flex: 1; min-width: 200px;" type="password">
+              <button class="clear-btn" id="save-caltopo-creds-btn" style="white-space: nowrap;" type="button">Save Credentials</button>
+            </div>
+          </div>
+
+          <div class="home-panel full-width">
             <h2>Data Synchronization</h2>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
               Enter your Sync Server URL (from Railway) and a unique Bucket ID to synchronize data across devices.

@@ -16,7 +16,7 @@
 // Enable CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Access-Control-Allow-Headers: Content-Type, Authorization, X-CalTopo-Account-Id, X-CalTopo-Credential-Id, X-CalTopo-Secret");
 
 // Handle preflight OPTIONS request
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -56,16 +56,36 @@ if (empty($mapId)) {
 }
 
 /**
+ * Helper to sign a request
+ */
+function signRequest($method, $url, $payload, $credentialId, $secret)
+{
+    $expires = (time() + 30) * 1000; // 30 seconds
+    $stringToSign = "$method $url\n$expires\n$payload";
+    $signature = base64_encode(hash_hmac('sha256', $stringToSign, base64_decode($secret), true));
+    
+    return $url . (strpos($url, '?') === false ? '?' : '&') . "id=$credentialId&expires=$expires&signature=" . urlencode($signature);
+}
+
+/**
  * Helper to perform the cURL request
  */
-function performRequest($url)
+function performRequest($url, $method = 'GET', $payload = '', $credentialId = '', $secret = '')
 {
+    if ($credentialId && $secret) {
+        $url = signRequest($method, $url, $payload, $credentialId, $secret);
+    }
+    
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 15);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    if ($method === 'POST') {
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
+    }
 
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -80,6 +100,9 @@ function performRequest($url)
     ];
 }
 
+$credentialId = isset($_SERVER['HTTP_X_CALTOPO_CREDENTIAL_ID']) ? $_SERVER['HTTP_X_CALTOPO_CREDENTIAL_ID'] : '';
+$secret = isset($_SERVER['HTTP_X_CALTOPO_SECRET']) ? $_SERVER['HTTP_X_CALTOPO_SECRET'] : '';
+
 // Construct target URL
 if (!empty($teamId)) {
     // Team Account Workspace endpoint
@@ -89,13 +112,13 @@ if (!empty($teamId)) {
     $targetUrl = "https://{$domain}/api/v1/map/{$mapId}/features";
 }
 
-$result = performRequest($targetUrl);
+$result = performRequest($targetUrl, 'GET', '', $credentialId, $secret);
 
 // 3. Fallback logic for "S" prefix (Common for old map IDs)
 if ($result['httpCode'] === 404 && empty($teamId) && strpos($mapId, 'S') !== 0 && strlen($mapId) <= 5) {
     $sMapId = 'S' . $mapId;
     $sTargetUrl = "https://caltopo.com/api/v1/map/{$sMapId}/features";
-    $sResult = performRequest($sTargetUrl);
+    $sResult = performRequest($sTargetUrl, 'GET', '', $credentialId, $secret);
 
     if ($sResult['httpCode'] === 200) {
         $result = $sResult;

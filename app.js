@@ -7,6 +7,7 @@ const DEFAULT_FILE_NAME = 'us-pill-data.json';
 const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
 const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
+const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
 const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin || 'default').replace(/[^a-zA-Z0-9]/g, '').substring(0, 12);
 
@@ -99,6 +100,14 @@ const checkProxyHealth = async () => {
 function setCalTopoProxy(url) {
     if (url) localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, url);
     else localStorage.removeItem(CALTOPO_PROXY_STORAGE_KEY);
+}
+
+function getCalTopoCredentials() {
+    return JSON.parse(localStorage.getItem(CALTOPO_CREDS_STORAGE_KEY) || '{}');
+}
+
+function setCalTopoCredentials(creds) {
+    localStorage.setItem(CALTOPO_CREDS_STORAGE_KEY, JSON.stringify(creds));
 }
 
 function getDeviceId() {
@@ -6013,6 +6022,30 @@ function buildSettingsPage() {
         };
     }
 
+    const saveCalTopoCredsBtn = document.getElementById('save-caltopo-creds-btn');
+    if (saveCalTopoCredsBtn) {
+        const titleInput = document.getElementById('caltopo-title-input');
+        const accountIdInput = document.getElementById('caltopo-account-id-input');
+        const credentialIdInput = document.getElementById('caltopo-credential-id-input');
+        const secretInput = document.getElementById('caltopo-secret-input');
+
+        const creds = getCalTopoCredentials();
+        if (titleInput) titleInput.value = creds.title || '';
+        if (accountIdInput) accountIdInput.value = creds.accountId || '';
+        if (credentialIdInput) credentialIdInput.value = creds.credentialId || '';
+        if (secretInput) secretInput.value = creds.secret || '';
+
+        saveCalTopoCredsBtn.onclick = () => {
+            setCalTopoCredentials({
+                title: titleInput.value.trim(),
+                accountId: accountIdInput.value.trim(),
+                credentialId: credentialIdInput.value.trim(),
+                secret: secretInput.value.trim()
+            });
+            status.textContent = 'CalTopo credentials saved.';
+        };
+    }
+
     checkProxyHealth();
 
     const startWalkthroughBtn = document.getElementById('start-walkthrough-btn');
@@ -9226,7 +9259,7 @@ function buildUserAccountPage() {
             </div>
             <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">User PIN</label>
-                <input type="text" id="user-pin" class="pill-input" value="${userToEdit.pin || ''}" style="width: 100%; box-sizing: border-box;">
+                <input type="password" id="user-pin" class="pill-input" value="${userToEdit.pin || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
             <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Handle</label>
@@ -9395,8 +9428,9 @@ function renderUserManagement(container, bundle) {
             <table class="grid-table" style="width: 100%; border-collapse: collapse; min-width: 600px;">
                 <thead>
                     <tr style="background: rgba(255,255,255,0.05);">
-                        <th style="padding: 15px; text-align: left; color: var(--accent); width: 60%;">User Name</th>
+                        <th style="padding: 15px; text-align: left; color: var(--accent); width: 45%;">User Name</th>
                         <th style="padding: 15px; text-align: center; color: var(--accent); width: 15%;">File Manager</th>
+                        <th style="padding: 15px; text-align: center; color: var(--accent); width: 15%;">PIN</th>
                         <th style="padding: 15px; text-align: center; color: var(--accent); width: 25%;">Actions</th>
                     </tr>
                 </thead>
@@ -9454,6 +9488,29 @@ function renderUserManagement(container, bundle) {
         };
         tdFileManager.appendChild(chk);
         tr.appendChild(tdFileManager);
+
+        const tdPin = document.createElement('td');
+        tdPin.style.padding = '12px 15px';
+        tdPin.style.textAlign = 'center';
+        const pinInput = document.createElement('input');
+        pinInput.type = 'password';
+        pinInput.className = 'pill-input';
+        pinInput.style.width = '80px';
+        pinInput.style.textAlign = 'center';
+        pinInput.value = acc.pin;
+        pinInput.onchange = () => {
+            const oldPin = acc.pin;
+            acc.pin = pinInput.value;
+            // Sync to personnel
+            if (bundle.pages && bundle.pages.page3) {
+                bundle.pages.page3.forEach(row => {
+                    if (row[8] === oldPin) row[8] = acc.pin;
+                });
+            }
+            saveBundle(bundle);
+        };
+        tdPin.appendChild(pinInput);
+        tr.appendChild(tdPin);
         
         const tdActions = document.createElement('td');
         tdActions.style.padding = '12px 15px';
@@ -9696,8 +9753,17 @@ function buildMapsPage() {
                 finalProxyUrl += `&teamId=${activeMapTeamId}`;
             }
 
+            const headers = {};
+            const creds = getCalTopoCredentials();
+            if (creds.accountId && creds.credentialId && creds.secret) {
+                headers['X-CalTopo-Account-Id'] = creds.accountId;
+                headers['X-CalTopo-Credential-Id'] = creds.credentialId;
+                headers['X-CalTopo-Secret'] = creds.secret;
+            }
+
             const proxyResp = await fetch(finalProxyUrl, {
-                signal: controller.signal
+                signal: controller.signal,
+                headers: headers
             });
             clearTimeout(timeoutId);
 
@@ -9775,19 +9841,7 @@ async function syncWithServer() {
         const isNewDevice = !localStorage.getItem(BUNDLE_STORAGE_KEY);
         
         // 1. Check active user status
-        if (currentUser && currentUser.pin) {
-            const resp = await fetch(`${apiBase}/user-${currentUser.pin}`);
-            if (resp.ok) {
-                const data = await resp.json();
-                const remoteDeviceId = data.deviceId;
-                if (remoteDeviceId && remoteDeviceId !== deviceId) {
-                    alert("This user has been selected on another device. Switching user...");
-                    sessionStorage.removeItem('sar-current-user');
-                    window.location.href = 'home.html';
-                    return;
-                }
-            }
-        }
+        // (Restriction removed)
         
         // 2. Sync active bundle
         const endpoint = isNewDevice ? 'latest' : 'bundle';
