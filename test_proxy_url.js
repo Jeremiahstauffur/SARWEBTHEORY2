@@ -1,29 +1,55 @@
 const http = require('http');
 const https = require('https');
 
-const proxyUrl = 'https://sarwebtheory2-production.up.railway.app/api/proxy';
-const activeMapId = 'test';
-const activeMapDomain = 'caltopo.com';
+const proxyUrl = process.argv[2] || 'http://127.0.0.1:3101/api/proxy';
+const activeMapId = process.argv[3] || 'C34BK08';
+const activeMapDomain = process.argv[4] || 'caltopo.com';
+const credentialId = process.argv[5] || '';
+const credentialSecret = process.argv[6] || '';
 
-let finalProxyUrl = `${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`;
-console.log('Final URL:', finalProxyUrl);
-
-const url = new URL(finalProxyUrl);
-const options = {
-    method: 'GET',
-    hostname: url.hostname,
-    path: url.pathname + url.search
+const url = new URL(proxyUrl);
+const transport = url.protocol === 'https:' ? https : http;
+const requestBody = {
+    mapId: activeMapId,
+    domain: activeMapDomain
 };
 
-console.log('Options:', options);
+if (credentialId && credentialSecret) {
+    requestBody.credentialId = credentialId;
+    requestBody.credentialSecret = credentialSecret;
+}
 
-const req = https.request(options, (res) => {
+const payload = JSON.stringify(requestBody);
+const options = {
+    method: 'POST',
+    hostname: url.hostname,
+    port: url.port || (url.protocol === 'https:' ? 443 : 80),
+    path: url.pathname + url.search,
+    headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload)
+    }
+};
+
+console.log('Request URL:', proxyUrl);
+console.log('Payload:', JSON.stringify(requestBody, null, 2));
+
+const req = transport.request(options, (res) => {
+    let responseBody = '';
     console.log('Status:', res.statusCode);
-    res.on('data', (d) => process.stdout.write(d));
+
+    res.on('data', (chunk) => {
+        responseBody += chunk;
+    });
+
+    res.on('end', () => {
+        console.log(responseBody || '<empty body>');
+    });
 });
 
-req.on('error', (e) => {
-    console.error('Error:', e);
+req.on('error', (error) => {
+    console.error('Error:', error);
 });
 
+req.write(payload);
 req.end();

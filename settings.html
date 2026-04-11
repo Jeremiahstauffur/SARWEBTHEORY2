@@ -123,7 +123,7 @@
               </button>
             </div>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-                If you are getting CORS errors when fetching shapes, you must use a proxy server.
+                CalTopo Team API requests should be signed by your proxy, not sent browser-direct to CalTopo.
                 Enter the Web Proxy URL below (e.g.,
               <code>https://sarwebtheory2-production.up.railway.app/api/proxy</code>).
             </p>
@@ -141,9 +141,12 @@
           <div class="home-panel full-width">
             <h2>CalTopo Credentials</h2>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-              CalTopo expects private API requests to be signed by your backend. Store your Service Account details here
-              for reference, but configure the live proxy with <code>CALTOPO_CREDENTIAL_ID</code> and <code>CALTOPO_CREDENTIAL_SECRET</code>
-              environment variables on Railway.
+                CalTopo’s Team API uses a Credential ID + Credential Secret pair for signed requests. Save them here if
+                you want
+                this website to send them to your proxy in the POST body so the proxy can sign requests server-side for
+                this browser session,
+                or configure <code>CALTOPO_CREDENTIAL_ID</code> and <code>CALTOPO_CREDENTIAL_SECRET</code> directly on
+                Railway for backend-managed signing.
             </p>
             <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
               <input class="pill-input" id="caltopo-title-input" placeholder="Title (e.g. My Integration)" style="flex: 1; min-width: 200px;" type="text">

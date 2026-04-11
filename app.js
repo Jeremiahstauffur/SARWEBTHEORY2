@@ -140,9 +140,25 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
 
         if (resp.ok) {
             const data = await resp.json().catch(() => ({}));
-            dot.style.background = '#40c057';
-            text.textContent = 'Online' + (data.version ? ` (${data.version})` : '');
-            text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}`;
+            const localCreds = getCalTopoSigningCredentials();
+
+            if (data.caltopoSigningConfigured) {
+                dot.style.background = '#40c057';
+                text.textContent = 'Ready' + (data.version ? ` (${data.version})` : '');
+                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}. Proxy has CalTopo signing credentials ready on the backend.`;
+            } else if (data.supportsClientSuppliedCredentials && localCreds) {
+                dot.style.background = '#40c057';
+                text.textContent = 'Ready (Saved Credentials)';
+                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}. The proxy will sign requests using the CalTopo credentials saved in this browser.`;
+            } else if (data.supportsClientSuppliedCredentials) {
+                dot.style.background = '#ffd43b';
+                text.textContent = 'Needs CalTopo Credentials';
+                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}, but you still need to save a CalTopo Credential ID and Credential Secret in Settings or configure them on the proxy server.`;
+            } else {
+                dot.style.background = '#40c057';
+                text.textContent = 'Online' + (data.version ? ` (${data.version})` : '');
+                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}`;
+            }
         } else {
             console.warn('[PROXY] Health check returned error:', resp.status);
             dot.style.background = '#ff6b6b';
@@ -180,6 +196,21 @@ function getCalTopoCredentials() {
 
 function setCalTopoCredentials(creds) {
     localStorage.setItem(CALTOPO_CREDS_STORAGE_KEY, JSON.stringify(creds));
+}
+
+function getCalTopoSigningCredentials() {
+    const creds = getCalTopoCredentials();
+    const credentialId = (creds.credentialId || '').trim();
+    const credentialSecret = (creds.secret || '').trim();
+
+    if (!credentialId || !credentialSecret) {
+        return null;
+    }
+
+    return {
+        credentialId,
+        credentialSecret
+    };
 }
 
 function getCalTopoBypassProxy() {
@@ -6104,10 +6135,16 @@ function buildSettingsPage() {
                 clearTimeout(timeoutId);
 
                 if (resp.ok) {
-                    if (data.caltopoSigningConfigured === false) {
-                        alert(`Proxy Reachable, But Not Ready For CalTopo Yet\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nThis server is online, but it still needs CalTopo credentials configured on the server itself. In Railway, add:\n- CALTOPO_CREDENTIAL_ID\n- CALTOPO_CREDENTIAL_SECRET\n\nCalTopo wants signed requests to come from your backend, not from the browser.`);
+                    const localCreds = getCalTopoSigningCredentials();
+
+                    if (data.caltopoSigningConfigured) {
+                        alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and ready for signed CalTopo requests using backend credentials.`);
+                    } else if (data.supportsClientSuppliedCredentials && localCreds) {
+                        alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nThis proxy can sign CalTopo requests using the Credential ID and Credential Secret you saved in Settings.`);
+                    } else if (data.supportsClientSuppliedCredentials) {
+                        alert(`Proxy Reachable, Needs CalTopo Credentials\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nSave your CalTopo Credential ID and Credential Secret in Settings, or configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.`);
                     } else {
-                        alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and ready for signed CalTopo requests.`);
+                        alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}`);
                     }
                     checkProxyHealth();
                 } else {
@@ -6147,7 +6184,7 @@ function buildSettingsPage() {
                     credentialId: credentialIdInput.value.trim(),
                     secret: secretInput.value.trim()
                 });
-                status.textContent = 'CalTopo credentials saved locally. Configure the same credential ID and secret on the proxy server for signed requests.';
+                status.textContent = 'CalTopo credentials saved locally. The proxy can now use them to sign Team API requests when you fetch shapes from this browser.';
             });
         };
     }
@@ -9887,10 +9924,25 @@ function buildMapsPage() {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+                const savedSigningCreds = getCalTopoSigningCredentials();
+                const requestBody = {
+                    mapId: activeMapId,
+                    domain: activeMapDomain
+                };
 
-                let finalProxyUrl = `${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`;
+                if (savedSigningCreds) {
+                    requestBody.credentialId = savedSigningCreds.credentialId;
+                    requestBody.credentialSecret = savedSigningCreds.credentialSecret;
+                }
+
+                const finalProxyUrl = proxyUrl;
 
                 const proxyResp = await fetch(finalProxyUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(requestBody),
                     signal: controller.signal
                 });
                 clearTimeout(timeoutId);
@@ -9903,13 +9955,13 @@ function buildMapsPage() {
                     const errMsg = errData.message || errData.error || proxyResp.statusText;
 
                     if (errData.error === 'Proxy Not Configured') {
-                        alert(`Proxy Needs CalTopo Credentials\n\n${errMsg}\n\nConfigure these environment variables on your Railway server:\n- CALTOPO_CREDENTIAL_ID\n- CALTOPO_CREDENTIAL_SECRET\n\nCalTopo signed requests should originate from the proxy, not this browser.`);
+                        alert(`Proxy Needs CalTopo Credentials\n\n${errMsg}\n\nTo continue, do one of these:\n- Save your CalTopo Credential ID and Credential Secret in Settings so this website can send them to the proxy in the request body, or\n- Configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.\n\nCalTopo signed requests should originate from the proxy, not from browser-direct calls to CalTopo.`);
                     } else if (proxyResp.status === 403) {
-                        alert(`CalTopo Access Denied\n\n${errMsg}\n\nYour proxy reached CalTopo, but the signed request was not authorized. Verify that the server-side CalTopo service account can access this map.`);
+                        alert(`CalTopo Access Denied\n\n${errMsg}\n\nYour proxy reached CalTopo, but the signed request was not authorized. Verify that the credential pair used for signing has access to this map and the required Team API permission level.`);
                     } else if (proxyResp.status === 404) {
                         alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
                     } else {
-                        alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nThe proxy is reachable, but CalTopo rejected or failed the signed request. Check the server-side CalTopo credential ID/secret and confirm the map is accessible to that service account.`);
+                        alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nThe proxy is reachable, but CalTopo rejected or failed the signed request. Check the CalTopo Credential ID/Secret being used for signing and confirm that the map is accessible to that service account.`);
                     }
                     return;
                 }
@@ -9944,7 +9996,7 @@ function buildMapsPage() {
       }
     } catch (err) {
       console.error(err);
-        alert(`Could not fetch shapes: ${err.message}\n\nCalTopo private/team API access should go through the signed proxy flow.\n\nTo resolve:\n1. Make sure your Railway proxy is deployed with CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET.\n2. Keep "Bypass Proxy" OFF for private maps.\n3. Confirm the CalTopo service account can access the target map.`);
+        alert(`Could not fetch shapes: ${err.message}\n\nCalTopo private/team API access should go through the signed proxy flow.\n\nTo resolve:\n1. Save a CalTopo Credential ID and Credential Secret in Settings, or configure them on the proxy server.\n2. Keep "Bypass Proxy" OFF for private maps.\n3. Confirm the CalTopo service account can access the target map.`);
     } finally {
       fetchShapesBtn.disabled = false;
       fetchShapesBtn.textContent = 'Fetch Shapes';

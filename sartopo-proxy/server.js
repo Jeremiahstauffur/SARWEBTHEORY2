@@ -9,11 +9,14 @@ const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
 const CALTOPO_TIMEOUT_MS = 15000;
 const CALTOPO_SIGNING_WINDOW_MS = 2 * 60 * 1000;
 
+const getTrimmedString = (value) => typeof value === 'string' ? value.trim() : '';
+
 app.use(cors({
     origin: '*',
-    methods: ['GET', 'OPTIONS'],
+    methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.use(express.json({limit: '1mb'}));
 
 const ensureHttpsDomain = (domain) => {
     const normalized = (domain || CALTOPO_DEFAULT_DOMAIN).trim().toLowerCase();
@@ -23,14 +26,22 @@ const ensureHttpsDomain = (domain) => {
     return normalized;
 };
 
-const resolveCalTopoCredentials = () => {
-    const credentialId = (process.env.CALTOPO_CREDENTIAL_ID || process.env.SARTOPO_CREDENTIAL_ID || '').trim();
-    const credentialSecret = (process.env.CALTOPO_CREDENTIAL_SECRET || process.env.CALTOPO_SECRET || process.env.SARTOPO_SECRET || '').trim();
+const resolveCalTopoCredentials = (requestCredentials = {}) => {
+    const requestCredentialId = getTrimmedString(requestCredentials.credentialId);
+    const requestCredentialSecret = getTrimmedString(requestCredentials.credentialSecret || requestCredentials.secret);
+    const envCredentialId = (process.env.CALTOPO_CREDENTIAL_ID || process.env.SARTOPO_CREDENTIAL_ID || '').trim();
+    const envCredentialSecret = (process.env.CALTOPO_CREDENTIAL_SECRET || process.env.CALTOPO_SECRET || process.env.SARTOPO_SECRET || '').trim();
+    const useRequestCredentials = Boolean(requestCredentialId && requestCredentialSecret);
+    const credentialId = useRequestCredentials ? requestCredentialId : envCredentialId;
+    const credentialSecret = useRequestCredentials ? requestCredentialSecret : envCredentialSecret;
 
     return {
         credentialId,
         credentialSecret,
-        configured: Boolean(credentialId && credentialSecret)
+        configured: Boolean(credentialId && credentialSecret),
+        source: useRequestCredentials
+            ? 'request-body'
+            : (envCredentialId && envCredentialSecret ? 'environment' : 'missing')
     };
 };
 
@@ -75,7 +86,11 @@ const normalizeCalTopoState = (payload) => {
 };
 
 const fetchMapHandler = async (req, res) => {
-    const {mapId, domain} = req.query;
+    const requestData = req.method === 'POST' && req.body && typeof req.body === 'object'
+        ? req.body
+        : req.query;
+    const mapId = getTrimmedString(requestData.mapId);
+    const domain = getTrimmedString(requestData.domain);
 
     if (!mapId) {
         return res.status(400).json({
@@ -88,15 +103,16 @@ const fetchMapHandler = async (req, res) => {
     const targetDomain = ensureHttpsDomain(domain);
     const endpoint = `/api/v1/map/${encodeURIComponent(trimmedMapId)}/since/0`;
     const targetUrl = `https://${targetDomain}${endpoint}`;
-    const creds = resolveCalTopoCredentials();
+    const creds = resolveCalTopoCredentials(requestData);
 
     if (!creds.configured) {
         return res.status(500).json({
             error: 'Proxy Not Configured',
-            message: 'This proxy must sign CalTopo API requests server-side. Set CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET in the server environment.',
+            message: 'This proxy needs a CalTopo Credential ID and Credential Secret to sign the Team API request. Provide them in the server environment, or send credentialId and credentialSecret in this POST body.',
             targetUrl,
             mapId: trimmedMapId,
-            signingRequired: true
+            signingRequired: true,
+            supportsClientSuppliedCredentials: true
         });
     }
 
@@ -120,6 +136,7 @@ const fetchMapHandler = async (req, res) => {
             features: normalizedState.features || [],
             state: normalizedState,
             source: 'caltopo-signed-proxy',
+            credentialSource: creds.source,
             mapId: trimmedMapId,
             domain: targetDomain
         });
@@ -140,6 +157,8 @@ const fetchMapHandler = async (req, res) => {
             targetUrl,
             mapId: trimmedMapId,
             signingRequired: true,
+            credentialSource: creds.source,
+            supportsClientSuppliedCredentials: true,
             caltopoResponse: responseBody
         });
     }
@@ -149,17 +168,21 @@ app.get('/api/health', (req, res) => {
     const creds = resolveCalTopoCredentials();
     res.json({
         status: 'ok',
-        version: '1.2.0',
+        version: '1.3.0',
         service: 'SARTopo Proxy',
-        message: 'Proxy is live and ready for signed CalTopo requests',
+        message: 'Proxy is live and ready for signed CalTopo Team API requests',
         caltopoSigningConfigured: creds.configured,
+        caltopoCredentialSource: creds.source,
+        supportsClientSuppliedCredentials: true,
         timestamp: new Date().toISOString()
     });
 });
 
 app.get('/api/proxy', fetchMapHandler);
+app.post('/api/proxy', fetchMapHandler);
 app.get('/fetch-map', fetchMapHandler);
+app.post('/fetch-map', fetchMapHandler);
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Proxy v1.2.0 is live on port ${PORT}`);
+    console.log(`Proxy v1.3.0 is live on port ${PORT}`);
 });

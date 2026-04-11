@@ -3,89 +3,116 @@
  * SAR CalTopo Proxy (PHP Version)
  * Use this file if your hosting environment does not support Node.js/Express.
  *
- * Supports:
- * 1. Standard CalTopo Maps (via mapId)
- * 2. Team Accounts (via mapId and teamId)
- * 3. Fallback for old map IDs (automatic "S" prefix)
- *
- * To use:
- * 1. Upload this file to your web server (e.g., as proxy.php)
- * 2. In your SAR website Maps Management, set the Map ID and Team ID (if applicable).
+ * This implementation follows CalTopo's Team API signing flow for reading map
+ * state from `/api/v1/map/{mapId}/since/0`.
  */
 
-// Enable CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization, X-CalTopo-Account-Id, X-CalTopo-Credential-Id, X-CalTopo-Secret");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+header("Content-Type: application/json");
 
-// Handle preflight OPTIONS request
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// 1. Health Check Handler
-// Allows the website to verify if the proxy is online
-if (isset($_GET['health']) || (isset($_SERVER['PATH_INFO']) && $_SERVER['PATH_INFO'] === '/api/health')) {
-    header("Content-Type: application/json");
-    echo json_encode([
-        "status" => "ok",
-        "message" => "PHP Proxy is live and well",
-        "version" => "1.2.0",
-        "timestamp" => date('c')
-    ]);
-    exit;
-}
-
-// 2. Fetch Map Handler
-$mapId = isset($_GET['mapId']) ? $_GET['mapId'] : '';
-$teamId = isset($_GET['teamId']) ? $_GET['teamId'] : '';
-$domain = (isset($_GET['domain']) && $_GET['domain'] !== 'undefined') ? $_GET['domain'] : 'caltopo.com';
-
-// Clean up mapId (remove any trailing slashes or spaces that might cause 404)
-$mapId = trim($mapId, "/ \t\n\r\0\x0B");
-$teamId = trim($teamId, "/ \t\n\r\0\x0B");
-
-if (empty($mapId)) {
-    header("Content-Type: application/json");
-    http_response_code(400);
-    echo json_encode([
-        "error" => "Missing mapId parameter",
-        "message" => "Please ensure your Map ID is correctly entered in the Maps page (e.g., ABCDE)."
-    ]);
-    exit;
-}
-
-/**
- * Helper to sign a request
- */
-function signRequest($method, $url, $payload, $credentialId, $secret)
+function getTrimmedString($value)
 {
-    $expires = (time() + 30) * 1000; // 30 seconds
-    $stringToSign = "$method $url\n$expires\n$payload";
-    $signature = base64_encode(hash_hmac('sha256', $stringToSign, base64_decode($secret), true));
-    
-    return $url . (strpos($url, '?') === false ? '?' : '&') . "id=$credentialId&expires=$expires&signature=" . urlencode($signature);
+    return is_string($value) ? trim($value) : '';
 }
 
-/**
- * Helper to perform the cURL request
- */
-function performRequest($url, $method = 'GET', $payload = '', $credentialId = '', $secret = '')
+function getJsonBody()
 {
-    if ($credentialId && $secret) {
-        $url = signRequest($method, $url, $payload, $credentialId, $secret);
+    $rawBody = file_get_contents('php://input');
+    if (!$rawBody) {
+        return [];
     }
-    
+
+    $decoded = json_decode($rawBody, true);
+    return is_array($decoded) ? $decoded : [];
+}
+
+function resolveCalTopoCredentials($requestData)
+{
+    $requestCredentialId = getTrimmedString(isset($requestData['credentialId']) ? $requestData['credentialId'] : '');
+    $requestCredentialSecret = getTrimmedString(isset($requestData['credentialSecret'])
+        ? $requestData['credentialSecret']
+        : (isset($requestData['secret']) ? $requestData['secret'] : ''));
+    $envCredentialId = getTrimmedString(getenv('CALTOPO_CREDENTIAL_ID') ?: (getenv('SARTOPO_CREDENTIAL_ID') ?: ''));
+    $envCredentialSecret = getTrimmedString(getenv('CALTOPO_CREDENTIAL_SECRET') ?: (getenv('CALTOPO_SECRET') ?: (getenv('SARTOPO_SECRET') ?: '')));
+    $useRequestCredentials = $requestCredentialId !== '' && $requestCredentialSecret !== '';
+
+    return [
+        'credentialId' => $useRequestCredentials ? $requestCredentialId : $envCredentialId,
+        'credentialSecret' => $useRequestCredentials ? $requestCredentialSecret : $envCredentialSecret,
+        'configured' => $useRequestCredentials || ($envCredentialId !== '' && $envCredentialSecret !== ''),
+        'source' => $useRequestCredentials ? 'request-body' : (($envCredentialId !== '' && $envCredentialSecret !== '') ? 'environment' : 'missing')
+    ];
+}
+
+function ensureHttpsDomain($domain)
+{
+    $normalized = strtolower(getTrimmedString($domain ?: 'caltopo.com'));
+    if ($normalized === '' || strpos($normalized, '/') !== false || strpos($normalized, '\\') !== false || strpos($normalized, '?') !== false) {
+        return 'caltopo.com';
+    }
+
+    return $normalized;
+}
+
+function signRequest($method, $endpoint, $payload, $credentialSecret)
+{
+    $expires = (int)round(microtime(true) * 1000) + 2 * 60 * 1000;
+    $stringToSign = strtoupper($method) . ' ' . $endpoint . "\n" . $expires . "\n" . $payload;
+    $signature = base64_encode(hash_hmac('sha256', $stringToSign, base64_decode($credentialSecret), true));
+
+    return [
+        'expires' => $expires,
+        'signature' => $signature
+    ];
+}
+
+function normalizeCalTopoState($payload)
+{
+    if (!is_array($payload)) {
+        return [
+            'type' => 'FeatureCollection',
+            'features' => []
+        ];
+    }
+
+    if ((isset($payload['type']) ? $payload['type'] : null) === 'FeatureCollection' && isset($payload['features']) && is_array($payload['features'])) {
+        return $payload;
+    }
+
+    if (isset($payload['state']) && is_array($payload['state']) && ((isset($payload['state']['type']) ? $payload['state']['type'] : null) === 'FeatureCollection') && isset($payload['state']['features']) && is_array($payload['state']['features'])) {
+        return $payload['state'];
+    }
+
+    if (isset($payload['features']) && is_array($payload['features'])) {
+        return [
+            'type' => 'FeatureCollection',
+            'features' => $payload['features'],
+            'ids' => isset($payload['ids']) ? $payload['ids'] : null,
+            'timestamp' => isset($payload['timestamp']) ? $payload['timestamp'] : null
+        ];
+    }
+
+    return [
+        'type' => 'FeatureCollection',
+        'features' => []
+    ];
+}
+
+function performRequest($targetUrl, $params)
+{
+    $url = $targetUrl . '?' . http_build_query($params);
     $ch = curl_init();
     curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_TIMEOUT, 15);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-    if ($method === 'POST') {
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-    }
 
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -100,78 +127,104 @@ function performRequest($url, $method = 'GET', $payload = '', $credentialId = ''
     ];
 }
 
-$credentialId = isset($_SERVER['HTTP_X_CALTOPO_CREDENTIAL_ID']) ? $_SERVER['HTTP_X_CALTOPO_CREDENTIAL_ID'] : '';
-$secret = isset($_SERVER['HTTP_X_CALTOPO_SECRET']) ? $_SERVER['HTTP_X_CALTOPO_SECRET'] : '';
+$requestBody = getJsonBody();
+$requestData = array_merge($_GET, $requestBody);
 
-// Construct target URL
-if (!empty($teamId)) {
-    // Team Account Workspace endpoint
-    $targetUrl = "https://caltopo.com/api/v1/acct/{$teamId}/CollaborativeMap/{$mapId}/features";
-} else {
-    // Standard Map Access endpoint
-    $targetUrl = "https://{$domain}/api/v1/map/{$mapId}/features";
-}
-
-$result = performRequest($targetUrl, 'GET', '', $credentialId, $secret);
-
-// 3. Fallback logic for "S" prefix (Common for old map IDs)
-if ($result['httpCode'] === 404 && empty($teamId) && strpos($mapId, 'S') !== 0 && strlen($mapId) <= 5) {
-    $sMapId = 'S' . $mapId;
-    $sTargetUrl = "https://caltopo.com/api/v1/map/{$sMapId}/features";
-    $sResult = performRequest($sTargetUrl, 'GET', '', $credentialId, $secret);
-
-    if ($sResult['httpCode'] === 200) {
-        $result = $sResult;
-        $mapId = $sMapId; // Update for error messages
-    }
-}
-
-$response = $result['response'];
-$httpCode = $result['httpCode'];
-$error = $result['error'];
-$targetUrl = $result['url'];
-
-header("Content-Type: application/json");
-
-// Handle Connection Errors
-if ($response === false) {
-    http_response_code(500);
+if (isset($_GET['health']) || (isset($_SERVER['PATH_INFO']) && $_SERVER['PATH_INFO'] === '/api/health')) {
+    $creds = resolveCalTopoCredentials($requestData);
     echo json_encode([
-        "error" => "Proxy Connection Error",
-        "message" => "The PHP proxy could not connect to CalTopo. Details: " . $error,
-        "targetUrl" => $targetUrl,
-        "mapId" => $mapId
+        'status' => 'ok',
+        'message' => 'PHP proxy is live and ready for signed CalTopo Team API requests',
+        'version' => '1.3.0',
+        'caltopoSigningConfigured' => $creds['configured'],
+        'caltopoCredentialSource' => $creds['source'],
+        'supportsClientSuppliedCredentials' => true,
+        'timestamp' => date('c')
     ]);
     exit;
 }
 
-// Handle HTTP response codes from CalTopo
-http_response_code($httpCode);
+$mapId = getTrimmedString(isset($requestData['mapId']) ? $requestData['mapId'] : '');
+$domain = ensureHttpsDomain(isset($requestData['domain']) ? $requestData['domain'] : 'caltopo.com');
 
-if ($httpCode === 404) {
+if ($mapId === '') {
+    http_response_code(400);
     echo json_encode([
-        "error" => "Map Not Found",
-        "message" => "CalTopo couldn't find map ID \"$mapId\". If this is a team map, ensure you entered the Team ID. Also try prepending 'S' to the ID if it's an old map.",
-        "targetUrl" => $targetUrl,
-        "mapId" => $mapId,
-        "teamId" => $teamId
+        'error' => 'Missing mapId parameter',
+        'message' => 'Please ensure your Map ID is correctly entered in the Maps page (e.g., ABCDE).'
     ]);
-} elseif ($httpCode === 403 || $httpCode === 401) {
-    echo json_encode([
-        "error" => "Private Map (Forbidden)",
-        "message" => "CalTopo refused to share this map. This usually means the map is private. Please go to 'Map Settings' in CalTopo and set 'Access' to 'Anyone with the link can view'.",
-        "targetUrl" => $targetUrl,
-        "mapId" => $mapId
-    ]);
-} elseif ($httpCode >= 400) {
-    echo json_encode([
-        "error" => "CalTopo Error $httpCode",
-        "message" => "The request to CalTopo failed with status $httpCode.",
-        "targetUrl" => $targetUrl,
-        "mapId" => $mapId,
-        "response_preview" => substr($response, 0, 200)
-    ]);
-} else {
-    // Success - pass through the CalTopo response
-    echo $response;
+    exit;
 }
+
+$creds = resolveCalTopoCredentials($requestData);
+$endpoint = '/api/v1/map/' . rawurlencode($mapId) . '/since/0';
+$targetUrl = 'https://' . $domain . $endpoint;
+
+if (!$creds['configured']) {
+    http_response_code(500);
+    echo json_encode([
+        'error' => 'Proxy Not Configured',
+        'message' => 'This proxy needs a CalTopo Credential ID and Credential Secret to sign the Team API request. Provide them in the server environment, or send credentialId and credentialSecret in this POST body.',
+        'targetUrl' => $targetUrl,
+        'mapId' => $mapId,
+        'signingRequired' => true,
+        'supportsClientSuppliedCredentials' => true
+    ]);
+    exit;
+}
+
+$signatureData = signRequest('GET', $endpoint, '', $creds['credentialSecret']);
+$result = performRequest($targetUrl, [
+    'id' => $creds['credentialId'],
+    'expires' => $signatureData['expires'],
+    'signature' => $signatureData['signature']
+]);
+
+$response = $result['response'];
+$httpCode = $result['httpCode'];
+$error = $result['error'];
+$resolvedUrl = $result['url'];
+
+if ($response === false) {
+    http_response_code(500);
+    echo json_encode([
+        'error' => 'Proxy Connection Error',
+        'message' => 'The PHP proxy could not connect to CalTopo. Details: ' . $error,
+        'targetUrl' => $resolvedUrl,
+        'mapId' => $mapId,
+        'signingRequired' => true,
+        'credentialSource' => $creds['source']
+    ]);
+    exit;
+}
+
+$decoded = json_decode($response, true);
+$detailMessage = is_string($decoded)
+    ? substr($decoded, 0, 400)
+    : ((is_array($decoded) && isset($decoded['message'])) ? $decoded['message'] : '');
+
+if ($httpCode >= 400) {
+    http_response_code($httpCode);
+    echo json_encode([
+        'error' => 'CalTopo Error ' . $httpCode,
+        'message' => $detailMessage !== '' ? $detailMessage : 'The request to CalTopo failed.',
+        'targetUrl' => $resolvedUrl,
+        'mapId' => $mapId,
+        'signingRequired' => true,
+        'credentialSource' => $creds['source'],
+        'supportsClientSuppliedCredentials' => true,
+        'caltopoResponse' => $decoded
+    ]);
+    exit;
+}
+
+$normalizedState = normalizeCalTopoState($decoded);
+echo json_encode([
+    'type' => isset($normalizedState['type']) ? $normalizedState['type'] : 'FeatureCollection',
+    'features' => isset($normalizedState['features']) ? $normalizedState['features'] : [],
+    'state' => $normalizedState,
+    'source' => 'caltopo-signed-proxy',
+    'credentialSource' => $creds['source'],
+    'mapId' => $mapId,
+    'domain' => $domain
+]);
