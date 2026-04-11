@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'db');
 const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
 const CALTOPO_TIMEOUT_MS = 30000;
-const CALTOPO_SIGNING_WINDOW_MS = 2 * 60 * 1000;
+const CALTOPO_SIGNING_WINDOW_MS = 5 * 60 * 1000;
 
 const getTrimmedString = (value) => typeof value === 'string' ? value.trim() : '';
 
@@ -380,7 +380,7 @@ const fetchMapHandler = async (req, res) => {
 
     const trimmedMapId = String(mapId).trim();
     const targetDomain = ensureHttpsDomain(domain);
-    const endpoint = `/api/v1/map/${encodeURIComponent(trimmedMapId)}/since/0`;
+    const endpoint = `/api/v1/map/${trimmedMapId}/since/0`;
     const targetUrl = `https://${targetDomain}${endpoint}`;
     const creds = resolveCalTopoCredentials(requestData);
 
@@ -444,6 +444,24 @@ const fetchMapHandler = async (req, res) => {
 
         const responseStatus = error.response ? error.response.status : 500;
         const responseBody = error.response && error.response.data ? error.response.data : null;
+        
+        if (responseStatus === 401 || (typeof responseBody === 'string' && responseBody.includes('Authentication'))) {
+            const authMessage = `${method.toUpperCase()} ${endpoint}\n${expires}\n${payloadString}`;
+            console.error(`[PROXY] Auth Failure! Method: ${method}, Endpoint: ${endpoint}, Expires: ${expires}`);
+            console.error(`[PROXY] Signature: ${signature}`);
+            console.error(`[PROXY] Signed Message:\n${authMessage}`);
+            
+            if (typeof responseBody === 'object' && responseBody !== null) {
+                responseBody.proxyDiagnostics = {
+                    method: method.toUpperCase(),
+                    endpoint,
+                    expires,
+                    payloadSize: payloadString.length,
+                    messageToSign: authMessage
+                };
+            }
+        }
+
         const detailMessage = typeof responseBody === 'string'
             ? responseBody.slice(0, 400)
             : responseBody && responseBody.message
@@ -480,9 +498,10 @@ const genericCallHandler = async (req, res) => {
     }
 
     // CalTopo Team API: if payload is an empty object, sign and send it as an empty string
+    // Python's bool({}) is False, so json.dumps(payload) if payload else "" results in ""
     const payloadString = (payload && typeof payload === 'object' && Object.keys(payload).length > 0) 
         ? JSON.stringify(payload) 
-        : (typeof payload === 'string' ? payload : '');
+        : (typeof payload === 'string' && payload.length > 0 ? payload : '');
 
     const { expires, signature } = signCalTopoRequest(method, endpoint, payloadString, creds.credentialSecret);
 
@@ -524,11 +543,24 @@ const genericCallHandler = async (req, res) => {
         const responseData = error.response ? error.response.data : { error: error.message };
         
         if (status === 401 || (typeof responseData === 'string' && responseData.includes('Authentication'))) {
+            const authMessage = `${method.toUpperCase()} ${endpoint}\n${expires}\n${payloadString}`;
             console.error(`[PROXY] Auth Failure! Method: ${method}, Endpoint: ${endpoint}, Expires: ${expires}`);
             console.error(`[PROXY] Signature: ${signature}`);
+            console.error(`[PROXY] Signed Message:\n${authMessage}`);
+            
+            // Add diagnostic info to help debug on the client
+            if (typeof responseData === 'object') {
+                responseData.proxyDiagnostics = {
+                    method: method.toUpperCase(),
+                    endpoint,
+                    expires,
+                    payloadSize: payloadString.length,
+                    messageToSign: authMessage
+                };
+            }
         }
         
-        res.status(status).json(typeof responseData === 'object' ? responseData : { error: responseData });
+        res.status(status).json(typeof responseData === 'object' ? responseData : { error: responseData, message: responseData });
     }
 };
 

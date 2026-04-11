@@ -9482,6 +9482,15 @@ async function caltopo_api_call(method, endpoint, payload = null) {
     if (contentType && contentType.includes('application/json')) {
       const data = await response.json();
       if (!response.ok) {
+        if (data.proxyDiagnostics) {
+          console.group('CalTopo Proxy Diagnostics');
+          console.error('Method:', data.proxyDiagnostics.method);
+          console.error('Endpoint:', data.proxyDiagnostics.endpoint);
+          console.error('Expires:', data.proxyDiagnostics.expires);
+          console.error('Payload Size:', data.proxyDiagnostics.payloadSize);
+          console.error('Message signed by proxy:', data.proxyDiagnostics.messageToSign);
+          console.groupEnd();
+        }
         throw new Error(data.message || data.error || `Server Error ${response.status}`);
       }
       return data;
