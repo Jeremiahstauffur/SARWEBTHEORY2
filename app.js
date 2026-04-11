@@ -9790,7 +9790,7 @@ function buildMapsPage() {
                 return;
             }
             console.error('Proxy unreachable', proxyErr);
-            alert('Web Proxy is not reachable. All CalTopo correspondence must go through the proxy.\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
+            alert('Web Proxy is not reachable. All CalTopo correspondence must go through the proxy.\n\nError details: ' + proxyErr.message + '\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
             return;
         }
       } else {
