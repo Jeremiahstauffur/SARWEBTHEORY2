@@ -9453,7 +9453,7 @@ function importCalTopoSegments(selected) {
     }, 7000);
 }
 
-async function caltopo_api_call(method, endpoint, payload = null) {
+async function caltopo_api_call(method, endpoint, payload = null, domain = null) {
   const proxyUrl = getCalTopoProxy();
   if (!proxyUrl) {
     alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL.');
@@ -9461,7 +9461,7 @@ async function caltopo_api_call(method, endpoint, payload = null) {
   }
 
   const savedSigningCreds = getCalTopoSigningCredentials();
-  const requestBody = { method, endpoint, payload };
+  const requestBody = { method, endpoint, payload, domain };
   if (savedSigningCreds) {
     requestBody.credentialId = savedSigningCreds.credentialId;
     requestBody.credentialSecret = savedSigningCreds.credentialSecret;
@@ -9529,13 +9529,15 @@ async function caltopo_api_call(method, endpoint, payload = null) {
 async function handleCreateMap() {
   const teamIdInput = document.getElementById('create-team-id');
   const titleInput = document.getElementById('create-map-title');
+  const domainInput = document.getElementById('create-map-domain');
   const statusDiv = document.getElementById('create-map-status');
   const submitBtn = document.getElementById('submit-create-map');
 
-  if (!teamIdInput || !titleInput || !statusDiv || !submitBtn) return;
+  if (!teamIdInput || !titleInput || !statusDiv || !submitBtn || !domainInput) return;
 
   const teamId = teamIdInput.value.trim();
   const title = titleInput.value.trim();
+  const domain = domainInput.value;
 
   if (!teamId) {
     alert('Please enter a Team ID.');
@@ -9559,7 +9561,7 @@ async function handleCreateMap() {
   };
 
   const endpoint = `/api/v1/acct/${teamId}/CollaborativeMap`;
-  const result = await caltopo_api_call('POST', endpoint, payload);
+  const result = await caltopo_api_call('POST', endpoint, payload, domain);
 
   if (result && result.id) {
     statusDiv.style.color = '#40c057';
@@ -9573,7 +9575,7 @@ async function handleCreateMap() {
         bundle.maps.unshift({
           id: result.id,
           name: title,
-          domain: 'caltopo.com',
+          domain: domain,
           teamId: teamId
         });
         saveBundle(bundle);
@@ -9590,6 +9592,43 @@ async function handleCreateMap() {
     submitBtn.textContent = 'Create Map';
     statusDiv.style.color = '#ff6b6b';
     statusDiv.textContent = 'Failed to create map. Check console for details.';
+  }
+}
+
+async function verifyCalTopoAccount() {
+  const teamIdInput = document.getElementById('create-team-id');
+  const domainInput = document.getElementById('create-map-domain');
+  const resultSmall = document.getElementById('team-verify-result');
+  const verifyBtn = document.getElementById('verify-team-btn');
+
+  if (!teamIdInput || !domainInput || !resultSmall || !verifyBtn) return;
+
+  const teamId = teamIdInput.value.trim();
+  const domain = domainInput.value;
+
+  if (!teamId) {
+    alert('Please enter a Team ID first.');
+    return;
+  }
+
+  verifyBtn.disabled = true;
+  verifyBtn.textContent = '...';
+  resultSmall.textContent = 'Verifying...';
+  resultSmall.style.color = 'var(--muted)';
+
+  const endpoint = `/api/v1/acct/${teamId}`;
+  const result = await caltopo_api_call('GET', endpoint, null, domain);
+
+  verifyBtn.disabled = false;
+  verifyBtn.textContent = 'Verify';
+
+  if (result && result.id) {
+      const accountName = (result.properties && result.properties.name) || result.id;
+      resultSmall.textContent = `✓ Connected to: ${accountName}`;
+      resultSmall.style.color = '#40c057';
+  } else {
+      resultSmall.textContent = '✗ Failed to connect. Check Team ID and Proxy settings.';
+      resultSmall.style.color = '#ff6b6b';
   }
 }
 
@@ -10397,9 +10436,19 @@ function buildMapsPage() {
           <p style="color: var(--muted); margin-bottom: 20px;">Using CalTopo Team API: <code>POST /api/v1/acct/{team_id}/CollaborativeMap</code></p>
           <div style="display: flex; flex-direction: column; gap: 15px; max-width: 500px;">
             <div>
+              <label style="display: block; margin-bottom: 5px; font-weight: 500;">CalTopo/SARTopo Domain</label>
+              <select id="create-map-domain" class="pill-input" style="width: 100%;">
+                <option value="caltopo.com">caltopo.com (Standard)</option>
+                <option value="sartopo.com">sartopo.com (Search & Rescue)</option>
+              </select>
+            </div>
+            <div>
               <label style="display: block; margin-bottom: 5px; font-weight: 500;">Team ID</label>
-              <input id="create-team-id" class="pill-input" type="text" placeholder="Enter your Team ID (6 chars)" style="width: 100%;">
-              <small style="color: var(--muted); display: block; margin-top: 4px;">Required to create a map in a team account. Your <strong>Service Account</strong> must have <strong>UPDATE</strong> or <strong>MANAGE</strong> permission to create maps.</small>
+              <div style="display: flex; gap: 10px;">
+                <input id="create-team-id" class="pill-input" type="text" placeholder="Enter your Team ID (6 chars)" style="flex: 1;">
+                <button id="verify-team-btn" class="clear-btn" style="padding: 0 15px; background: var(--pill-bg); border: 1px solid var(--pill-border);">Verify</button>
+              </div>
+              <small id="team-verify-result" style="display: block; margin-top: 4px; color: var(--muted);">Required to create a map in a team account. Your <strong>Service Account</strong> must have <strong>UPDATE</strong> or <strong>MANAGE</strong> permission.</small>
             </div>
             <div>
               <label style="display: block; margin-bottom: 5px; font-weight: 500;">Map Title</label>
@@ -10418,6 +10467,10 @@ function buildMapsPage() {
   const submitCreateMapBtn = document.getElementById('submit-create-map');
   if (submitCreateMapBtn) {
     submitCreateMapBtn.onclick = handleCreateMap;
+  }
+  const verifyTeamBtn = document.getElementById('verify-team-btn');
+  if (verifyTeamBtn) {
+    verifyTeamBtn.onclick = verifyCalTopoAccount;
   }
   const addMapBtn = document.getElementById('add-map-btn');
   const mapsList = document.getElementById('maps-list');

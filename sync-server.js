@@ -515,23 +515,51 @@ const genericCallHandler = async (req, res) => {
         const upperMethod = method.toUpperCase();
 
         if (isPostLikeWithPayload) {
-            // CalTopo expects form-encoded for POST with payload
-            // Parameters (id, expires, signature) and the payload (json) are all in the form body
-            const form = new URLSearchParams();
-            form.append('id', creds.credentialId);
-            form.append('expires', expires.toString());
-            form.append('signature', signature);
-            form.append('json', payloadString);
-
-            response = await axios({
-                method: upperMethod,
-                url: targetUrl,
-                data: form.toString(),
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
+            // CalTopo prefers authentication in URL, JSON in body for many modern endpoints.
+            // We'll try the JSON approach first, and fallback to form-encoded if needed.
+            const axiosConfig = {
+                timeout: CALTOPO_TIMEOUT_MS,
+                params: {
+                    id: creds.credentialId,
+                    expires,
+                    signature
                 },
-                timeout: CALTOPO_TIMEOUT_MS
-            });
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            };
+
+            try {
+                response = await axios({
+                    method: upperMethod,
+                    url: targetUrl,
+                    data: payloadString,
+                    ...axiosConfig
+                });
+            } catch (e) {
+                // If it's a format issue (400) or auth issue (401), try the legacy form-encoded approach.
+                // Note: 403 is usually permissions, so retrying might not help but it's safe.
+                if (e.response && [400, 401, 403].includes(e.response.status)) {
+                    console.log(`[PROXY] JSON attempt failed (${e.response.status}), falling back to form-encoded...`);
+                    const form = new URLSearchParams();
+                    form.append('id', creds.credentialId);
+                    form.append('expires', expires.toString());
+                    form.append('signature', signature);
+                    form.append('json', payloadString);
+
+                    response = await axios({
+                        method: upperMethod,
+                        url: targetUrl,
+                        data: form.toString(),
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        timeout: CALTOPO_TIMEOUT_MS
+                    });
+                } else {
+                    throw e;
+                }
+            }
         } else {
             // Standard GET, DELETE, or POST without payload (params in URL)
             const axiosConfig = {
