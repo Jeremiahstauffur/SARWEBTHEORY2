@@ -74,6 +74,45 @@ function getSyncBucket() {
     return bucket;
 }
 
+function normalizeCalTopoProxyUrl(url) {
+    const trimmedUrl = typeof url === 'string' ? url.trim() : '';
+    if (!trimmedUrl) {
+        return '';
+    }
+
+    let normalizedUrl = trimmedUrl;
+    if (normalizedUrl.includes(':5050')) {
+        normalizedUrl = normalizedUrl.replace('http://', 'https://').replace(':5050', '');
+    }
+
+    if (normalizedUrl.includes('.php')) {
+        return normalizedUrl;
+    }
+
+    const [baseUrl, queryString = ''] = normalizedUrl.split('?');
+    let resolvedBaseUrl = baseUrl.replace(/\/fetch-map\/?$/, '/api/proxy');
+    resolvedBaseUrl = resolvedBaseUrl.replace(/\/api\/health\/?$/, '/api/proxy');
+    if (!/\/(api\/proxy|fetch-map)\/?$/i.test(resolvedBaseUrl)) {
+        resolvedBaseUrl = resolvedBaseUrl.replace(/\/$/, '') + '/api/proxy';
+    }
+
+    return queryString ? `${resolvedBaseUrl}?${queryString}` : resolvedBaseUrl;
+}
+
+function getCalTopoProxyHealthUrl(url) {
+    const normalizedProxyUrl = normalizeCalTopoProxyUrl(url);
+    if (!normalizedProxyUrl) {
+        return '';
+    }
+
+    if (normalizedProxyUrl.includes('.php')) {
+        return normalizedProxyUrl.split('?')[0] + (normalizedProxyUrl.includes('?') ? '&' : '?') + 'health=1';
+    }
+
+    const [baseUrl] = normalizedProxyUrl.split('?');
+    return baseUrl.replace(/\/fetch-map\/?$/, '/api/health').replace(/\/api\/proxy\/?$/, '/api/health');
+}
+
 function getCalTopoProxy() {
     let proxy = localStorage.getItem(CALTOPO_PROXY_STORAGE_KEY);
     // Migration: Migrate from old SARTopo key if needed
@@ -85,9 +124,9 @@ function getCalTopoProxy() {
             localStorage.removeItem('sar-sartopo-proxy-v1');
         }
     }
-    // Migration: Migrate to the standard HTTPS URL (Railway default)
-    if (proxy && proxy.includes(':5050')) {
-        proxy = proxy.replace('http://', 'https://').replace(':5050', '');
+    const normalizedProxy = normalizeCalTopoProxyUrl(proxy);
+    if (proxy && normalizedProxy && proxy !== normalizedProxy) {
+        proxy = normalizedProxy;
         localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
     }
     return proxy || 'https://sarwebtheory2-production.up.railway.app/api/proxy';
@@ -118,17 +157,7 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
     }
 
     // Derived health endpoint from proxyUrl
-    let healthUrl;
-    if (proxyUrl.includes('.php')) {
-        // For PHP scripts, we use ?health=1 (it also works with my proxy.php)
-        healthUrl = proxyUrl.split('?')[0] + (proxyUrl.includes('?') ? '&' : '?') + 'health=1';
-    } else {
-        // For Node.js/Express proxies (e.g., Railway)
-        healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '').replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
-        if (!healthUrl.endsWith('/api/health')) {
-            healthUrl = healthUrl.replace(/\/$/, '') + '/api/health';
-        }
-    }
+    const healthUrl = getCalTopoProxyHealthUrl(proxyUrl);
 
     try {
         console.log('[PROXY] Checking health:', healthUrl);
@@ -6099,7 +6128,9 @@ function buildSettingsPage() {
       proxyInput.value = getCalTopoProxy();
       saveProxyBtn.onclick = async () => {
           await withSaveButtonFeedback(saveProxyBtn, async () => {
-              setCalTopoProxy(proxyInput.value.trim());
+              const normalizedProxyUrl = normalizeCalTopoProxyUrl(proxyInput.value);
+              setCalTopoProxy(normalizedProxyUrl);
+              proxyInput.value = normalizedProxyUrl;
               status.textContent = 'CalTopo Proxy URL saved.';
               await checkProxyHealth();
           });
@@ -6108,23 +6139,18 @@ function buildSettingsPage() {
 
     if (testProxyBtn) {
         testProxyBtn.onclick = async () => {
-            const proxyUrl = proxyInput.value.trim();
+            const proxyUrl = normalizeCalTopoProxyUrl(proxyInput.value);
             if (!proxyUrl) {
                 alert('Please enter a Proxy URL first.');
                 return;
             }
 
+            proxyInput.value = proxyUrl;
+
             testProxyBtn.textContent = 'Testing...';
             testProxyBtn.disabled = true;
 
-            // 1. Health check first
-            let healthUrl;
-            if (proxyUrl.includes('.php')) {
-                healthUrl = proxyUrl.split('?')[0] + (proxyUrl.includes('?') ? '&' : '?') + 'health=1';
-            } else {
-                healthUrl = proxyUrl.replace('/fetch-map', '/api/health').replace('/api/proxy', '/api/health');
-                if (healthUrl === proxyUrl) healthUrl = proxyUrl.split('?')[0].replace(/\/$/, '') + '/api/health';
-            }
+            const healthUrl = getCalTopoProxyHealthUrl(proxyUrl);
 
             try {
                 const controller = new AbortController();
@@ -9935,7 +9961,7 @@ function buildMapsPage() {
                     requestBody.credentialSecret = savedSigningCreds.credentialSecret;
                 }
 
-                const finalProxyUrl = proxyUrl;
+                const finalProxyUrl = normalizeCalTopoProxyUrl(proxyUrl);
 
                 const proxyResp = await fetch(finalProxyUrl, {
                     method: 'POST',

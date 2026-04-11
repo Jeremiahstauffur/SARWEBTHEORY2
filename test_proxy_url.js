@@ -1,11 +1,29 @@
 const http = require('http');
 const https = require('https');
 
-const proxyUrl = process.argv[2] || 'http://127.0.0.1:3101/api/proxy';
+function normalizeProxyUrl(url) {
+    const trimmedUrl = typeof url === 'string' ? url.trim() : '';
+    if (!trimmedUrl || trimmedUrl.includes('.php')) {
+        return trimmedUrl;
+    }
+
+    const [baseUrl, queryString = ''] = trimmedUrl.split('?');
+    let resolvedBaseUrl = baseUrl.replace(/\/fetch-map\/?$/, '/api/proxy');
+    resolvedBaseUrl = resolvedBaseUrl.replace(/\/api\/health\/?$/, '/api/proxy');
+    if (!/\/(api\/proxy|fetch-map)\/?$/i.test(resolvedBaseUrl)) {
+        resolvedBaseUrl = resolvedBaseUrl.replace(/\/$/, '') + '/api/proxy';
+    }
+
+    return queryString ? `${resolvedBaseUrl}?${queryString}` : resolvedBaseUrl;
+}
+
+const rawProxyUrl = process.argv[2] || 'http://127.0.0.1:3101/api/proxy';
 const activeMapId = process.argv[3] || 'C34BK08';
 const activeMapDomain = process.argv[4] || 'caltopo.com';
 const credentialId = process.argv[5] || '';
 const credentialSecret = process.argv[6] || '';
+const useRawUrl = process.argv.includes('--raw');
+const proxyUrl = useRawUrl ? rawProxyUrl : normalizeProxyUrl(rawProxyUrl);
 
 const url = new URL(proxyUrl);
 const transport = url.protocol === 'https:' ? https : http;
@@ -31,6 +49,7 @@ const options = {
     }
 };
 
+console.log('Input URL:', rawProxyUrl);
 console.log('Request URL:', proxyUrl);
 console.log('Payload:', JSON.stringify(requestBody, null, 2));
 
