@@ -9491,7 +9491,17 @@ async function caltopo_api_call(method, endpoint, payload = null) {
           console.error('Message signed by proxy:', data.proxyDiagnostics.messageToSign);
           console.groupEnd();
         }
-        throw new Error(data.message || data.error || `Server Error ${response.status}`);
+        
+        let errorMsg = data.message || data.error || `Server Error ${response.status}`;
+        
+        // Specific help for 403 / "write rights" errors
+        if (response.status === 403 || errorMsg.toLowerCase().includes('write rights')) {
+           errorMsg = "CalTopo Permission Error: " + errorMsg + "\n\n" +
+                      "This usually means your CalTopo Service Account (Credential ID) has 'READ' access but needs 'UPDATE' or 'MANAGE' access to create maps. " +
+                      "Please check your Team Admin -> Details -> Service Account settings on CalTopo.com.";
+        }
+        
+        throw new Error(errorMsg);
       }
       return data;
     } else {
@@ -10389,7 +10399,7 @@ function buildMapsPage() {
             <div>
               <label style="display: block; margin-bottom: 5px; font-weight: 500;">Team ID</label>
               <input id="create-team-id" class="pill-input" type="text" placeholder="Enter your Team ID (6 chars)" style="width: 100%;">
-              <small style="color: var(--muted);">Required to create a map in a team account.</small>
+              <small style="color: var(--muted); display: block; margin-top: 4px;">Required to create a map in a team account. Your <strong>Service Account</strong> must have <strong>UPDATE</strong> or <strong>MANAGE</strong> permission to create maps.</small>
             </div>
             <div>
               <label style="display: block; margin-bottom: 5px; font-weight: 500;">Map Title</label>
