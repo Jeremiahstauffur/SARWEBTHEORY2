@@ -318,12 +318,76 @@ button {
 }
 
 /* Delete Mode Toggle */
+.password-style {
+  -webkit-text-security: disc;
+  text-security: disc;
+}
+
+.pill-cell.password-style:focus {
+  -webkit-text-security: none;
+  text-security: none;
+}
+
 .toggle-switch {
   position: relative;
   display: inline-block;
   width: 50px;
   height: 26px;
   flex-shrink: 0;
+}
+
+.header-toggle {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  transform: translateY(-50%) scale(0.65);
+  z-index: 2;
+}
+
+.col-delete-btn {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px;
+  z-index: 3;
+  line-height: 1;
+}
+
+.col-delete-btn:hover {
+  color: #eb5757;
+}
+
+.header-pill {
+  padding-right: 76px !important;
+}
+
+.add-col-btn-inline {
+  background: rgba(125, 198, 255, 0.16);
+  border: 1px solid rgba(125, 198, 255, 0.35);
+  color: var(--accent);
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  margin-right: 8px;
+  vertical-align: middle;
+  font-size: 16px;
+  line-height: 1;
+  transition: all 0.2s;
+}
+
+.add-col-btn-inline:hover {
+  background: rgba(125, 198, 255, 0.25);
+  transform: scale(1.1);
 }
 
 #sort-label {

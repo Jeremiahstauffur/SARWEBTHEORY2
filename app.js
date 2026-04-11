@@ -8,7 +8,6 @@ const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
 const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
-const CALTOPO_BYPASS_PROXY_STORAGE_KEY = 'sar-caltopo-bypass-proxy-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
 const DEFAULT_BUCKET = 'MNSAR14';
 const SAVE_BUTTON_MIN_LOADING_MS = 1000;
@@ -137,12 +136,6 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
     const text = document.getElementById('proxy-status-text');
     if (!dot || !text) return;
 
-    if (getCalTopoBypassProxy()) {
-        dot.style.background = '#868e96'; // Grey
-        text.textContent = 'Bypassed';
-        text.title = 'Bypassing proxy and fetching directly from CalTopo.';
-        return;
-    }
 
     const proxyUrl = getCalTopoProxy();
 
@@ -242,14 +235,6 @@ function getCalTopoSigningCredentials() {
     };
 }
 
-function getCalTopoBypassProxy() {
-    return localStorage.getItem(CALTOPO_BYPASS_PROXY_STORAGE_KEY) === 'true';
-}
-
-function setCalTopoBypassProxy(val) {
-    if (val) localStorage.setItem(CALTOPO_BYPASS_PROXY_STORAGE_KEY, 'true');
-    else localStorage.removeItem(CALTOPO_BYPASS_PROXY_STORAGE_KEY);
-}
 
 function getDeviceId() {
     let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
@@ -486,9 +471,11 @@ function defaultData() {
 }
 
 function defaultRegionsData() {
+  const dynamicCount = typeof DEFAULT_DYNAMIC_COLS !== 'undefined' ? DEFAULT_DYNAMIC_COLS : 3;
   return {
-    headers: ['Region', ...Array.from({ length: DEFAULT_DYNAMIC_COLS }, (_, i) => `Voter ${i + 1}`), 'Consensus'],
-    rows: Array.from({ length: ROWS }, () => Array.from({ length: DEFAULT_DYNAMIC_COLS + 2 }, () => ''))
+    headers: ['Region', ...Array.from({ length: dynamicCount }, (_, i) => `Voter ${i + 1}`), 'Consensus'],
+    rows: Array.from({ length: typeof ROWS !== 'undefined' ? ROWS : 10 }, () => Array.from({ length: dynamicCount + 2 }, () => '')),
+    voterVisibility: Array.from({ length: dynamicCount }, () => false)
   };
 }
 
@@ -550,7 +537,7 @@ function sanitizeRegionsData(parsed) {
   const headers = Array.isArray(parsed.headers) ? parsed.headers.slice() : fallback.headers.slice();
   const rawRows = Array.isArray(parsed.rows) ? parsed.rows : fallback.rows;
   const rowCount = Math.max(1, rawRows.length);
-  const dynamicCount = Math.max(1, headers.length - 2 || DEFAULT_DYNAMIC_COLS);
+  const dynamicCount = Math.max(1, headers.length - 2 || (typeof DEFAULT_DYNAMIC_COLS !== 'undefined' ? DEFAULT_DYNAMIC_COLS : 3));
 
   const safeHeaders = ['Region'];
   for (let i = 0; i < dynamicCount; i++) {
@@ -564,7 +551,15 @@ function sanitizeRegionsData(parsed) {
     return Array.from({ length: dynamicCount + 2 }, (_, colIndex) => (sourceRow[colIndex] ?? '').toString());
   });
 
-  return { headers: safeHeaders, rows: safeRows };
+  const voterVisibility = Array.isArray(parsed.voterVisibility) 
+    ? parsed.voterVisibility.slice(0, dynamicCount) 
+    : Array.from({ length: dynamicCount }, () => false);
+  
+  while (voterVisibility.length < dynamicCount) {
+    voterVisibility.push(false);
+  }
+
+  return { headers: safeHeaders, rows: safeRows, voterVisibility };
 }
 
 function sanitizeSegmentsData(parsed) {
@@ -1397,7 +1392,6 @@ function buildRegionsTable() {
   const tableBody = document.getElementById('table-body');
   const clearBtn = document.getElementById('clear-table');
   const addBtn = document.getElementById('add-column');
-  const deleteBtn = document.getElementById('delete-column');
   const data = loadData();
   const dynamicCount = data.headers.length - 2;
 
@@ -1410,9 +1404,43 @@ function buildRegionsTable() {
     const isFixed = c === 0 || c === data.headers.length - 1;
 
     if (isFixed) {
-      th.textContent = data.headers[c];
+      if (c === data.headers.length - 1) {
+        // Consensus column
+        const headerContainer = document.createElement('div');
+        headerContainer.className = 'pill-cell-container';
+
+        const plusBtn = document.createElement('button');
+        plusBtn.className = 'add-col-btn-inline';
+        plusBtn.textContent = '+';
+        plusBtn.title = 'Add Voter Column';
+        plusBtn.onclick = (e) => {
+          e.stopPropagation();
+          const insertAt = data.headers.length - 1;
+          const newHeaderName = `Voter ${data.headers.length - 1}`;
+          data.headers.splice(insertAt, 0, newHeaderName);
+          data.rows.forEach(row => row.splice(insertAt, 0, ''));
+          if (data.voterVisibility) {
+            data.voterVisibility.splice(insertAt - 1, 0, true);
+          }
+          logCreation('Voter Column', newHeaderName);
+          saveCurrentPageData(data);
+          buildRegionsTable();
+        };
+
+        const consensusLabel = document.createElement('span');
+        consensusLabel.textContent = data.headers[c];
+
+        headerContainer.appendChild(plusBtn);
+        headerContainer.appendChild(consensusLabel);
+        th.appendChild(headerContainer);
+      } else {
+        th.textContent = data.headers[c];
+      }
       th.className = 'fixed-header';
     } else {
+      const headerContainer = document.createElement('div');
+      headerContainer.className = 'pill-cell-container';
+
       const headerPill = document.createElement('div');
       headerPill.className = 'pill-cell header-pill';
       headerPill.contentEditable = 'true';
@@ -1443,7 +1471,43 @@ function buildRegionsTable() {
         }
       });
 
-      th.appendChild(headerPill);
+      const toggleContainer = document.createElement('label');
+      toggleContainer.className = 'toggle-switch header-toggle';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = data.voterVisibility[c - 1] ?? true;
+      checkbox.addEventListener('change', () => {
+        data.voterVisibility[c - 1] = checkbox.checked;
+        saveCurrentPageData(data);
+        buildRegionsTable();
+      });
+
+      const slider = document.createElement('span');
+      slider.className = 'slider round';
+
+      toggleContainer.appendChild(checkbox);
+      toggleContainer.appendChild(slider);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'col-delete-btn';
+      delBtn.innerHTML = '✕';
+      delBtn.title = 'Delete Voter Column';
+      delBtn.onclick = () => {
+        if (data.headers.length <= 3) return; // Keep at least one voter
+        data.headers.splice(c, 1);
+        data.rows.forEach(row => row.splice(c, 1));
+        if (data.voterVisibility) {
+          data.voterVisibility.splice(c - 1, 1);
+        }
+        saveCurrentPageData(data);
+        buildRegionsTable();
+      };
+
+      headerContainer.appendChild(headerPill);
+      headerContainer.appendChild(toggleContainer);
+      headerContainer.appendChild(delBtn);
+      th.appendChild(headerContainer);
     }
 
     headerRow.appendChild(th);
@@ -1480,6 +1544,10 @@ function buildRegionsTable() {
 
       const cell = document.createElement('div');
       cell.className = 'pill-cell';
+      const isVoterCol = c > 0 && c < data.headers.length - 1;
+      if (isVoterCol && !data.voterVisibility[c - 1]) {
+        cell.classList.add('password-style');
+      }
       cell.contentEditable = 'true';
       cell.spellcheck = false;
       cell.dataset.row = String(r);
@@ -1576,19 +1644,12 @@ function buildRegionsTable() {
     const newHeaderName = `Voter ${dynamicCount + 1}`;
     data.headers.splice(insertAt, 0, newHeaderName);
     data.rows.forEach((row) => row.splice(insertAt, 0, ''));
+    if (data.voterVisibility) {
+      data.voterVisibility.push(false);
+    } else {
+      data.voterVisibility = Array.from({ length: data.headers.length - 2 }, () => false);
+    }
     logCreation('Voter Column', newHeaderName);
-    saveCurrentPageData(data);
-    buildRegionsTable();
-  };
-
-  deleteBtn.onclick = () => {
-    const currentDynamicCount = data.headers.length - 2;
-    if (currentDynamicCount <= 1) return;
-    const removeAt = data.headers.length - 2;
-    const headerName = data.headers[removeAt];
-    data.headers.splice(removeAt, 1);
-    data.rows.forEach((row) => row.splice(removeAt, 1));
-    logDeletion('Voter Column', headerName);
     saveCurrentPageData(data);
     buildRegionsTable();
   };
@@ -8627,7 +8688,7 @@ const polygonArea = (rings) => {
     return totalArea * 640; // in acres
 };
 
-const getBoundingBoxLength = (coords) => {
+const getBoundingBoxDimensions = (coords) => {
     let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90;
     const process = (c) => {
         if (typeof c[0] === 'number') {
@@ -8640,47 +8701,86 @@ const getBoundingBoxLength = (coords) => {
         }
     };
     process(coords);
-    if (minLon > maxLon) return 0;
+    if (minLon > maxLon) return { width: 0, height: 0 };
     const midLat = (minLat + maxLat) / 2;
     const width = haversine([minLon, midLat], [maxLon, midLat]);
     const height = haversine([0, minLat], [0, maxLat]);
-    return Math.max(width, height);
+    return { width, height };
 };
 
 const calculateGeometry = (item) => {
-    const geom = item.geometry || item; // Item might be the geometry itself
-    if (!geom || !geom.type || !geom.coordinates) return { area: 0, length: 0 };
+    let geom = item.geometry || item;
+    let props = item.properties || item;
+
+    // Normalize CalTopo internal format to GeoJSON-like
+    if (geom.type === 'Shape' && item.vertices) {
+        geom = {
+            type: (item.closed === true) ? 'Polygon' : 'LineString',
+            coordinates: (item.closed === true) ? [item.vertices] : item.vertices
+        };
+    } else if (geom.type === 'Marker' && item.position) {
+        geom = {
+            type: 'Point',
+            coordinates: item.position
+        };
+    }
+
+    if (geom.type === 'Point' && props.buffer > 0) {
+        const radiusMi = props.buffer / 1609.34; // meters to miles
+        const areaAcres = Math.PI * Math.pow(radiusMi, 2) * 640;
+        const diameterMi = radiusMi * 2;
+        return { area: areaAcres, length: diameterMi, width: diameterMi, height: diameterMi };
+    }
+
+    if (!geom || !geom.type || (!geom.coordinates && !geom.geometries)) return { area: 0, length: 0, width: 0, height: 0 };
 
     let area = 0;
     let length = 0;
+    let width = 0;
+    let height = 0;
 
-    if (geom.type === 'LineString') {
-        for (let i = 0; i < geom.coordinates.length - 1; i++) {
-            length += haversine(geom.coordinates[i], geom.coordinates[i+1]);
-        }
-    } else if (geom.type === 'MultiLineString') {
-        for (const line of geom.coordinates) {
-            for (let i = 0; i < line.length - 1; i++) {
-                length += haversine(line[i], line[i+1]);
+    if (geom.type === 'LineString' || geom.type === 'MultiLineString' || geom.type === 'Polygon' || geom.type === 'MultiPolygon') {
+        const dims = getBoundingBoxDimensions(geom.coordinates);
+        width = dims.width;
+        height = dims.height;
+        length = Math.max(width, height);
+        
+        if (geom.type === 'Polygon') {
+            area = polygonArea(geom.coordinates);
+        } else if (geom.type === 'MultiPolygon') {
+            area = 0;
+            for (const poly of geom.coordinates) {
+                area += polygonArea(poly);
             }
+        } else {
+            area = 0; // Actual area of a line is 0
         }
-    } else if (geom.type === 'Polygon') {
-        area = polygonArea(geom.coordinates);
-        length = getBoundingBoxLength(geom.coordinates);
-    } else if (geom.type === 'MultiPolygon') {
-        for (const poly of geom.coordinates) {
-            area += polygonArea(poly);
-        }
-        length = getBoundingBoxLength(geom.coordinates);
     } else if (geom.type === 'GeometryCollection') {
+        let minLon = 180, maxLon = -180, minLat = 90, maxLat = -90;
+        const process = (c) => {
+            if (typeof c[0] === 'number') {
+                if (c[0] < minLon) minLon = c[0];
+                if (c[0] > maxLon) maxLon = c[0];
+                if (c[1] < minLat) minLat = c[1];
+                if (c[1] > maxLat) maxLat = c[1];
+            } else {
+                c.forEach(process);
+            }
+        };
         for (const g of (geom.geometries || [])) {
-            const res = calculateGeometry({ geometry: g });
+            if (g.coordinates) process(g.coordinates);
+            const res = calculateGeometry(g);
             area += res.area;
-            length = Math.max(length, res.length);
+        }
+        if (minLon <= maxLon) {
+            const midLat = (minLat + maxLat) / 2;
+            width = haversine([minLon, midLat], [maxLon, midLat]);
+            height = haversine([0, minLat], [0, maxLat]);
+            length = Math.max(width, height);
         }
     }
 
-    return { area, length };
+    return { area, length, width, height };
 };
 
 function showImportSegmentsPopup() {
@@ -9197,8 +9297,8 @@ function showCalTopoShapesPopup(features) {
   content.insertBefore(bodyContainer, btnContainer);
 
   const segmentsToPreview = features.map(f => {
-      const props = f.properties || {};
-      const geom = f.geometry || {};
+      const props = f.properties || f;
+      const geom = f.geometry || f;
       
       let name = props.label || props.title || props.name || 'Unnamed';
       
@@ -9219,8 +9319,10 @@ function showCalTopoShapesPopup(features) {
       const res = calculateGeometry(f);
       return {
           name: name,
-          area: res.area > 0 ? res.area.toFixed(2) : '',
-          length: res.length > 0 ? res.length.toFixed(2) : '',
+          area: res.area > 0 ? res.area.toFixed(2) : '0.00',
+          length: res.length > 0 ? res.length.toFixed(2) : '0.00',
+          width: res.width > 0 ? res.width.toFixed(2) : '0.00',
+          height: res.height > 0 ? res.height.toFixed(2) : '0.00',
           type: geom.type,
           feature: f
       };
@@ -9251,8 +9353,9 @@ function showCalTopoShapesPopup(features) {
         <th style="width: 40px; text-align: center; padding: 12px;"></th>
         <th style="padding: 12px;">Name</th>
         <th style="padding: 12px;">Type</th>
+        <th style="padding: 12px;">Max Dim (mi)</th>
         <th style="padding: 12px;">Area (acres)</th>
-        <th style="padding: 12px;">Length (mi)</th>
+        <th style="padding: 12px;">W x H (mi)</th>
     </tr>
   `;
   table.appendChild(thead);
@@ -9264,8 +9367,9 @@ function showCalTopoShapesPopup(features) {
         <td style="text-align: center;"><input type="checkbox" class="shape-checkbox" data-index="${idx}" checked style="width: 18px; height: 18px; cursor: pointer;"></td>
         <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.name}</div></td>
         <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.type}</div></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.area ? seg.area + ' ac' : ''}</div></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.length ? seg.length + ' mi' : ''}</div></td>
+        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.length} mi</div></td>
+        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.area} ac</div></td>
+        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-size: 0.8rem;">${seg.width} x ${seg.height}</div></td>
       `;
       tbody.appendChild(tr);
   });
@@ -9329,10 +9433,10 @@ function importCalTopoSegments(selected) {
         const newRow = [
             '', // Region
             seg.name,
-            seg.area ? seg.area + ' ac' : '',
-            seg.length ? seg.length + ' mi' : '',
+            seg.area ? seg.area + ' ac' : '0.00 ac',
+            seg.length ? seg.length + ' mi' : '0.00 mi',
             '20 ft', // Default sweep
-            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
+            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '0.00 hr',
             '', // PSRi
             '', // PSRc
             ''  // manual override
@@ -9719,14 +9823,7 @@ function buildMapsPage() {
       <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
       <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 20px; margin-top: 15px; border-radius: 16px; display: flex; align-items: center;">
         <div id="proxy-status-container" style="font-size: 1rem; display: flex; align-items: center; gap: 30px; flex-wrap: wrap; width: 100%;">
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <label class="toggle-switch">
-              <input type="checkbox" id="bypass-proxy-toggle" ${getCalTopoBypassProxy() ? 'checked' : ''}>
-              <span class="slider"></span>
-            </label>
-            <span id="bypass-proxy-label" style="font-weight: 500;">Bypass Proxy is ${getCalTopoBypassProxy() ? 'ON' : 'OFF'}</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 10px; padding-left: 20px; border-left: 1px solid rgba(0,0,0,0.1);">
+          <div style="display: flex; align-items: center; gap: 10px; padding-left: 20px;">
             <span style="color: var(--muted);">Proxy Status:</span>
             <span id="proxy-status-dot" style="width: 12px; height: 12px; border-radius: 50%; background: #ccc;"></span>
             <span id="proxy-status-text" style="font-weight: 500;">Checking...</span>
@@ -9735,7 +9832,17 @@ function buildMapsPage() {
       </div>
     </section>
 
-    <section class="table-card">
+    <section id="map-view-section" class="table-card" style="display: none; padding: 0; overflow: hidden; height: 75vh; position: relative; margin-top: 20px; border-radius: 16px;">
+      <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
+        <h2 id="current-map-title" style="margin: 0; font-size: 1.2rem;">Map View</h2>
+        <div class="tool-actions">
+          <button id="fetch-shapes-btn" class="clear-btn">Fetch Shapes</button>
+        </div>
+      </div>
+      <iframe id="map-iframe" style="width: 100%; height: calc(100% - 62px); border: none;" allow="storage-access; geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    </section>
+
+    <section class="table-card" style="margin-top: 20px;">
       <div class="table-tools">
         <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; width: 100%;">
           <input id="map-id-input" class="pill-input" type="text" placeholder="Map ID (e.g. 0A1B2)" style="flex: 1.5; min-width: 150px;">
@@ -9749,40 +9856,7 @@ function buildMapsPage() {
         <!-- Map cards will be injected here -->
       </div>
     </section>
-
-    <section id="map-view-section" class="table-card" style="display: none; padding: 0; overflow: hidden; height: 75vh; position: relative; margin-top: 20px; border-radius: 16px;">
-      <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
-        <h2 id="current-map-title" style="margin: 0; font-size: 1.2rem;">Map View</h2>
-        <div class="tool-actions">
-          <button id="toggle-map-mode-btn" class="clear-btn" title="Toggle between Embed and Full Site mode (may fix session issues)">Mode: Full Site</button>
-          <button id="pop-out-map-btn" class="clear-btn" title="Open in a separate window to bypass all restrictions">Pop-out</button>
-          <button id="refresh-map-btn" class="clear-btn">Refresh</button>
-          <button id="login-map-btn" class="clear-btn" title="Open a login popup">Login</button>
-          <button id="open-new-tab-btn" class="clear-btn">Open Tab</button>
-          <button id="fetch-shapes-btn" class="clear-btn">Fetch Shapes</button>
-          <button id="clear-map-btn" class="clear-btn" style="color: #ff6b6b;">Clear Map</button>
-        </div>
-      </div>
-      <iframe id="map-iframe" style="width: 100%; height: calc(100% - 62px); border: none;" allow="storage-access; geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>
-    </section>
   `;
-
-  const mapIdInput = document.getElementById('map-id-input');
-    const teamIdInput = document.getElementById('team-id-input');
-  const mapNameInput = document.getElementById('map-name-input');
-
-    const bypassProxyToggle = document.getElementById('bypass-proxy-toggle');
-    const bypassProxyLabel = document.getElementById('bypass-proxy-label');
-    if (bypassProxyToggle) {
-        bypassProxyToggle.onchange = (e) => {
-            const checked = e.target.checked;
-            setCalTopoBypassProxy(checked);
-            if (bypassProxyLabel) {
-                bypassProxyLabel.innerText = `Bypass Proxy is ${checked ? 'ON' : 'OFF'}`;
-            }
-            checkProxyHealth();
-        };
-    }
 
   const addMapBtn = document.getElementById('add-map-btn');
   const mapsList = document.getElementById('maps-list');
@@ -9790,12 +9864,6 @@ function buildMapsPage() {
   const mapIframe = document.getElementById('map-iframe');
   const currentMapTitle = document.getElementById('current-map-title');
   const fetchShapesBtn = document.getElementById('fetch-shapes-btn');
-  const openNewTabBtn = document.getElementById('open-new-tab-btn');
-  const toggleMapModeBtn = document.getElementById('toggle-map-mode-btn');
-  const popOutMapBtn = document.getElementById('pop-out-map-btn');
-  const loginMapBtn = document.getElementById('login-map-btn');
-  const refreshMapBtn = document.getElementById('refresh-map-btn');
-  const clearMapBtn = document.getElementById('clear-map-btn');
 
     checkProxyHealth();
 
@@ -9834,13 +9902,11 @@ function buildMapsPage() {
     }
   };
 
-  const popOutMap = (id, domain) => {
-      const activeDomain = domain || 'caltopo.com';
-    const url = `https://${activeDomain}/m/${id}`;
-    window.open(url, `map_${id}`, 'width=1100,height=850,menubar=no,toolbar=no,location=no,status=no');
-  };
 
   addMapBtn.onclick = () => {
+    const mapIdInput = document.getElementById('map-id-input');
+    const teamIdInput = document.getElementById('team-id-input');
+    const mapNameInput = document.getElementById('map-name-input');
     const rawInput = mapIdInput.value.trim();
       const teamId = teamIdInput.value.trim();
     const name = mapNameInput.value.trim();
@@ -9878,47 +9944,11 @@ function buildMapsPage() {
     renderMaps();
   };
 
-  clearMapBtn.onclick = () => {
-    if (confirm('Are you sure you want to clear this map from the project?')) {
-      bundle.maps = [];
-      saveBundle(bundle);
-      renderMaps();
-    }
-  };
 
-  toggleMapModeBtn.onclick = () => {
-    isFullMode = !isFullMode;
-    toggleMapModeBtn.textContent = `Mode: ${isFullMode ? 'Full Site' : 'Embed'}`;
-    if (activeMapId) {
-      viewMap(activeMapId, currentMapTitle.textContent, activeMapDomain);
-    }
-  };
 
-  refreshMapBtn.onclick = () => {
-    if (activeMapId) {
-      const currentSrc = mapIframe.src;
-      mapIframe.src = '';
-      setTimeout(() => { mapIframe.src = currentSrc; }, 10);
-    }
-  };
 
-  openNewTabBtn.onclick = () => {
-    if (activeMapId) {
-      window.open(`https://${activeMapDomain}/m/${activeMapId}`, '_blank');
-    }
-  };
 
-  popOutMapBtn.onclick = () => {
-    if (activeMapId) {
-      popOutMap(activeMapId, activeMapDomain);
-    }
-  };
 
-  loginMapBtn.onclick = () => {
-    if (activeMapId) {
-        window.open(`https://${activeMapDomain}/login`, 'caltopo_login', 'width=500,height=600');
-    }
-  };
 
     fetchShapesBtn.onclick = async () => {
     if (!activeMapId) return;
@@ -9927,26 +9957,9 @@ function buildMapsPage() {
     
     try {
       let data = null;
-        const bypassProxy = getCalTopoBypassProxy();
         const proxyUrl = getCalTopoProxy();
 
-        if (bypassProxy) {
-            // Direct fetch from CalTopo
-            const targetUrl = `https://${activeMapDomain}/api/v1/map/${activeMapId}/since/0`;
-
-            try {
-                const resp = await fetch(targetUrl);
-                if (resp.ok) {
-                    data = await resp.json();
-                } else {
-                    throw new Error(`CalTopo returned status ${resp.status}`);
-                }
-            } catch (directErr) {
-                console.error('Direct fetch failed', directErr);
-                alert(`Direct fetch from CalTopo failed: ${directErr.message}\n\nCalTopo expects authenticated/private API access to be signed by your backend proxy. Leave "Bypass Proxy" OFF unless the map is public and browser-direct access is acceptable.`);
-                return;
-            }
-        } else if (proxyUrl) {
+        if (proxyUrl) {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
@@ -10002,17 +10015,12 @@ function buildMapsPage() {
                 return;
             }
       } else {
-            alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL, or enable "Bypass Proxy" above.');
+            alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL.');
           return;
       }
       
       const features = (data.features || []).filter(f => {
-        if (!f.geometry) return false;
-        const props = f.properties || {};
-        const isAssignment = props.class === 'Assignment' || props.type === 'Assignment' || !!props.assignment;
-        const isPolygon = f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon';
-        // We import all assignments (lines or polygons) and any other polygons
-        return isAssignment || isPolygon;
+        return f.geometry || f.vertices || f.position;
       });
       
       if (features.length === 0) {
@@ -10033,6 +10041,111 @@ function buildMapsPage() {
 }
 
 let isSyncing = false;
+
+function mergeTableRows(localRows, serverRows) {
+    if (!Array.isArray(localRows) || !Array.isArray(serverRows)) return serverRows;
+    const merged = [...serverRows];
+    const serverMap = new Map();
+    serverRows.forEach((row, index) => {
+        if (Array.isArray(row) && row[0]) serverMap.set(row[0].toString().trim(), index);
+    });
+
+    localRows.forEach(localRow => {
+        if (!Array.isArray(localRow) || !localRow[0]) return;
+        const id = localRow[0].toString().trim();
+        if (serverMap.has(id)) {
+            const sIdx = serverMap.get(id);
+            const sRow = merged[sIdx];
+            // Merge columns: if server is empty, take local. Server wins on conflicts (sMod > lMod)
+            for (let c = 1; c < Math.max(localRow.length, sRow.length); c++) {
+                if ((sRow[c] === '' || sRow[c] === undefined) && localRow[c] !== '' && localRow[c] !== undefined) {
+                    sRow[c] = localRow[c];
+                }
+            }
+        } else {
+            // New row locally
+            merged.push(localRow);
+        }
+    });
+    return merged;
+}
+
+function mergeRegionsData(local, server) {
+    if (!local || !server) return server || local;
+    const hL = local.headers || [];
+    const hS = server.headers || [];
+    const allH = ['Region', ...new Set([...hS.filter(h => h !== 'Region' && h !== 'Consensus'), ...hL.filter(h => h !== 'Region' && h !== 'Consensus')]), 'Consensus'];
+    
+    const rL = local.rows || [];
+    const rS = server.rows || [];
+    const mergedRows = [];
+    const processed = new Set();
+
+    rS.forEach(rowS => {
+        const id = rowS[0] ? rowS[0].toString().trim() : '';
+        if (!id) { mergedRows.push(rowS); return; }
+        processed.add(id);
+        const rowL = rL.find(r => r[0] && r[0].toString().trim() === id);
+        
+        const mergedRow = new Array(allH.length).fill('');
+        allH.forEach((h, i) => {
+            const sIdx = hS.indexOf(h);
+            const lIdx = hL.indexOf(h);
+            const vS = sIdx !== -1 ? rowS[sIdx] : '';
+            const vL = (lIdx !== -1 && rowL) ? rowL[lIdx] : '';
+            mergedRow[i] = (vS !== '' && vS !== undefined) ? vS : (vL || '');
+        });
+        mergedRows.push(mergedRow);
+    });
+
+    rL.forEach(rowL => {
+        const id = rowL[0] ? rowL[0].toString().trim() : '';
+        if (id && !processed.has(id)) {
+            const mergedRow = new Array(allH.length).fill('');
+            allH.forEach((h, i) => {
+                const lIdx = hL.indexOf(h);
+                if (lIdx !== -1) mergedRow[i] = rowL[lIdx] || '';
+            });
+            mergedRows.push(mergedRow);
+        }
+    });
+    return { headers: allH, rows: mergedRows };
+}
+
+function mergeBundles(local, server) {
+    const merged = { ...server };
+    if (local.pages && server.pages) {
+        merged.pages = { ...server.pages };
+        for (const key in local.pages) {
+            if (server.pages[key]) {
+                if (key === 'index') merged.pages[key] = mergeRegionsData(local.pages[key], server.pages[key]);
+                else if (Array.isArray(local.pages[key]) && Array.isArray(server.pages[key])) {
+                    merged.pages[key] = mergeTableRows(local.pages[key], server.pages[key]);
+                }
+            } else {
+                merged.pages[key] = local.pages[key];
+            }
+        }
+    }
+    if (local.arrivedTeams && server.arrivedTeams) {
+        merged.arrivedTeams = [...new Set([...server.arrivedTeams, ...local.arrivedTeams])];
+    }
+    if (local.activityLog && server.activityLog) {
+        const logMap = new Map();
+        server.activityLog.forEach(item => logMap.set(item.msg + item.time, item));
+        local.activityLog.forEach(item => {
+            if (!logMap.has(item.msg + item.time)) logMap.set(item.msg + item.time, item);
+        });
+        merged.activityLog = Array.from(logMap.values()).sort((a, b) => new Date(b.time) - new Date(a.time));
+    }
+    return merged;
+}
+
+function areBundlesEqual(a, b) {
+    const aCopy = { ...a, lastModified: '' };
+    const bCopy = { ...b, lastModified: '' };
+    return JSON.stringify(aCopy) === JSON.stringify(bCopy);
+}
 
 async function syncWithServer() {
     if (isSyncing) return;
@@ -10065,12 +10178,19 @@ async function syncWithServer() {
                 const lMod = new Date(localBundle.lastModified || 0);
 
                 if (sMod > lMod) {
-                    localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                    const merged = mergeBundles(localBundle, serverBundle);
+                    if (areBundlesEqual(merged, serverBundle)) {
+                        localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                    } else {
+                        // Local has some unique data, push the merged result
+                        saveBundle(merged);
+                    }
+                    
                     const files = getSavedFiles();
                     if (serverBundle.fileName) {
                         files[serverBundle.fileName] = {
-                            bundle: serverBundle,
-                            lastModified: serverBundle.lastModified
+                            bundle: loadBundle(), // Use potentially merged bundle
+                            lastModified: loadBundle().lastModified
                         };
                         localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
                     }
