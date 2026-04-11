@@ -324,7 +324,7 @@ function isPage8() {
 }
 
 function isPage9() {
-  return false;
+  return pageKey() === 'page9';
 }
 
 function isMapsPage() {
@@ -3861,12 +3861,15 @@ function addActivityLogEntry(team, action, bundle = null, membersOverride = null
   const currentUser = getCurrentUser();
   const userTag = currentUser ? ` - ${currentUser.handle || (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim()}` : '';
 
-  const members = membersOverride || getTeamMembers(team).map(m => {
-    const name = m[0];
-    const leadName = m[2];
-    const isLead = (leadName === name);
-    return isLead ? name + '*' : name;
-  }).join(', ');
+  let members = '';
+  if (team !== 'System') {
+    members = membersOverride || getTeamMembers(team).map(m => {
+      const name = m[0];
+      const leadName = m[2];
+      const isLead = (leadName === name);
+      return isLead ? name + '*' : name;
+    }).join(', ');
+  }
 
   const ts = (customDate && customTime) ? 
     new Date(`${customDate.split('-')[2]}-${customDate.split('-')[0]}-${customDate.split('-')[1]}T${customTime}:00`).getTime() :
@@ -10163,8 +10166,6 @@ async function syncWithServer() {
     
     isSyncing = true;
     try {
-        const currentUser = getCurrentUser();
-        const deviceId = getDeviceId();
         const isNewDevice = !localStorage.getItem(BUNDLE_STORAGE_KEY);
         
         // 1. Check active user status
