@@ -8714,19 +8714,21 @@ const getBoundingBoxDimensions = (coords) => {
 };
 
 const calculateGeometry = (item) => {
-    let geom = item.geometry || item;
+    let geom = item.geometry || item.properties?.geometry || item;
     let props = item.properties || item;
 
     // Normalize CalTopo internal format to GeoJSON-like
-    if (geom.type === 'Shape' && item.vertices) {
+    if (['Shape', 'Assignment', 'Track', 'Route'].includes(geom.type) && (item.vertices || props.vertices)) {
+        const vertices = item.vertices || props.vertices;
+        const isClosed = item.closed === true || props.closed === true || (geom.type === 'Assignment' && (item.closed !== false && props.closed !== false));
         geom = {
-            type: (item.closed === true) ? 'Polygon' : 'LineString',
-            coordinates: (item.closed === true) ? [item.vertices] : item.vertices
+            type: isClosed ? 'Polygon' : 'LineString',
+            coordinates: isClosed ? [vertices] : vertices
         };
-    } else if (geom.type === 'Marker' && item.position) {
+    } else if (['Marker', 'Clue', 'Point'].includes(geom.type) && (item.position || props.position)) {
         geom = {
             type: 'Point',
-            coordinates: item.position
+            coordinates: item.position || props.position
         };
     }
 
@@ -10026,10 +10028,20 @@ function buildMapsPage() {
       }
       
       const features = (data.features || []).filter(f => {
-        return f.geometry || f.vertices || f.position;
+        const props = f.properties || f;
+        const hasGeom = !!(f.geometry || f.vertices || f.position || props.geometry || props.vertices || props.position);
+        
+        // All map objects with geometry are potentially compatible, but we prioritize shapes
+        const type = (f.geometry?.type || f.type || props.class || props.type || '').toString();
+        const isCompatible = ['Polygon', 'MultiPolygon', 'LineString', 'MultiLineString', 'Shape', 'Assignment', 'Track', 'Route', 'Marker', 'Clue', 'Point'].includes(type);
+        
+        return hasGeom && isCompatible;
       });
       
+      console.log(`[FETCH SHAPES] Received ${data.features?.length || 0} total features, ${features.length} after filtering compatible shapes.`);
+      
       if (features.length === 0) {
+          console.warn('[FETCH SHAPES] No compatible shapes found. Data sample:', data.features?.slice(0, 3));
           alert('No compatible shapes (Assignments or Polygons) found on this map.');
       } else {
           showCalTopoShapesPopup(features);

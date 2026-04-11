@@ -62,20 +62,45 @@ const normalizeCalTopoState = (payload) => {
         };
     }
 
+    // 1. Direct FeatureCollection (standard GeoJSON)
     if (payload.type === 'FeatureCollection' && Array.isArray(payload.features)) {
         return payload;
     }
 
+    // 2. Nested FeatureCollection in 'state' (common Team API response)
     if (payload.state && payload.state.type === 'FeatureCollection' && Array.isArray(payload.state.features)) {
         return payload.state;
     }
 
-    if (Array.isArray(payload.features)) {
+    // 3. Fallback: Aggregate features from typed arrays or 'state' object
+    // CalTopo/SARTopo internal state often uses separate arrays for Marker, Shape, Assignment, etc.
+    const state = payload.state || payload;
+    const collectedFeatures = [];
+
+    if (Array.isArray(state.features)) {
+        collectedFeatures.push(...state.features);
+    } else {
+        // Look for common typed arrays
+        const types = ['Marker', 'Shape', 'Assignment', 'Track', 'Route', 'Clue'];
+        types.forEach(t => {
+            if (Array.isArray(state[t])) {
+                // Ensure each item has a type property if it's a raw object
+                state[t].forEach(item => {
+                    if (item && typeof item === 'object') {
+                        if (!item.type && !item.geometry) item.type = t;
+                        collectedFeatures.push(item);
+                    }
+                });
+            }
+        });
+    }
+
+    if (collectedFeatures.length > 0) {
         return {
             type: 'FeatureCollection',
-            features: payload.features,
-            ids: payload.ids,
-            timestamp: payload.timestamp
+            features: collectedFeatures,
+            ids: payload.ids || state.ids,
+            timestamp: payload.timestamp || state.timestamp
         };
     }
 
@@ -169,7 +194,7 @@ app.get('/api/health', (req, res) => {
     const creds = resolveCalTopoCredentials();
     res.json({
         status: 'ok',
-        version: '1.3.0',
+        version: '1.4.0',
         service: 'SARTopo Proxy',
         message: 'Proxy is live and ready for signed CalTopo Team API requests',
         caltopoSigningConfigured: creds.configured,
