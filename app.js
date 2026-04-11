@@ -153,7 +153,7 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
     const healthUrl = getCalTopoProxyHealthUrl(proxyUrl);
 
     try {
-        console.log('[PROXY] Checking health:', healthUrl);
+    // console.log('[PROXY] Checking health:', healthUrl);
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -9844,7 +9844,7 @@ function buildMapsPage() {
           <button id="fetch-shapes-btn" class="clear-btn">Fetch Shapes</button>
         </div>
       </div>
-      <iframe id="map-iframe" style="width: 100%; height: calc(100% - 62px); border: none;" allow="storage-access; geolocation; clipboard-read; clipboard-write" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+      <iframe id="map-iframe" style="width: 100%; height: calc(100% - 62px); border: none;" allow="geolocation" referrerpolicy="strict-origin-when-cross-origin"></iframe>
     </section>
 
     <section class="table-card" style="margin-top: 20px;">
