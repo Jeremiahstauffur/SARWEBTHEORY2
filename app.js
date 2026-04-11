@@ -10,7 +10,55 @@ const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
 const CALTOPO_BYPASS_PROXY_STORAGE_KEY = 'sar-caltopo-bypass-proxy-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
-const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin || 'default').replace(/[^a-zA-Z0-9]/g, '').substring(0, 12);
+const DEFAULT_BUCKET = 'MNSAR14';
+const SAVE_BUTTON_MIN_LOADING_MS = 1000;
+const SAVE_BUTTON_SUCCESS_MS = 3000;
+
+function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function withSaveButtonFeedback(button, saveAction, options = {}) {
+    if (!button || button.dataset.saveFeedbackBusy === 'true') {
+        return;
+    }
+
+    const loadingLabel = options.loadingLabel || 'Saving';
+    const originalHtml = button.dataset.saveFeedbackOriginalHtml || button.innerHTML;
+    const originallyDisabled = button.disabled;
+    button.dataset.saveFeedbackOriginalHtml = originalHtml;
+    button.dataset.saveFeedbackBusy = 'true';
+    button.disabled = true;
+    button.classList.remove('save-feedback-success');
+    button.classList.add('save-feedback-loading');
+    button.innerHTML = `<span class="save-feedback-spinner" aria-hidden="true"></span><span>${loadingLabel}</span>`;
+
+    const startedAt = Date.now();
+
+    try {
+        const result = await Promise.resolve(saveAction());
+        const remainingLoadingTime = SAVE_BUTTON_MIN_LOADING_MS - (Date.now() - startedAt);
+        if (remainingLoadingTime > 0) {
+            await wait(remainingLoadingTime);
+        }
+
+        button.classList.remove('save-feedback-loading');
+        button.classList.add('save-feedback-success');
+        await wait(SAVE_BUTTON_SUCCESS_MS);
+        return result;
+    } catch (error) {
+        const remainingLoadingTime = SAVE_BUTTON_MIN_LOADING_MS - (Date.now() - startedAt);
+        if (remainingLoadingTime > 0) {
+            await wait(remainingLoadingTime);
+        }
+        throw error;
+    } finally {
+        button.classList.remove('save-feedback-loading', 'save-feedback-success');
+        button.innerHTML = originalHtml;
+        button.disabled = originallyDisabled;
+        delete button.dataset.saveFeedbackBusy;
+    }
+}
 
 function getSyncServerUrl() {
     let url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
@@ -3549,11 +3597,13 @@ function showEditTimePopup(data, onSave) {
   const saveBtn = document.createElement('button');
   saveBtn.className = 'popup-btn primary';
   saveBtn.textContent = 'Save';
-  saveBtn.onclick = () => {
-    data.date = dateInput.value;
-    data.time = timeInput.value;
-    onSave(data);
-    closePopup(popup);
+    saveBtn.onclick = async () => {
+        await withSaveButtonFeedback(saveBtn, async () => {
+            data.date = dateInput.value;
+            data.time = timeInput.value;
+            await Promise.resolve(onSave(data));
+            closePopup(popup);
+        });
   };
   btnContainer.appendChild(saveBtn);
 }
@@ -3992,65 +4042,67 @@ function showEditAccountPopup(acc, index = -1) {
     const saveBtn = document.createElement('button');
     saveBtn.className = 'popup-btn primary';
     saveBtn.textContent = 'Save';
-    saveBtn.onclick = () => {
-        const bundle = loadBundle();
-        let finalPin = pin.value;
-        if (!finalPin) {
-            // Generate next sequential PIN if not provided
-            let next = 1400;
-            while (bundle.accounts.some(a => a.pin === next.toString())) {
-                next++;
+    saveBtn.onclick = async () => {
+        await withSaveButtonFeedback(saveBtn, async () => {
+            const bundle = loadBundle();
+            let finalPin = pin.value;
+            if (!finalPin) {
+                // Generate next sequential PIN if not provided
+                let next = 1400;
+                while (bundle.accounts.some(a => a.pin === next.toString())) {
+                    next++;
+                }
+                finalPin = next.toString();
             }
-            finalPin = next.toString();
-        }
-        const newAcc = {
-            firstName: fName.value,
-            lastName: lName.value,
-            handle: handle.value,
-            pin: finalPin,
-            color: color.value,
-            visiblePages: Array.from(pagesContainer.querySelectorAll('input:checked')).map(i => i.value).concat(['home'])
-        };
-        
-        // Sync to Personnel list
-        if (bundle.pages && bundle.pages.page3) {
-            const newName = newAcc.handle || (newAcc.firstName + ' ' + (newAcc.lastName || '')).trim();
-            if (acc) {
-                const oldPin = acc.pin;
-                const oldHandle = acc.handle;
-                const oldFullName = (acc.firstName + ' ' + (acc.lastName || '')).trim();
-                bundle.pages.page3.forEach(row => {
-                    const rowName = (row[0] || '').trim();
-                    const rowPin = (row[8] || '').trim();
-                    if ((rowPin && rowPin === oldPin) || rowName === oldHandle || rowName === oldFullName) {
-                        row[0] = newName;
-                        row[8] = newAcc.pin;
-                    }
-                });
-            } else {
-                // New account - add to Personnel if not already there
-                const exists = bundle.pages.page3.some(row => (row[0] || '').trim() === newName);
-                if (!exists) {
-                    bundle.pages.page3.push([newName, '', '', '', '', '', '', '', newAcc.pin]);
-                } else {
-                    // Link to existing Personnel row
+            const newAcc = {
+                firstName: fName.value,
+                lastName: lName.value,
+                handle: handle.value,
+                pin: finalPin,
+                color: color.value,
+                visiblePages: Array.from(pagesContainer.querySelectorAll('input:checked')).map(i => i.value).concat(['home'])
+            };
+
+            // Sync to Personnel list
+            if (bundle.pages && bundle.pages.page3) {
+                const newName = newAcc.handle || (newAcc.firstName + ' ' + (newAcc.lastName || '')).trim();
+                if (acc) {
+                    const oldPin = acc.pin;
+                    const oldHandle = acc.handle;
+                    const oldFullName = (acc.firstName + ' ' + (acc.lastName || '')).trim();
                     bundle.pages.page3.forEach(row => {
-                        if ((row[0] || '').trim() === newName) {
+                        const rowName = (row[0] || '').trim();
+                        const rowPin = (row[8] || '').trim();
+                        if ((rowPin && rowPin === oldPin) || rowName === oldHandle || rowName === oldFullName) {
+                            row[0] = newName;
                             row[8] = newAcc.pin;
                         }
                     });
+                } else {
+                    // New account - add to Personnel if not already there
+                    const exists = bundle.pages.page3.some(row => (row[0] || '').trim() === newName);
+                    if (!exists) {
+                        bundle.pages.page3.push([newName, '', '', '', '', '', '', '', newAcc.pin]);
+                    } else {
+                        // Link to existing Personnel row
+                        bundle.pages.page3.forEach(row => {
+                            if ((row[0] || '').trim() === newName) {
+                                row[8] = newAcc.pin;
+                            }
+                        });
+                    }
                 }
             }
-        }
 
-        if (index >= 0) {
-            bundle.accounts[index] = newAcc;
-        } else {
-            bundle.accounts.push(newAcc);
-        }
-        saveBundle(bundle);
-        closePopup(popup);
-        showAccountManager();
+            if (index >= 0) {
+                bundle.accounts[index] = newAcc;
+            } else {
+                bundle.accounts.push(newAcc);
+            }
+            saveBundle(bundle);
+            closePopup(popup);
+            showAccountManager();
+        });
     };
     btnContainer.appendChild(saveBtn);
 }
@@ -4143,17 +4195,19 @@ function showProfileSettingsPopup(user) {
     const saveBtn = document.createElement('button');
     saveBtn.className = 'popup-btn primary';
     saveBtn.textContent = 'Save';
-    saveBtn.onclick = () => {
-        const bundle = loadBundle();
-        const accountIndex = bundle.accounts.findIndex(a => a.pin === user.pin);
-        if (accountIndex >= 0) {
-            bundle.accounts[accountIndex].color = color.value;
-            saveBundle(bundle);
-            user.color = color.value;
-            setCurrentUser(user);
-            updateHeaderProfile();
-        }
-        popup.remove();
+    saveBtn.onclick = async () => {
+        await withSaveButtonFeedback(saveBtn, async () => {
+            const bundle = loadBundle();
+            const accountIndex = bundle.accounts.findIndex(a => a.pin === user.pin);
+            if (accountIndex >= 0) {
+                bundle.accounts[accountIndex].color = color.value;
+                saveBundle(bundle);
+                user.color = color.value;
+                setCurrentUser(user);
+                updateHeaderProfile();
+            }
+            popup.remove();
+        });
     };
     btnContainer.appendChild(saveBtn);
 
@@ -4355,28 +4409,30 @@ function showEditLogTimePopup(entry) {
   const saveBtn = document.createElement('button');
   saveBtn.className = 'popup-btn primary';
   saveBtn.textContent = 'Save';
-  saveBtn.onclick = () => {
-    const dMatch = dateInput.value.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-    const tMatch = timeInput.value.match(/^(\d{2}):(\d{2})$/);
-    if (dMatch && tMatch) {
-      if (!entry.originalDate) {
-        entry.originalDate = entry.date;
-        entry.originalTime = entry.time;
-      }
-      entry.date = dateInput.value;
-      entry.time = timeInput.value;
-      
-      const bundle = loadBundle();
-      const idx = bundle.activityLog.findIndex(l => l.timestamp === entry.timestamp);
-      if (idx > -1) {
-        bundle.activityLog[idx] = entry;
-        saveBundle(bundle);
-        refreshCurrentPageTable();
-      }
-      closePopup(popup);
-    } else {
-      alert('Invalid format. Use MM-DD-YYYY and HH:MM');
-    }
+    saveBtn.onclick = async () => {
+        await withSaveButtonFeedback(saveBtn, async () => {
+            const dMatch = dateInput.value.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+            const tMatch = timeInput.value.match(/^(\d{2}):(\d{2})$/);
+            if (dMatch && tMatch) {
+                if (!entry.originalDate) {
+                    entry.originalDate = entry.date;
+                    entry.originalTime = entry.time;
+                }
+                entry.date = dateInput.value;
+                entry.time = timeInput.value;
+
+                const bundle = loadBundle();
+                const idx = bundle.activityLog.findIndex(l => l.timestamp === entry.timestamp);
+                if (idx > -1) {
+                    bundle.activityLog[idx] = entry;
+                    saveBundle(bundle);
+                    refreshCurrentPageTable();
+                }
+                closePopup(popup);
+            } else {
+                alert('Invalid format. Use MM-DD-YYYY and HH:MM');
+            }
+        });
   };
   btnContainer.appendChild(saveBtn);
 }
@@ -6010,10 +6066,12 @@ function buildSettingsPage() {
 
   if (proxyInput && saveProxyBtn) {
       proxyInput.value = getCalTopoProxy();
-    saveProxyBtn.onclick = () => {
-        setCalTopoProxy(proxyInput.value.trim());
-        status.textContent = 'CalTopo Proxy URL saved.';
-        checkProxyHealth();
+      saveProxyBtn.onclick = async () => {
+          await withSaveButtonFeedback(saveProxyBtn, async () => {
+              setCalTopoProxy(proxyInput.value.trim());
+              status.textContent = 'CalTopo Proxy URL saved.';
+              await checkProxyHealth();
+          });
     };
   }
 
@@ -6046,7 +6104,11 @@ function buildSettingsPage() {
                 clearTimeout(timeoutId);
 
                 if (resp.ok) {
-                    alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and working.`);
+                    if (data.caltopoSigningConfigured === false) {
+                        alert(`Proxy Reachable, But Not Ready For CalTopo Yet\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nThis server is online, but it still needs CalTopo credentials configured on the server itself. In Railway, add:\n- CALTOPO_CREDENTIAL_ID\n- CALTOPO_CREDENTIAL_SECRET\n\nCalTopo wants signed requests to come from your backend, not from the browser.`);
+                    } else {
+                        alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and ready for signed CalTopo requests.`);
+                    }
                     checkProxyHealth();
                 } else {
                     alert(`Proxy Error ${resp.status}\n\nThe server is there, but it returned an error. Make sure you deployed the latest code.`);
@@ -6077,14 +6139,16 @@ function buildSettingsPage() {
         if (credentialIdInput) credentialIdInput.value = creds.credentialId || '';
         if (secretInput) secretInput.value = creds.secret || '';
 
-        saveCalTopoCredsBtn.onclick = () => {
-            setCalTopoCredentials({
-                title: titleInput.value.trim(),
-                accountId: accountIdInput.value.trim(),
-                credentialId: credentialIdInput.value.trim(),
-                secret: secretInput.value.trim()
+        saveCalTopoCredsBtn.onclick = async () => {
+            await withSaveButtonFeedback(saveCalTopoCredsBtn, () => {
+                setCalTopoCredentials({
+                    title: titleInput.value.trim(),
+                    accountId: accountIdInput.value.trim(),
+                    credentialId: credentialIdInput.value.trim(),
+                    secret: secretInput.value.trim()
+                });
+                status.textContent = 'CalTopo credentials saved locally. Configure the same credential ID and secret on the proxy server for signed requests.';
             });
-            status.textContent = 'CalTopo credentials saved.';
         };
     }
 
@@ -6101,35 +6165,37 @@ function buildSettingsPage() {
     if (syncBucketInput) syncBucketInput.value = getSyncBucket();
 
     saveSyncBtn.onclick = async () => {
-        const serverUrl = syncUrlInput.value.trim();
-        const bucket = syncBucketInput ? syncBucketInput.value.trim() : getSyncBucket();
+        await withSaveButtonFeedback(saveSyncBtn, async () => {
+            const serverUrl = syncUrlInput.value.trim();
+            const bucket = syncBucketInput ? syncBucketInput.value.trim() : getSyncBucket();
 
-        if (serverUrl && bucket) {
-            localStorage.setItem(SYNC_URL_STORAGE_KEY, serverUrl);
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
-            syncStatusMsg.textContent = 'Sync settings saved! Testing connection...';
+            if (serverUrl && bucket) {
+                localStorage.setItem(SYNC_URL_STORAGE_KEY, serverUrl);
+                localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+                syncStatusMsg.textContent = 'Sync settings saved! Testing connection...';
 
-            try {
-                const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
-                const [resp, listResp] = await Promise.all([
-                    fetch(`${apiBase}/bundle`),
-                    fetch(`${apiBase}/all-files`)
-                ]);
+                try {
+                    const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
+                    const [resp, listResp] = await Promise.all([
+                        fetch(`${apiBase}/bundle`),
+                        fetch(`${apiBase}/all-files`)
+                    ]);
 
-                if (resp.ok || listResp.ok) {
-                    syncStatusMsg.textContent = 'Sync connection successful! Data found.';
-                } else if (resp.status === 404 && listResp.status === 404) {
-                    syncStatusMsg.textContent = 'Connected! New bucket created on server.';
-                } else {
-                    syncStatusMsg.textContent = `Server returned status ${resp.status}/${listResp.status}.`;
+                    if (resp.ok || listResp.ok) {
+                        syncStatusMsg.textContent = 'Sync connection successful! Data found.';
+                    } else if (resp.status === 404 && listResp.status === 404) {
+                        syncStatusMsg.textContent = 'Connected! New bucket created on server.';
+                    } else {
+                        syncStatusMsg.textContent = `Server returned status ${resp.status}/${listResp.status}.`;
+                    }
+                    await Promise.resolve(syncWithServer());
+                } catch (err) {
+                    syncStatusMsg.textContent = 'Could not reach sync server. Check the URL and your connection.';
                 }
-                syncWithServer();
-            } catch (err) {
-                syncStatusMsg.textContent = 'Could not reach sync server. Check the URL and your connection.';
+            } else {
+                syncStatusMsg.textContent = 'Please enter both Server URL and Bucket ID.';
             }
-        } else {
-            syncStatusMsg.textContent = 'Please enter both Server URL and Bucket ID.';
-      }
+        });
     };
   }
 }
@@ -6758,24 +6824,26 @@ function renderTaskForm(container, taskNum, formData) {
         const saveBtn = document.createElement('button');
         saveBtn.className = 'popup-btn primary';
         saveBtn.textContent = 'Save';
-        saveBtn.onclick = () => {
-           const b = loadBundle();
-           const found = b.activityLog.find(l => l.id === log.id);
-           if (found) {
-              found.action = area.value.trim();
-              saveBundle(b);
-              closePopup(popup);
-              renderTaskForm(container, taskNum, formData);
-           } else {
-              // Fallback if no ID (for old logs)
-              const oldFound = b.activityLog.find(l => l.time === log.time && l.team === log.team && l.action === log.action);
-              if (oldFound) {
-                 oldFound.action = area.value.trim();
-                 saveBundle(b);
-                 closePopup(popup);
-                 renderTaskForm(container, taskNum, formData);
-              }
-           }
+         saveBtn.onclick = async () => {
+             await withSaveButtonFeedback(saveBtn, async () => {
+                 const b = loadBundle();
+                 const found = b.activityLog.find(l => l.id === log.id);
+                 if (found) {
+                     found.action = area.value.trim();
+                     saveBundle(b);
+                     closePopup(popup);
+                     renderTaskForm(container, taskNum, formData);
+                 } else {
+                     // Fallback if no ID (for old logs)
+                     const oldFound = b.activityLog.find(l => l.time === log.time && l.team === log.team && l.action === log.action);
+                     if (oldFound) {
+                         oldFound.action = area.value.trim();
+                         saveBundle(b);
+                         closePopup(popup);
+                         renderTaskForm(container, taskNum, formData);
+                     }
+                 }
+             });
         };
         btnContainer.appendChild(saveBtn);
      };
@@ -9586,19 +9654,19 @@ function buildMapsPage() {
     <section class="hero">
       <h1>Maps Management</h1>
       <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
-      <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 15px; margin-top: 15px; border-radius: 4px; display: flex; align-items: center;">
-        <div id="proxy-status-container" style="font-size: 0.9rem; display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span style="font-weight: 500;">Bypass Proxy:</span>
+      <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 20px; margin-top: 15px; border-radius: 16px; display: flex; align-items: center;">
+        <div id="proxy-status-container" style="font-size: 1rem; display: flex; align-items: center; gap: 30px; flex-wrap: wrap; width: 100%;">
+          <div style="display: flex; align-items: center; gap: 12px;">
             <label class="toggle-switch">
               <input type="checkbox" id="bypass-proxy-toggle" ${getCalTopoBypassProxy() ? 'checked' : ''}>
               <span class="slider"></span>
             </label>
+            <span id="bypass-proxy-label" style="font-weight: 500;">Bypass Proxy is ${getCalTopoBypassProxy() ? 'ON' : 'OFF'}</span>
           </div>
-          <div style="display: flex; align-items: center; gap: 8px; padding-left: 15px; border-left: 1px solid rgba(0,0,0,0.1);">
-            <span>Proxy Status:</span>
-            <span id="proxy-status-dot" style="width: 10px; height: 10px; border-radius: 50%; background: #ccc;"></span>
-            <span id="proxy-status-text">Checking...</span>
+          <div style="display: flex; align-items: center; gap: 10px; padding-left: 20px; border-left: 1px solid rgba(0,0,0,0.1);">
+            <span style="color: var(--muted);">Proxy Status:</span>
+            <span id="proxy-status-dot" style="width: 12px; height: 12px; border-radius: 50%; background: #ccc;"></span>
+            <span id="proxy-status-text" style="font-weight: 500;">Checking...</span>
           </div>
         </div>
       </div>
@@ -9641,9 +9709,14 @@ function buildMapsPage() {
   const mapNameInput = document.getElementById('map-name-input');
 
     const bypassProxyToggle = document.getElementById('bypass-proxy-toggle');
+    const bypassProxyLabel = document.getElementById('bypass-proxy-label');
     if (bypassProxyToggle) {
         bypassProxyToggle.onchange = (e) => {
-            setCalTopoBypassProxy(e.target.checked);
+            const checked = e.target.checked;
+            setCalTopoBypassProxy(checked);
+            if (bypassProxyLabel) {
+                bypassProxyLabel.innerText = `Bypass Proxy is ${checked ? 'ON' : 'OFF'}`;
+            }
             checkProxyHealth();
         };
     }
@@ -9796,10 +9869,7 @@ function buildMapsPage() {
 
         if (bypassProxy) {
             // Direct fetch from CalTopo
-            let targetUrl = `https://${activeMapDomain}/api/v1/map/${activeMapId}/features`;
-            if (activeMapTeamId) {
-                targetUrl = `https://${activeMapDomain}/api/v1/team/${activeMapTeamId}/map/${activeMapId}/features`;
-            }
+            const targetUrl = `https://${activeMapDomain}/api/v1/map/${activeMapId}/since/0`;
 
             try {
                 const resp = await fetch(targetUrl);
@@ -9810,7 +9880,7 @@ function buildMapsPage() {
                 }
             } catch (directErr) {
                 console.error('Direct fetch failed', directErr);
-                alert(`Direct fetch from CalTopo failed: ${directErr.message}\n\nThis is likely due to CORS or a private map. Try disabling "Bypass Proxy" in the Maps Management header or make the map public in CalTopo.`);
+                alert(`Direct fetch from CalTopo failed: ${directErr.message}\n\nCalTopo expects authenticated/private API access to be signed by your backend proxy. Leave "Bypass Proxy" OFF unless the map is public and browser-direct access is acceptable.`);
                 return;
             }
         } else if (proxyUrl) {
@@ -9819,21 +9889,9 @@ function buildMapsPage() {
                 const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
 
                 let finalProxyUrl = `${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`;
-                if (activeMapTeamId) {
-                    finalProxyUrl += `&teamId=${activeMapTeamId}`;
-                }
-
-                const headers = {};
-                const creds = getCalTopoCredentials();
-                if (creds.accountId && creds.credentialId && creds.secret) {
-                    headers['X-CalTopo-Account-Id'] = creds.accountId;
-                    headers['X-CalTopo-Credential-Id'] = creds.credentialId;
-                    headers['X-CalTopo-Secret'] = creds.secret;
-                }
 
                 const proxyResp = await fetch(finalProxyUrl, {
-                    signal: controller.signal,
-                    headers: headers
+                    signal: controller.signal
                 });
                 clearTimeout(timeoutId);
 
@@ -9844,12 +9902,14 @@ function buildMapsPage() {
                     console.error('Proxy fetch failed', errData);
                     const errMsg = errData.message || errData.error || proxyResp.statusText;
 
-                    if (proxyResp.status === 403) {
-                        alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
+                    if (errData.error === 'Proxy Not Configured') {
+                        alert(`Proxy Needs CalTopo Credentials\n\n${errMsg}\n\nConfigure these environment variables on your Railway server:\n- CALTOPO_CREDENTIAL_ID\n- CALTOPO_CREDENTIAL_SECRET\n\nCalTopo signed requests should originate from the proxy, not this browser.`);
+                    } else if (proxyResp.status === 403) {
+                        alert(`CalTopo Access Denied\n\n${errMsg}\n\nYour proxy reached CalTopo, but the signed request was not authorized. Verify that the server-side CalTopo service account can access this map.`);
                     } else if (proxyResp.status === 404) {
                         alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
                     } else {
-                        alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nMiddleman is reachable, but the request to CalTopo failed. Ensure the map is public.`);
+                        alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nThe proxy is reachable, but CalTopo rejected or failed the signed request. Check the server-side CalTopo credential ID/secret and confirm the map is accessible to that service account.`);
                     }
                     return;
                 }
@@ -9884,7 +9944,7 @@ function buildMapsPage() {
       }
     } catch (err) {
       console.error(err);
-        alert(`Could not fetch shapes: ${err.message}\n\nThis is usually caused by browser security (CORS) when the map is private.\n\nTo resolve:\n1. Recommended: In CalTopo, go to "Map Settings" and set "Access" to "Anyone with the link can view".\n2. If it must stay private, ensure you are logged in AND click the EYE ICON (or lock icon) in the address bar to "Allow cookies" for this site.\n3. Make sure you are using HTTPS if CalTopo is HTTPS.`);
+        alert(`Could not fetch shapes: ${err.message}\n\nCalTopo private/team API access should go through the signed proxy flow.\n\nTo resolve:\n1. Make sure your Railway proxy is deployed with CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET.\n2. Keep "Bypass Proxy" OFF for private maps.\n3. Confirm the CalTopo service account can access the target map.`);
     } finally {
       fetchShapesBtn.disabled = false;
       fetchShapesBtn.textContent = 'Fetch Shapes';

@@ -141,7 +141,9 @@
           <div class="home-panel full-width">
             <h2>CalTopo Credentials</h2>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-                Enter your CalTopo Service Account credentials. These are used to securely sign requests.
+              CalTopo expects private API requests to be signed by your backend. Store your Service Account details here
+              for reference, but configure the live proxy with <code>CALTOPO_CREDENTIAL_ID</code> and <code>CALTOPO_CREDENTIAL_SECRET</code>
+              environment variables on Railway.
             </p>
             <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
               <input class="pill-input" id="caltopo-title-input" placeholder="Title (e.g. My Integration)" style="flex: 1; min-width: 200px;" type="text">

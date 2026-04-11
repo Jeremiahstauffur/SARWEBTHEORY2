@@ -1,4 +1,5 @@
 const axios = require('axios');
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
@@ -7,6 +8,9 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'db');
+const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
+const CALTOPO_TIMEOUT_MS = 15000;
+const CALTOPO_SIGNING_WINDOW_MS = 2 * 60 * 1000;
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -19,6 +23,65 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Name', 'X-User-Pin']
 }));
 app.use(express.json({limit: '50mb'}));
+
+const ensureHttpsDomain = (domain) => {
+    const normalized = (domain || CALTOPO_DEFAULT_DOMAIN).trim().toLowerCase();
+    if (!normalized || normalized.includes('/') || normalized.includes('\\') || normalized.includes('?')) {
+        return CALTOPO_DEFAULT_DOMAIN;
+    }
+    return normalized;
+};
+
+const signCalTopoRequest = (method, endpoint, payloadString, credentialSecret) => {
+    const expires = Date.now() + CALTOPO_SIGNING_WINDOW_MS;
+    const message = `${method.toUpperCase()} ${endpoint}\n${expires}\n${payloadString || ''}`;
+    const secret = Buffer.from(credentialSecret, 'base64');
+    const signature = crypto.createHmac('sha256', secret).update(message).digest('base64');
+
+    return {expires, signature};
+};
+
+const resolveCalTopoCredentials = () => {
+    const credentialId = (process.env.CALTOPO_CREDENTIAL_ID || process.env.SARTOPO_CREDENTIAL_ID || '').trim();
+    const credentialSecret = (process.env.CALTOPO_CREDENTIAL_SECRET || process.env.CALTOPO_SECRET || process.env.SARTOPO_SECRET || '').trim();
+
+    return {
+        credentialId,
+        credentialSecret,
+        configured: Boolean(credentialId && credentialSecret)
+    };
+};
+
+const normalizeCalTopoState = (payload) => {
+    if (!payload || typeof payload !== 'object') {
+        return {
+            type: 'FeatureCollection',
+            features: []
+        };
+    }
+
+    if (payload.type === 'FeatureCollection' && Array.isArray(payload.features)) {
+        return payload;
+    }
+
+    if (payload.state && payload.state.type === 'FeatureCollection' && Array.isArray(payload.state.features)) {
+        return payload.state;
+    }
+
+    if (Array.isArray(payload.features)) {
+        return {
+            type: 'FeatureCollection',
+            features: payload.features,
+            ids: payload.ids,
+            timestamp: payload.timestamp
+        };
+    }
+
+    return {
+        type: 'FeatureCollection',
+        features: []
+    };
+};
 
 // Helper to get file path
 const getFilePath = (bucket, key) => {
@@ -236,11 +299,13 @@ app.get('/', (req, res) => {
 
 // Health check endpoint for the proxy
 app.get('/api/health', (req, res) => {
+    const creds = resolveCalTopoCredentials();
     res.json({
         status: 'ok',
-        version: '1.1.0',
+        version: '1.2.0',
         service: 'SAR Proxy + Sync',
         message: 'Unified server is live and well',
+        caltopoSigningConfigured: creds.configured,
         timestamp: new Date().toISOString()
     });
 });
@@ -255,24 +320,64 @@ const fetchMapHandler = async (req, res) => {
         });
     }
 
-    const targetDomain = domain && domain !== 'undefined' ? domain : 'caltopo.com';
-    const targetUrl = `https://${targetDomain}/api/v1/map/${mapId}/features`;
+    const trimmedMapId = String(mapId).trim();
+    const targetDomain = ensureHttpsDomain(domain);
+    const endpoint = `/api/v1/map/${encodeURIComponent(trimmedMapId)}/since/0`;
+    const targetUrl = `https://${targetDomain}${endpoint}`;
+    const creds = resolveCalTopoCredentials();
+
+    if (!creds.configured) {
+        return res.status(500).json({
+            error: 'Proxy Not Configured',
+            message: 'This proxy must sign CalTopo API requests server-side. Set CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET in the server environment.',
+            targetUrl,
+            mapId: trimmedMapId,
+            signingRequired: true
+        });
+    }
+
+    const {expires, signature} = signCalTopoRequest('GET', endpoint, '', creds.credentialSecret);
 
     try {
         console.log(`[PROXY] Fetching shapes from ${targetUrl}`);
-        const response = await axios.get(targetUrl, {timeout: 15000});
-        res.json(response.data);
+        const response = await axios.get(targetUrl, {
+            timeout: CALTOPO_TIMEOUT_MS,
+            params: {
+                id: creds.credentialId,
+                expires,
+                signature
+            }
+        });
+
+        const normalizedState = normalizeCalTopoState(response.data);
+
+        res.json({
+            type: normalizedState.type,
+            features: normalizedState.features || [],
+            state: normalizedState,
+            source: 'caltopo-signed-proxy',
+            mapId: trimmedMapId,
+            domain: targetDomain
+        });
     } catch (error) {
         console.error(`[PROXY] Error fetching from ${targetUrl}:`, error.message);
 
         const responseStatus = error.response ? error.response.status : 500;
+        const responseBody = error.response && error.response.data ? error.response.data : null;
+        const detailMessage = typeof responseBody === 'string'
+            ? responseBody.slice(0, 400)
+            : responseBody && responseBody.message
+                ? responseBody.message
+                : error.message;
 
         // Return detailed JSON for better debugging in the website
         res.status(responseStatus).json({
             error: error.response ? `CalTopo Error ${responseStatus}` : "Proxy Connection Error",
-            message: error.message,
+            message: detailMessage,
             targetUrl: targetUrl,
-            mapId: mapId
+            mapId: trimmedMapId,
+            signingRequired: true,
+            caltopoResponse: responseBody
         });
     }
 };
@@ -281,5 +386,5 @@ app.get('/api/proxy', fetchMapHandler);
 app.get('/fetch-map', fetchMapHandler); // Alias for compatibility
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Sync server v1.1.0 listening on port ${PORT}`);
+    console.log(`Sync server v1.2.0 listening on port ${PORT}`);
 });
