@@ -8,6 +8,7 @@ const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
 const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
+const CALTOPO_BYPASS_PROXY_STORAGE_KEY = 'sar-caltopo-bypass-proxy-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
 const DEFAULT_BUCKET = 'sar-sync-' + btoa(window.location.origin || 'default').replace(/[^a-zA-Z0-9]/g, '').substring(0, 12);
 
@@ -44,11 +45,23 @@ function getCalTopoProxy() {
     return proxy || 'https://sarwebtheory2-production.up.railway.app/api/proxy';
 }
 
-const checkProxyHealth = async () => {
-    const proxyUrl = getCalTopoProxy();
+const checkProxyHealth = async (timeoutMs = 5000) => {
     const dot = document.getElementById('proxy-status-dot');
     const text = document.getElementById('proxy-status-text');
     if (!dot || !text) return;
+
+    if (getCalTopoBypassProxy()) {
+        dot.style.background = '#868e96'; // Grey
+        text.textContent = 'Bypassed';
+        text.title = 'Bypassing proxy and fetching directly from CalTopo.';
+        return;
+    }
+
+    const proxyUrl = getCalTopoProxy();
+
+    // Immediate feedback
+    dot.style.background = '#ffd43b'; // Yellow for checking
+    text.textContent = 'Checking...';
 
     if (!proxyUrl) {
         dot.style.background = '#ff6b6b';
@@ -71,7 +84,12 @@ const checkProxyHealth = async () => {
 
     try {
         console.log('[PROXY] Checking health:', healthUrl);
-        const resp = await fetch(healthUrl);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        const resp = await fetch(healthUrl, {signal: controller.signal});
+        clearTimeout(timeoutId);
+
         if (resp.ok) {
             const data = await resp.json().catch(() => ({}));
             dot.style.background = '#40c057';
@@ -83,6 +101,12 @@ const checkProxyHealth = async () => {
             text.textContent = 'Error ' + resp.status;
         }
     } catch (err) {
+        if (err.name === 'AbortError') {
+            console.warn('[PROXY] Health check timed out');
+            dot.style.background = '#ff6b6b';
+            text.textContent = 'Timeout';
+            return;
+        }
         console.error('[PROXY] Health check failed:', err);
         dot.style.background = '#ff6b6b';
         text.textContent = 'Offline';
@@ -108,6 +132,15 @@ function getCalTopoCredentials() {
 
 function setCalTopoCredentials(creds) {
     localStorage.setItem(CALTOPO_CREDS_STORAGE_KEY, JSON.stringify(creds));
+}
+
+function getCalTopoBypassProxy() {
+    return localStorage.getItem(CALTOPO_BYPASS_PROXY_STORAGE_KEY) === 'true';
+}
+
+function setCalTopoBypassProxy(val) {
+    if (val) localStorage.setItem(CALTOPO_BYPASS_PROXY_STORAGE_KEY, 'true');
+    else localStorage.removeItem(CALTOPO_BYPASS_PROXY_STORAGE_KEY);
 }
 
 function getDeviceId() {
@@ -6005,8 +6038,13 @@ function buildSettingsPage() {
             }
 
             try {
-                const resp = await fetch(healthUrl);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout for manual test
+
+                const resp = await fetch(healthUrl, {signal: controller.signal});
                 const data = await resp.json().catch(() => ({}));
+                clearTimeout(timeoutId);
+
                 if (resp.ok) {
                     alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and working.`);
                     checkProxyHealth();
@@ -6014,7 +6052,11 @@ function buildSettingsPage() {
                     alert(`Proxy Error ${resp.status}\n\nThe server is there, but it returned an error. Make sure you deployed the latest code.`);
                 }
             } catch (err) {
-                alert(`Connection Failed\n\nCould not reach ${healthUrl}.\n\nError: ${err.message}\n\nThis usually means the URL is wrong or the Railway service is down.`);
+                if (err.name === 'AbortError') {
+                    alert(`Connection Timed Out\n\nCould not reach ${healthUrl} within 10 seconds.\n\nThis usually means the URL is wrong, the service is sleeping, or your internet is slow.`);
+                } else {
+                    alert(`Connection Failed\n\nCould not reach ${healthUrl}.\n\nError: ${err.message}\n\nThis usually means the URL is wrong or the Railway service is down.`);
+                }
             } finally {
                 testProxyBtn.textContent = 'Test Connection';
                 testProxyBtn.disabled = false;
@@ -9544,17 +9586,21 @@ function buildMapsPage() {
     <section class="hero">
       <h1>Maps Management</h1>
       <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
-      <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 15px; margin-top: 15px; border-radius: 4px; display: flex; justify-content: space-between; align-items: flex-start; gap: 20px;">
-        <div>
-          <p style="margin: 0; font-size: 0.95rem;"><strong>Tip:</strong> We use 'Full Site' mode by default to provide full controls and avoid login issues (403 Errors).</p>
-          <p style="margin: 5px 0 0; font-size: 0.9rem; color: var(--muted);">If you still see a login prompt, click the <strong>'Login'</strong> button to open a secure login window. Once logged in, click <strong>'Refresh'</strong> here.</p>
-          <div id="proxy-status-container" style="margin-top: 10px; font-size: 0.9rem; display: flex; align-items: center; gap: 8px;">
+      <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 15px; margin-top: 15px; border-radius: 4px; display: flex; align-items: center;">
+        <div id="proxy-status-container" style="font-size: 0.9rem; display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-weight: 500;">Bypass Proxy:</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="bypass-proxy-toggle" ${getCalTopoBypassProxy() ? 'checked' : ''}>
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding-left: 15px; border-left: 1px solid rgba(0,0,0,0.1);">
             <span>Proxy Status:</span>
             <span id="proxy-status-dot" style="width: 10px; height: 10px; border-radius: 50%; background: #ccc;"></span>
             <span id="proxy-status-text">Checking...</span>
           </div>
         </div>
-        <button id="map-help-setup-btn" class="clear-btn" style="background: var(--accent); color: white; border: none; white-space: nowrap; padding: 8px 16px;">Help Me Setup</button>
       </div>
     </section>
 
@@ -9593,9 +9639,13 @@ function buildMapsPage() {
   const mapIdInput = document.getElementById('map-id-input');
     const teamIdInput = document.getElementById('team-id-input');
   const mapNameInput = document.getElementById('map-name-input');
-    const mapHelpBtn = document.getElementById('map-help-setup-btn');
-    if (mapHelpBtn) {
-        mapHelpBtn.onclick = () => startCalTopoSetupWalkthrough(1);
+
+    const bypassProxyToggle = document.getElementById('bypass-proxy-toggle');
+    if (bypassProxyToggle) {
+        bypassProxyToggle.onchange = (e) => {
+            setCalTopoBypassProxy(e.target.checked);
+            checkProxyHealth();
+        };
     }
 
   const addMapBtn = document.getElementById('add-map-btn');
@@ -9741,60 +9791,80 @@ function buildMapsPage() {
     
     try {
       let data = null;
+        const bypassProxy = getCalTopoBypassProxy();
         const proxyUrl = getCalTopoProxy();
 
-      if (proxyUrl) {
-        try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-
-            let finalProxyUrl = `${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`;
+        if (bypassProxy) {
+            // Direct fetch from CalTopo
+            let targetUrl = `https://${activeMapDomain}/api/v1/map/${activeMapId}/features`;
             if (activeMapTeamId) {
-                finalProxyUrl += `&teamId=${activeMapTeamId}`;
+                targetUrl = `https://${activeMapDomain}/api/v1/team/${activeMapTeamId}/map/${activeMapId}/features`;
             }
 
-            const headers = {};
-            const creds = getCalTopoCredentials();
-            if (creds.accountId && creds.credentialId && creds.secret) {
-                headers['X-CalTopo-Account-Id'] = creds.accountId;
-                headers['X-CalTopo-Credential-Id'] = creds.credentialId;
-                headers['X-CalTopo-Secret'] = creds.secret;
-            }
-
-            const proxyResp = await fetch(finalProxyUrl, {
-                signal: controller.signal,
-                headers: headers
-            });
-            clearTimeout(timeoutId);
-
-          if (proxyResp.ok) {
-            data = await proxyResp.json();
-          } else {
-            const errData = await proxyResp.json().catch(() => ({}));
-              console.error('Proxy fetch failed', errData);
-              const errMsg = errData.message || errData.error || proxyResp.statusText;
-
-              if (proxyResp.status === 403) {
-                  alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
-              } else if (proxyResp.status === 404) {
-                  alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
-              } else {
-                  alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nMiddleman is reachable, but the request to CalTopo failed. Ensure the map is public.`);
-              }
-              return;
-          }
-        } catch (proxyErr) {
-            if (proxyErr.name === 'AbortError') {
-                console.error('Proxy request timed out');
-                alert('The proxy server took too long to respond. Please check your internet connection or if the map is excessively large.');
+            try {
+                const resp = await fetch(targetUrl);
+                if (resp.ok) {
+                    data = await resp.json();
+                } else {
+                    throw new Error(`CalTopo returned status ${resp.status}`);
+                }
+            } catch (directErr) {
+                console.error('Direct fetch failed', directErr);
+                alert(`Direct fetch from CalTopo failed: ${directErr.message}\n\nThis is likely due to CORS or a private map. Try disabling "Bypass Proxy" in the Maps Management header or make the map public in CalTopo.`);
                 return;
             }
-            console.error('Proxy unreachable', proxyErr);
-            alert('Web Proxy is not reachable. All CalTopo correspondence must go through the proxy.\n\nError details: ' + proxyErr.message + '\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
-            return;
-        }
+        } else if (proxyUrl) {
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+
+                let finalProxyUrl = `${proxyUrl}?mapId=${activeMapId}&domain=${activeMapDomain}`;
+                if (activeMapTeamId) {
+                    finalProxyUrl += `&teamId=${activeMapTeamId}`;
+                }
+
+                const headers = {};
+                const creds = getCalTopoCredentials();
+                if (creds.accountId && creds.credentialId && creds.secret) {
+                    headers['X-CalTopo-Account-Id'] = creds.accountId;
+                    headers['X-CalTopo-Credential-Id'] = creds.credentialId;
+                    headers['X-CalTopo-Secret'] = creds.secret;
+                }
+
+                const proxyResp = await fetch(finalProxyUrl, {
+                    signal: controller.signal,
+                    headers: headers
+                });
+                clearTimeout(timeoutId);
+
+                if (proxyResp.ok) {
+                    data = await proxyResp.json();
+                } else {
+                    const errData = await proxyResp.json().catch(() => ({}));
+                    console.error('Proxy fetch failed', errData);
+                    const errMsg = errData.message || errData.error || proxyResp.statusText;
+
+                    if (proxyResp.status === 403) {
+                        alert(`Private Map Access Denied\n\n${errMsg}\n\nTo fix this:\n1. Open your map in CalTopo.\n2. Click "Map Settings".\n3. Set "Access" to "Anyone with the link can view".`);
+                    } else if (proxyResp.status === 404) {
+                        alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
+                    } else {
+                        alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nMiddleman is reachable, but the request to CalTopo failed. Ensure the map is public.`);
+                    }
+                    return;
+                }
+            } catch (proxyErr) {
+                if (proxyErr.name === 'AbortError') {
+                    console.error('Proxy request timed out');
+                    alert('The proxy server took too long to respond. Please check your internet connection or if the map is excessively large.');
+                    return;
+                }
+                console.error('Proxy unreachable', proxyErr);
+                alert('Web Proxy is not reachable. All CalTopo correspondence must go through the proxy.\n\nError details: ' + proxyErr.message + '\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
+                return;
+            }
       } else {
-          alert('No CalTopo Proxy configured. All CalTopo correspondence must go through the middleman.\n\nPlease go to Settings and set the Proxy URL (e.g., https://sarwebtheory2-production.up.railway.app/api/proxy).');
+            alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL, or enable "Bypass Proxy" above.');
           return;
       }
       
