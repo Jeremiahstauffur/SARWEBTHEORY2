@@ -7439,13 +7439,14 @@ function downloadAllForms() {
 </head>
 <body>
     <div class="no-print">
-        <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 999px;">Print PDF</button>
+        <button id="print-all-btn" style="padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 999px;">Print PDF</button>
         <p style="font-size: 12px; color: #666;">Note: Use "Save as PDF" in the print dialog for a digital copy.</p>
     </div>
     <div class="print-container">
         ${formsHTML}
     </div>
     <script>
+        document.getElementById('print-all-btn').onclick = () => { window.print(); };
         setTimeout(() => { window.print(); }, 500);
     </script>
 </body>
@@ -7531,7 +7532,7 @@ function printSearchFile() {
 </head>
 <body>
     <div class="no-print">
-        <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 999px;">Print PDF</button>
+        <button id="print-file-btn" style="padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 999px;">Print PDF</button>
         <p style="font-size: 12px; color: #666;">Note: Use "Save as PDF" in the print dialog for a digital copy.</p>
     </div>
 
@@ -7575,6 +7576,7 @@ function printSearchFile() {
     </div>
 
     <script>
+        document.getElementById('print-file-btn').onclick = () => { window.print(); };
         const bundle = ${JSON.stringify(bundle)};
         const psrcData = ${JSON.stringify(psrcData)};
         const posData = ${JSON.stringify(posData)};
@@ -7682,7 +7684,7 @@ function printSearchFile() {
         drawLineChart('pos-chart', posData, '#fd7e14', true);
 
         // Auto-print
-        setTimeout(function() {
+        setTimeout(() => {
             window.print();
         }, 1000);
     </script>
@@ -9454,6 +9456,20 @@ function importCalTopoSegments(selected) {
 }
 
 async function caltopo_api_call(method, endpoint, payload = null, domain = null) {
+  try {
+    return await _execute_caltopo_api_call(method, endpoint, payload, domain);
+  } catch (error) {
+    console.error('CalTopo API Call Error:', error);
+    if (error.message.includes('Unexpected token')) {
+       alert('CalTopo API Call Error: The server returned an invalid response (not JSON). This usually happens when the proxy URL is incorrect or the server is down.');
+    } else {
+       alert('CalTopo API Call Error: ' + error.message);
+    }
+    return null;
+  }
+}
+
+async function _execute_caltopo_api_call(method, endpoint, payload, domain) {
   const proxyUrl = getCalTopoProxy();
   if (!proxyUrl) {
     alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL.');
@@ -9467,79 +9483,74 @@ async function caltopo_api_call(method, endpoint, payload = null, domain = null)
     requestBody.credentialSecret = savedSigningCreds.credentialSecret;
   }
 
-  const baseUrl = normalizeCalTopoProxyUrl(proxyUrl);
-  // Ensure we call /api/call
-  const proxyCallUrl = baseUrl.replace('/api/proxy', '/api/call').replace('/fetch-map', '/api/call');
+  // Ensure we call /api/call - normalizeCalTopoProxyUrl always ends in /api/proxy or is a .php file
+  let proxyCallUrl = normalizeCalTopoProxyUrl(proxyUrl);
+  if (proxyCallUrl.includes('.php')) {
+      proxyCallUrl = proxyCallUrl.split('?')[0] + (proxyCallUrl.includes('?') ? '&' : '?') + 'api_call=1';
+  } else {
+      proxyCallUrl = proxyCallUrl.replace(/\/api\/proxy\/?$/i, '/api/call').replace(/\/fetch-map\/?$/i, '/api/call');
+  }
   
-  try {
-    const response = await fetch(proxyCallUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
-    });
-    
-    const contentType = response.headers.get('content-type');
-    if (contentType && contentType.includes('application/json')) {
-      const data = await response.json();
-      if (!response.ok) {
-        if (data.proxyDiagnostics) {
-          console.group('CalTopo Proxy Diagnostics');
-          console.error('Method:', data.proxyDiagnostics.method);
-          console.error('Endpoint:', data.proxyDiagnostics.endpoint);
-          console.error('Expires:', data.proxyDiagnostics.expires);
-          console.error('Payload Size:', data.proxyDiagnostics.payloadSize);
-          console.error('Message signed by proxy:', data.proxyDiagnostics.messageToSign);
-          console.groupEnd();
-        }
-        
-        let errorMsg = data.message || data.error || `Server Error ${response.status}`;
-        if (data.targetUrl) {
-          errorMsg += `\n(Attempted: ${data.targetUrl})`;
-        }
-        
-        // Specific help for 403 / "write rights" errors
-        if (response.status === 403 || errorMsg.toLowerCase().includes('write rights')) {
-           errorMsg = "CalTopo Permission Error: " + errorMsg + "\n\n" +
-                      "This usually means your CalTopo Service Account (Credential ID) has 'READ' access but needs 'UPDATE' or 'MANAGE' access to create maps. " +
-                      "Please check your Team Admin -> Details -> Service Account settings on CalTopo.com.";
-        }
-        
-        throw new Error(errorMsg);
+  const response = await fetch(proxyCallUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(requestBody)
+  });
+  
+  const contentType = response.headers.get('content-type');
+  if (contentType && contentType.includes('application/json')) {
+    const data = await response.json();
+    if (!response.ok) {
+      if (data.proxyDiagnostics) {
+        console.group('CalTopo Proxy Diagnostics');
+        console.error('Method:', data.proxyDiagnostics.method);
+        console.error('Endpoint:', data.proxyDiagnostics.endpoint);
+        console.error('Expires:', data.proxyDiagnostics.expires);
+        console.error('Payload Size:', data.proxyDiagnostics.payloadSize);
+        console.error('Message signed by proxy:', data.proxyDiagnostics.messageToSign);
+        console.groupEnd();
       }
-      return data;
-    } else {
-      const text = await response.text();
-      if (!response.ok) {
-        if (response.status === 404) {
-          if (text.toLowerCase().includes("lost") || text.includes("404image.png") || text.toLowerCase().includes("not found")) {
-             throw new Error(`The CalTopo endpoint '${endpoint}' was not found. This might be because the Team ID is incorrect or the domain '${domain || 'caltopo.com'}' is wrong for this account.`);
-          }
-          throw new Error(`Endpoint not found (404). Your proxy server might be out of date. Please ensure you have the latest sync-server.js running.`);
-        }
-        
-        // Extract title from HTML if possible
-        let displayError = text.substring(0, 150);
-        const titleMatch = text.match(/<title>(.*?)<\/title>/i);
-        if (titleMatch && titleMatch[1]) {
-           displayError = titleMatch[1];
-        } else {
-           const h2Match = text.match(/<h2>(.*?)<\/h2>/i);
-           if (h2Match && h2Match[1]) displayError = h2Match[1];
-        }
-        
-        throw new Error(`Server Error ${response.status}: ${displayError}`);
+      
+      let errorMsg = data.message || data.error || `Server Error ${response.status}`;
+      if (data.targetUrl) {
+        errorMsg += `\n(Attempted: ${data.targetUrl})`;
       }
-      // If it's 200 OK but not JSON, still a problem for this API
-      throw new Error(`Expected JSON response but got ${contentType || 'text'}.`);
+      
+      // Specific help for 403 / "write rights" errors
+      if (response.status === 403 || errorMsg.toLowerCase().includes('write rights')) {
+         errorMsg = "CalTopo Permission Error: " + errorMsg + "\n\n" +
+                    "This usually means your CalTopo Service Account (Credential ID) has 'READ' access but needs 'UPDATE' or 'MANAGE' access to create maps. " +
+                    "Also, ensure your Team ID is correct for the domain you selected (CalTopo vs SARTopo).";
+      }
+      
+      throw new Error(errorMsg);
     }
-  } catch (error) {
-    console.error('CalTopo API Call Error:', error);
-    if (error.message.includes('Unexpected token')) {
-       alert('CalTopo API Call Error: The server returned an invalid response (not JSON). This usually happens when the proxy URL is incorrect or the server is down.');
-    } else {
-       alert('CalTopo API Call Error: ' + error.message);
+    return data;
+  } else {
+    const text = await response.text();
+    if (!response.ok) {
+      if (response.status === 404) {
+        const lowerText = text.toLowerCase();
+        if (lowerText.includes("lost") || text.includes("404image.png") || lowerText.includes("not found")) {
+           throw new Error(`The CalTopo endpoint '${endpoint}' was not found. This might be because the Team ID is incorrect or the domain '${domain || 'caltopo.com'}' is wrong for this account.`);
+        }
+        throw new Error(`Endpoint not found (404) at '${proxyCallUrl}'. Your proxy server might be out of date. Please ensure you have the latest sync-server.js running.`);
+      }
+      
+      // Extract title from HTML if possible
+      let displayError = text.substring(0, 150);
+      const titleMatch = text.match(/<title>(.*?)<\/title>/i);
+      if (titleMatch && titleMatch[1]) {
+         displayError = titleMatch[1];
+      } else {
+         const h2Match = text.match(/<h2>(.*?)<\/h2>/i);
+         if (h2Match && h2Match[1]) displayError = h2Match[1];
+      }
+      
+      throw new Error(`Server Error ${response.status}: ${displayError}`);
     }
-    return null;
+    // If it's 200 OK but not JSON, still a problem for this API
+    throw new Error(`Expected JSON response but got ${contentType || 'text'}.`);
   }
 }
 
@@ -9572,13 +9583,8 @@ async function handleCreateMap() {
   statusDiv.textContent = 'Sending request to CalTopo...';
 
   const payload = {
-    type: "Feature",
-    id: null,
-    geometry: null,
     properties: {
-      title: title,
-      class: "CollaborativeMap",
-      accountId: teamId
+      title: title
     }
   };
 
@@ -9638,15 +9644,14 @@ async function verifyCalTopoAccount() {
   resultSmall.textContent = 'Verifying...';
   resultSmall.style.color = 'var(--muted)';
 
-  const endpoint = `/api/v1/acct/${teamId}/since/0`;
+  const endpoint = `/api/v1/acct/${teamId}/CollaborativeMap`;
   const result = await caltopo_api_call('GET', endpoint, null, domain);
-
+  
   verifyBtn.disabled = false;
   verifyBtn.textContent = 'Verify';
-
-  if (result && (result.id || (result.features && Array.isArray(result.features)))) {
-      const accountName = (result.properties && result.properties.name) || (result.id) || teamId;
-      resultSmall.textContent = `✓ Connected to: ${accountName}`;
+  
+  if (result && (Array.isArray(result) || result.features || result.id || (typeof result === 'object' && Object.keys(result).length > 0))) {
+      resultSmall.textContent = `✓ Connected! Account access verified.`;
       resultSmall.style.color = '#40c057';
   } else {
       resultSmall.textContent = '✗ Failed to connect. Check Team ID and Domain.';

@@ -192,7 +192,7 @@ app.get('/api/v1/:bucket/latest', (req, res) => {
         files.forEach(f => {
             const filePath = path.join(bucketDir, f);
             const metaPath = filePath + '.meta';
-            let updatedAt = 0;
+            let updatedAt;
 
             if (fs.existsSync(metaPath)) {
                 try {
@@ -215,7 +215,7 @@ app.get('/api/v1/:bucket/latest', (req, res) => {
         const bundlePath = path.join(bucketDir, 'bundle.json');
         if (fs.existsSync(bundlePath)) {
             const bundleMetaPath = bundlePath + '.meta';
-            let bundleTime = 0;
+            let bundleTime;
             if (fs.existsSync(bundleMetaPath)) {
                 try {
                     bundleTime = new Date(JSON.parse(fs.readFileSync(bundleMetaPath, 'utf8')).updatedAt).getTime();
@@ -482,6 +482,75 @@ const fetchMapHandler = async (req, res) => {
     }
 };
 
+const executeGenericCall = async (method, endpoint, payloadString, targetUrl, creds, expires, signature) => {
+    const upperMethod = method.toUpperCase();
+    const isPostLikeWithPayload = ['POST', 'PUT', 'PATCH'].includes(upperMethod) && payloadString.length > 0;
+
+    if (isPostLikeWithPayload) {
+        const axiosConfig = {
+            timeout: CALTOPO_TIMEOUT_MS,
+            params: {
+                id: creds.credentialId,
+                expires,
+                signature
+            },
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        };
+
+        try {
+            return await axios({
+                method: upperMethod,
+                url: targetUrl,
+                data: payloadString,
+                ...axiosConfig
+            });
+        } catch (e) {
+            // If it's a format issue (400) or auth issue (401), try the legacy form-encoded approach.
+            if (e.response && [400, 401, 403].includes(e.response.status)) {
+                console.log(`[PROXY] JSON approach failed with ${e.response.status}, retrying with form-encoded...`);
+                const form = new URLSearchParams();
+                form.append('id', creds.credentialId);
+                form.append('expires', expires.toString());
+                form.append('signature', signature);
+                form.append('json', payloadString);
+
+                return await axios({
+                    method: upperMethod,
+                    url: targetUrl,
+                    data: form.toString(),
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    timeout: CALTOPO_TIMEOUT_MS
+                });
+            }
+            throw e;
+        }
+    } else {
+        // Standard GET, DELETE, or POST without payload (params in URL)
+        const axiosConfig = {
+            timeout: CALTOPO_TIMEOUT_MS,
+            params: {
+                id: creds.credentialId,
+                expires,
+                signature
+            }
+        };
+
+        if (upperMethod === 'POST') {
+            return await axios.post(targetUrl, payloadString, axiosConfig);
+        } else if (upperMethod === 'PUT') {
+            return await axios.put(targetUrl, payloadString, axiosConfig);
+        } else if (upperMethod === 'DELETE') {
+            return await axios.delete(targetUrl, { ...axiosConfig, data: payloadString });
+        } else {
+            return await axios.get(targetUrl, axiosConfig);
+        }
+    }
+};
+
 const genericCallHandler = async (req, res) => {
     const { method = 'GET', endpoint, payload, domain } = req.body;
     
@@ -498,93 +567,24 @@ const genericCallHandler = async (req, res) => {
     }
 
     // CalTopo Team API: if payload is an empty object, sign and send it as an empty string
-    // Python's bool({}) is False, so json.dumps(payload) if payload else "" results in ""
     const payloadString = (payload && typeof payload === 'object' && Object.keys(payload).length > 0) 
         ? JSON.stringify(payload) 
         : (typeof payload === 'string' && payload.length > 0 ? payload : '');
 
     const { expires, signature } = signCalTopoRequest(method, endpoint, payloadString, creds.credentialSecret);
 
-    const isPostLikeWithPayload = ['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && payloadString.length > 0;
-
     try {
         console.log(`[PROXY] Generic ${method.toUpperCase()} to ${targetUrl}`);
-        if (payloadString) console.log(`[PROXY] Payload size: ${payloadString.length} chars`);
+        if (payloadString) console.log(`[PROXY] Payload: ${payloadString.slice(0, 100)}${payloadString.length > 100 ? '...' : ''}`);
         
-        let response;
-        const upperMethod = method.toUpperCase();
-
-        if (isPostLikeWithPayload) {
-            // CalTopo prefers authentication in URL, JSON in body for many modern endpoints.
-            // We'll try the JSON approach first, and fallback to form-encoded if needed.
-            const axiosConfig = {
-                timeout: CALTOPO_TIMEOUT_MS,
-                params: {
-                    id: creds.credentialId,
-                    expires,
-                    signature
-                },
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            };
-
-            try {
-                response = await axios({
-                    method: upperMethod,
-                    url: targetUrl,
-                    data: payloadString,
-                    ...axiosConfig
-                });
-            } catch (e) {
-                // If it's a format issue (400) or auth issue (401), try the legacy form-encoded approach.
-                // Note: 403 is usually permissions, so retrying might not help but it's safe.
-                if (e.response && [400, 401, 403].includes(e.response.status)) {
-                    console.log(`[PROXY] JSON attempt failed (${e.response.status}), falling back to form-encoded...`);
-                    const form = new URLSearchParams();
-                    form.append('id', creds.credentialId);
-                    form.append('expires', expires.toString());
-                    form.append('signature', signature);
-                    form.append('json', payloadString);
-
-                    response = await axios({
-                        method: upperMethod,
-                        url: targetUrl,
-                        data: form.toString(),
-                        headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded'
-                        },
-                        timeout: CALTOPO_TIMEOUT_MS
-                    });
-                } else {
-                    throw e;
-                }
-            }
-        } else {
-            // Standard GET, DELETE, or POST without payload (params in URL)
-            const axiosConfig = {
-                timeout: CALTOPO_TIMEOUT_MS,
-                params: {
-                    id: creds.credentialId,
-                    expires,
-                    signature
-                }
-            };
-
-            if (upperMethod === 'POST') {
-                response = await axios.post(targetUrl, payloadString, axiosConfig);
-            } else if (upperMethod === 'PUT') {
-                response = await axios.put(targetUrl, payloadString, axiosConfig);
-            } else if (upperMethod === 'DELETE') {
-                response = await axios.delete(targetUrl, { ...axiosConfig, data: payloadString });
-            } else {
-                response = await axios.get(targetUrl, axiosConfig);
-            }
-        }
-
+        const response = await executeGenericCall(method, endpoint, payloadString, targetUrl, creds, expires, signature);
         res.json(response.data);
     } catch (error) {
         console.error(`[PROXY] Error in generic call to ${targetUrl}:`, error.message);
+        if (error.response) {
+            console.error(`[PROXY] CalTopo Response Status: ${error.response.status}`);
+            console.error(`[PROXY] CalTopo Response Data:`, error.response.data);
+        }
         const status = error.response ? error.response.status : 500;
         const responseData = error.response ? error.response.data : { error: error.message };
         
