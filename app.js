@@ -8714,18 +8714,19 @@ const getBoundingBoxDimensions = (coords) => {
 };
 
 const calculateGeometry = (item) => {
-    let geom = item.geometry || item.properties?.geometry || item;
-    let props = item.properties || item;
+    let geom = item.geometry || item.properties?.geometry || item.attributes?.geometry || item;
+    let props = item.properties || item.attributes || item;
 
     // Normalize CalTopo internal format to GeoJSON-like
-    if (['Shape', 'Assignment', 'Track', 'Route', 'Area', 'Sector', 'Buffer'].includes(geom.type) && (item.vertices || props.vertices)) {
-        const vertices = item.vertices || props.vertices;
-        const isClosed = item.closed === true || props.closed === true || (geom.type === 'Assignment' && (item.closed !== false && props.closed !== false));
+    const isAssignment = props.class === 'Assignment' || props.type === 'Assignment' || geom.type === 'Assignment';
+    if (['Shape', 'Assignment', 'Track', 'Route', 'Area', 'Sector', 'Buffer', 'Graphic', 'graphic'].includes(geom.type || props.class) && (item.vertices || props.vertices || item.pts || props.pts || item.coords || props.coords || item.coordinates || props.coordinates)) {
+        const vertices = item.vertices || props.vertices || item.pts || props.pts || item.coords || props.coords || item.coordinates || props.coordinates;
+        const isClosed = item.closed === true || props.closed === true || (isAssignment && (item.closed !== false && props.closed !== false));
         geom = {
             type: isClosed ? 'Polygon' : 'LineString',
             coordinates: isClosed ? [vertices] : vertices
         };
-    } else if (['Marker', 'Clue', 'Point'].includes(geom.type) && (item.position || props.position)) {
+    } else if (['Marker', 'Clue', 'Point'].includes(geom.type || props.class) && (item.position || props.position)) {
         geom = {
             type: 'Point',
             coordinates: item.position || props.position
@@ -9304,25 +9305,10 @@ function showCalTopoShapesPopup(features) {
   content.insertBefore(bodyContainer, btnContainer);
 
   const segmentsToPreview = features.map(f => {
-      const props = f.properties || f;
+      const attrs = f.attributes || {};
       const geom = f.geometry || f;
       
-      let name = props.label || props.title || props.name || 'Unnamed';
-      
-      // Improved naming for Assignments
-      if (props.class === 'Assignment' || props.type === 'Assignment' || props.assignment) {
-          const a = (typeof props.assignment === 'object') ? props.assignment : props;
-          const num = a.number || '';
-          const label = a.label || props.title || props.label || '';
-          if (num && label) {
-              name = `${num} ${label}`;
-          } else if (num) {
-              name = num;
-          } else if (label) {
-              name = label;
-          }
-      }
-
+      const name = attrs.name || 'Unnamed Graphic';
       const res = calculateGeometry(f);
       return {
           name: name,
@@ -9330,7 +9316,7 @@ function showCalTopoShapesPopup(features) {
           length: res.length > 0 ? res.length.toFixed(2) : '0.00',
           width: res.width > 0 ? res.width.toFixed(2) : '0.00',
           height: res.height > 0 ? res.height.toFixed(2) : '0.00',
-          type: geom.type,
+          type: geom.type || attrs.class || attrs.type || (attrs.vertices ? 'Shape' : 'Graphic'),
           feature: f
       };
   });
@@ -9467,6 +9453,111 @@ function importCalTopoSegments(selected) {
     }, 7000);
 }
 
+async function caltopo_api_call(method, endpoint, payload = null) {
+  const proxyUrl = getCalTopoProxy();
+  if (!proxyUrl) {
+    alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL.');
+    return null;
+  }
+
+  const savedSigningCreds = getCalTopoSigningCredentials();
+  const requestBody = { method, endpoint, payload };
+  if (savedSigningCreds) {
+    requestBody.credentialId = savedSigningCreds.credentialId;
+    requestBody.credentialSecret = savedSigningCreds.credentialSecret;
+  }
+
+  const baseUrl = normalizeCalTopoProxyUrl(proxyUrl);
+  // Ensure we call /api/call
+  const proxyCallUrl = baseUrl.replace('/api/proxy', '/api/call').replace('/fetch-map', '/api/call');
+  
+  try {
+    const response = await fetch(proxyCallUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+    
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.message || err.error || 'API Call failed');
+    }
+    
+    return await response.json();
+  } catch (error) {
+    console.error('CalTopo API Call Error:', error);
+    alert('CalTopo API Call Error: ' + error.message);
+    return null;
+  }
+}
+
+async function handleCreateMap() {
+  const teamIdInput = document.getElementById('create-team-id');
+  const titleInput = document.getElementById('create-map-title');
+  const statusDiv = document.getElementById('create-map-status');
+  const submitBtn = document.getElementById('submit-create-map');
+
+  if (!teamIdInput || !titleInput || !statusDiv || !submitBtn) return;
+
+  const teamId = teamIdInput.value.trim();
+  const title = titleInput.value.trim();
+
+  if (!teamId) {
+    alert('Please enter a Team ID.');
+    return;
+  }
+  if (!title) {
+    alert('Please enter a Map Title.');
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Creating...';
+  statusDiv.style.display = 'block';
+  statusDiv.style.color = 'var(--accent)';
+  statusDiv.textContent = 'Sending request to CalTopo...';
+
+  const payload = {
+    properties: {
+      title: title
+    }
+  };
+
+  const endpoint = `/api/v1/acct/${teamId}/CollaborativeMap`;
+  const result = await caltopo_api_call('POST', endpoint, payload);
+
+  if (result && result.id) {
+    statusDiv.style.color = '#40c057';
+    statusDiv.innerHTML = `Success! Map created with ID: <strong>${result.id}</strong><br>Adding to your maps list...`;
+    
+    // Add to local bundle
+    const bundle = loadBundle();
+    if (!bundle.maps) bundle.maps = [];
+    // Check if it already exists (unlikely for a new map but good practice)
+    if (!bundle.maps.find(m => m.id === result.id)) {
+        bundle.maps.unshift({
+          id: result.id,
+          name: title,
+          domain: 'caltopo.com',
+          teamId: teamId
+        });
+        saveBundle(bundle);
+    }
+    
+    // Switch to Map tab after a delay
+    setTimeout(() => {
+      const newUrl = window.location.pathname + '?tab=map';
+      window.history.replaceState(null, '', newUrl);
+      buildMapsPage();
+    }, 2000);
+  } else {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Create Map';
+    statusDiv.style.color = '#ff6b6b';
+    statusDiv.textContent = 'Failed to create map. Check console for details.';
+  }
+}
+
 async function caltopo_request(btn = null) {
   const bundle = loadBundle();
   const map = bundle.maps ? bundle.maps[0] : null;
@@ -9509,24 +9600,64 @@ async function caltopo_request(btn = null) {
 
     if (proxyResp.ok) {
       const data = await proxyResp.json();
+      console.log('CalTopo Proxy Data:', data);
+      
       const features = (data.features || []).filter(f => {
         const props = f.properties || f;
-        const hasGeom = !!(f.geometry || f.vertices || f.position || props.geometry || props.vertices || props.position);
+        const hasGeom = !!(f.geometry || f.vertices || f.position || props.geometry || props.vertices || props.position || f.pts || f.coords || f.coordinates || props.pts || props.coords || props.coordinates);
         const rawType = (f.geometry?.type || f.type || props.class || props.type || '').toString().toLowerCase();
+        
+        console.log(`Checking feature: ${rawType}, hasGeom: ${hasGeom}`, f);
         
         // Very lenient check - if it has geometry/vertices, we probably want it
         // We only exclude things that are clearly not shapes (like Folders, though Folders don't have geometry)
         const allowedTypes = [
           'polygon', 'multipolygon', 'linestring', 'multilinestring', 'point', 'multipoint',
-          'shape', 'assignment', 'track', 'route', 'marker', 'clue', 'area', 'line', 'sector', 'buffer'
+          'shape', 'assignment', 'track', 'route', 'marker', 'clue', 'area', 'line', 'sector', 'buffer', 'graphic', 'feature'
         ];
         
-        const isAllowed = allowedTypes.some(t => rawType.includes(t)) || rawType === 'feature' || rawType === '';
+        const isAllowed = allowedTypes.some(t => rawType.includes(t)) || rawType === 'feature' || rawType === 'graphic' || rawType === '';
         return hasGeom && isAllowed;
+      }).map((f, idx) => {
+        const props = f.properties || f;
+        const geom = f.geometry || f;
+        const objectId = idx + 1;
+        
+        let name = props.label || props.title || props.name || props.text;
+        
+        // Robust naming for Assignments or unnamed features
+        if (props.class === 'Assignment' || props.type === 'Assignment' || props.assignment) {
+            const a = (typeof props.assignment === 'object') ? props.assignment : props;
+            const num = a.number || '';
+            const label = a.label || props.title || props.label || '';
+            if (num && label) name = `${num} ${label}`;
+            else if (num) name = num;
+            else if (label) name = label;
+        }
+        
+        if (!name) name = f.id ? `Feature ${f.id}` : `Unnamed Graphic ${objectId}`;
+
+        const feature = {
+          geometry: geom,
+          attributes: {
+            ...props,
+            ObjectID: objectId,
+            name: name,
+            id: f.id || props.id || props.uuid || `gfx-${objectId}`
+          }
+        };
+
+        // Cleanup: remove redundant nested objects
+        delete feature.attributes.geometry;
+        delete feature.attributes.properties;
+        
+        return feature;
       });
 
       if (features.length === 0) {
-        alert('No compatible shapes found on this map.');
+        console.warn('CalTopo Proxy Data received but no features filtered:', data);
+        const rawCount = (data.state && data.state.features) ? data.state.features.length : 0;
+        alert(`No compatible shapes found on this map. (Total objects from proxy: ${rawCount}). Check your service account permissions or object types (polygon, line, marker, assignment).`);
       } else {
         const b = loadBundle();
         if (b.maps && b.maps[0]) {
@@ -9539,6 +9670,8 @@ async function caltopo_request(btn = null) {
           const activeTab = urlParams.get('tab') || 'map';
           if (activeTab === 'features') {
             renderFeaturesList();
+          } else if (activeTab === 'arcgis') {
+            renderArcGISMap();
           } else {
             showCalTopoShapesPopup(features);
           }
@@ -9560,6 +9693,147 @@ async function caltopo_request(btn = null) {
   }
 }
 
+let arcgisView = null;
+
+function renderArcGISMap() {
+  const mapDiv = document.getElementById('arcgis-map-div');
+  if (!mapDiv) return;
+  
+  const refreshBtn = document.getElementById('refresh-arcgis-btn');
+  if (refreshBtn && !refreshBtn.onclick) {
+    refreshBtn.onclick = () => caltopo_request(refreshBtn);
+  }
+
+  const bundle = loadBundle();
+  const currentMap = bundle.maps ? bundle.maps[0] : null;
+  const features = currentMap ? (currentMap.features || []) : [];
+
+  if (typeof require === 'undefined') {
+    mapDiv.innerHTML = '<p style="padding: 20px;">ArcGIS API not loaded yet. Please check your internet connection.</p>';
+    return;
+  }
+
+  require([
+    "esri/Map",
+    "esri/views/MapView",
+    "esri/Graphic",
+    "esri/layers/GraphicsLayer"
+  ], function(Map, MapView, Graphic, GraphicsLayer) {
+    
+    if (!arcgisView) {
+      const map = new Map({
+        basemap: "topo-vector"
+      });
+
+      arcgisView = new MapView({
+        container: mapDiv,
+        map: map,
+        zoom: 4,
+        center: [-98, 39]
+      });
+    } else {
+      // Re-attach to the new DOM element created by buildMapsPage()
+      arcgisView.container = mapDiv;
+    }
+
+    const map = arcgisView.map;
+    let graphicsLayer = map.layers.find(l => l.id === "caltopo-features");
+    if (!graphicsLayer) {
+      graphicsLayer = new GraphicsLayer({ id: "caltopo-features" });
+      map.add(graphicsLayer);
+    } else {
+      graphicsLayer.removeAll();
+    }
+
+    if (features.length === 0) return;
+
+    const arcgisGraphics = features.map(f => {
+      const geom = f.geometry || {};
+      const attrs = f.attributes || {};
+      
+      let arcgisGeom = null;
+      const vertices = geom.vertices || attrs.vertices || geom.pts || attrs.pts || geom.coords || attrs.coords || geom.coordinates || attrs.coordinates;
+      const position = geom.position || attrs.position || (geom.type === 'Point' ? geom.coordinates : null);
+
+      if (geom.type === 'Point' || position) {
+        const pos = position || geom.coordinates;
+        if (pos && Array.isArray(pos)) {
+          arcgisGeom = {
+            type: "point",
+            longitude: pos[0],
+            latitude: pos[1]
+          };
+        }
+      } else if (vertices && Array.isArray(vertices)) {
+        const isClosed = geom.closed === true || attrs.closed === true || (attrs.class === 'Assignment' && attrs.closed !== false) || geom.type === 'Polygon';
+        if (isClosed) {
+          // ArcGIS rings expect array of rings, each ring is array of points
+          // If vertices is [ [lon,lat], [lon,lat] ], then [vertices] is one ring
+          const rings = (Array.isArray(vertices[0]) && Array.isArray(vertices[0][0])) ? vertices : [vertices];
+          arcgisGeom = {
+            type: "polygon",
+            rings: rings
+          };
+        } else {
+          const paths = (Array.isArray(vertices[0]) && Array.isArray(vertices[0][0])) ? vertices : [vertices];
+          arcgisGeom = {
+            type: "polyline",
+            paths: paths
+          };
+        }
+      }
+
+      if (!arcgisGeom) return null;
+
+      let symbol = {
+        type: "simple-fill",
+        color: [64, 192, 87, 0.4],
+        outline: { color: [64, 192, 87, 1], width: 2 }
+      };
+
+      if (arcgisGeom.type === 'polyline') {
+        symbol = {
+          type: "simple-line",
+          color: [64, 192, 87, 1],
+          width: 3
+        };
+      } else if (arcgisGeom.type === 'point') {
+        symbol = {
+          type: "simple-marker",
+          color: [64, 192, 87, 1],
+          size: 8,
+          outline: { color: [255, 255, 255, 1], width: 1 }
+        };
+      }
+
+      return new Graphic({
+        geometry: arcgisGeom,
+        attributes: attrs,
+        symbol: symbol,
+        popupTemplate: {
+          title: "{name}",
+          content: [{
+            type: "fields",
+            fieldInfos: [
+              { fieldName: "ObjectID", label: "ID" },
+              { fieldName: "id", label: "CalTopo ID" },
+              { fieldName: "class", label: "Class" }
+            ]
+          }]
+        }
+      });
+    }).filter(g => g !== null);
+
+    graphicsLayer.addMany(arcgisGraphics);
+
+    if (arcgisGraphics.length > 0) {
+      arcgisView.when(() => {
+        arcgisView.goTo(arcgisGraphics).catch(() => {});
+      });
+    }
+  });
+}
+
 function renderFeaturesList() {
   const tbody = document.getElementById('features-list-body');
   if (!tbody) return;
@@ -9576,13 +9850,14 @@ function renderFeaturesList() {
   tbody.innerHTML = '';
   features.forEach(f => {
     const tr = document.createElement('tr');
-    const props = f.properties || f;
-    const name = props.label || props.title || props.name || 'Unnamed';
-    const type = (f.geometry?.type || f.type || props.class || props.type || 'Unknown');
-    const id = f.id || props.id || 'N/A';
+    const attrs = f.attributes || {};
+    const name = attrs.name || 'Unnamed Graphic';
+    const type = (f.geometry?.type || attrs.class || attrs.type || (attrs.vertices ? 'Shape' : 'Graphic'));
+    const objectId = attrs.ObjectID || 'N/A';
+    const stableId = attrs.id || objectId;
 
     tr.innerHTML = `
-      <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-family: monospace; font-size: 0.8rem;">${id}</div></td>
+      <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-family: monospace; font-size: 0.8rem;">${objectId}</div></td>
       <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${name}</div></td>
       <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${type}</div></td>
       <td style="padding: 8px 12px;">
@@ -9602,7 +9877,7 @@ function renderFeaturesList() {
         length: res.length > 0 ? res.length.toFixed(2) : '0.00',
         width: res.width > 0 ? res.width.toFixed(2) : '0.00',
         height: res.height > 0 ? res.height.toFixed(2) : '0.00',
-        type: f.geometry?.type || f.type,
+        type: f.geometry?.type || attrs.type,
         feature: f
       }]);
       alert(`Imported "${name}" to Segments.`);
@@ -9616,7 +9891,10 @@ function renderFeaturesList() {
       if (confirm(`Delete feature "${name}" from local view?`)) {
         const b = loadBundle();
         if (b.maps && b.maps[0]) {
-          b.maps[0].features = (b.maps[0].features || []).filter(feat => (feat.id || feat.properties?.id) !== id);
+          b.maps[0].features = (b.maps[0].features || []).filter(feat => {
+            const fa = feat.attributes || {};
+            return (fa.ObjectID !== objectId) && (fa.id !== stableId);
+          });
           saveBundle(b);
           renderFeaturesList();
         }
@@ -9993,8 +10271,10 @@ function buildMapsPage() {
       <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
       
       <div class="tabs" style="display: flex; gap: 10px; margin-top: 20px;">
-        <button id="tab-map" class="mini-pill ${activeTab === 'map' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Map View</button>
+        <button id="tab-map" class="mini-pill ${activeTab === 'map' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">CalTopo View</button>
+        <button id="tab-arcgis" class="mini-pill ${activeTab === 'arcgis' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">ArcGIS View</button>
         <button id="tab-features" class="mini-pill ${activeTab === 'features' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Features</button>
+        <button id="tab-create" class="mini-pill ${activeTab === 'create' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Create Map</button>
       </div>
 
       <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 20px; margin-top: 15px; border-radius: 16px; display: flex; align-items: center;">
@@ -10035,6 +10315,18 @@ function buildMapsPage() {
       </section>
     </div>
 
+    <div id="arcgis-view-container" style="display: ${activeTab === 'arcgis' ? 'block' : 'none'}; margin-top: 20px;">
+      <section class="table-card" style="padding: 0; overflow: hidden; height: 75vh; position: relative; border-radius: 16px;">
+        <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
+          <h2 style="margin: 0; font-size: 1.2rem;">ArcGIS Map View</h2>
+          <div class="tool-actions">
+            <button id="refresh-arcgis-btn" class="clear-btn">Refresh Layer</button>
+          </div>
+        </div>
+        <div id="arcgis-map-div" style="width: 100%; height: calc(100% - 62px);"></div>
+      </section>
+    </div>
+
     <div id="features-view-container" style="display: ${activeTab === 'features' ? 'block' : 'none'}; margin-top: 20px;">
       <section class="table-card">
         <div class="table-tools">
@@ -10060,8 +10352,38 @@ function buildMapsPage() {
         </div>
       </section>
     </div>
+
+    <div id="create-map-view-container" style="display: ${activeTab === 'create' ? 'block' : 'none'}; margin-top: 20px;">
+      <section class="table-card">
+        <div class="table-tools">
+          <h2 style="margin: 0; font-size: 1.2rem;">Create New Collaborative Map</h2>
+        </div>
+        <div style="padding: 20px;">
+          <p style="color: var(--muted); margin-bottom: 20px;">Using CalTopo Team API: <code>POST /api/v1/acct/{team_id}/CollaborativeMap</code></p>
+          <div style="display: flex; flex-direction: column; gap: 15px; max-width: 500px;">
+            <div>
+              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Team ID</label>
+              <input id="create-team-id" class="pill-input" type="text" placeholder="Enter your Team ID (6 chars)" style="width: 100%;">
+              <small style="color: var(--muted);">Required to create a map in a team account.</small>
+            </div>
+            <div>
+              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Map Title</label>
+              <input id="create-map-title" class="pill-input" type="text" placeholder="e.g. Incident #1234 - Search Area Alpha" style="width: 100%;">
+            </div>
+            <div style="margin-top: 10px;">
+              <button id="submit-create-map" class="clear-btn" style="padding: 12px 30px; font-size: 1.1rem; background: var(--accent); color: white; border: none;">Create Map</button>
+            </div>
+            <div id="create-map-status" style="margin-top: 15px; font-weight: 500; display: none;"></div>
+          </div>
+        </div>
+      </section>
+    </div>
   `;
 
+  const submitCreateMapBtn = document.getElementById('submit-create-map');
+  if (submitCreateMapBtn) {
+    submitCreateMapBtn.onclick = handleCreateMap;
+  }
   const addMapBtn = document.getElementById('add-map-btn');
   const mapsList = document.getElementById('maps-list');
   const mapViewSection = document.getElementById('map-view-section');
@@ -10070,7 +10392,9 @@ function buildMapsPage() {
   const fetchShapesBtn = document.getElementById('fetch-shapes-btn');
   const refreshFeaturesBtn = document.getElementById('refresh-features-btn');
   const tabMap = document.getElementById('tab-map');
+  const tabArcGIS = document.getElementById('tab-arcgis');
   const tabFeatures = document.getElementById('tab-features');
+  const tabCreate = document.getElementById('tab-create');
 
   tabMap.onclick = () => {
     const newUrl = window.location.pathname + '?tab=map';
@@ -10078,8 +10402,20 @@ function buildMapsPage() {
     buildMapsPage();
   };
 
+  tabArcGIS.onclick = () => {
+    const newUrl = window.location.pathname + '?tab=arcgis';
+    window.history.replaceState(null, '', newUrl);
+    buildMapsPage();
+  };
+
   tabFeatures.onclick = () => {
     const newUrl = window.location.pathname + '?tab=features';
+    window.history.replaceState(null, '', newUrl);
+    buildMapsPage();
+  };
+
+  tabCreate.onclick = () => {
+    const newUrl = window.location.pathname + '?tab=create';
     window.history.replaceState(null, '', newUrl);
     buildMapsPage();
   };
@@ -10107,6 +10443,7 @@ function buildMapsPage() {
 
     viewMap(map.id, map.name, map.domain, map.teamId, skipScroll);
     if (activeTab === 'features') renderFeaturesList();
+    if (activeTab === 'arcgis') renderArcGISMap();
   };
 
   const viewMap = (id, name, domain, teamId, skipScroll = false) => {
@@ -10136,7 +10473,9 @@ function buildMapsPage() {
 
     let id = rawInput;
     let domain = 'caltopo.com';
-    if (rawInput.includes('caltopo.com') || rawInput.includes('sartopo.com')) {
+    if (rawInput.includes('sartopo.com')) {
+      domain = 'sartopo.com';
+    } else if (rawInput.includes('caltopo.com')) {
       domain = 'caltopo.com';
     }
 

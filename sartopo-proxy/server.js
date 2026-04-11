@@ -6,8 +6,8 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
-const CALTOPO_TIMEOUT_MS = 15000;
-const CALTOPO_SIGNING_WINDOW_MS = 2 * 60 * 1000;
+const CALTOPO_TIMEOUT_MS = 30000;
+const CALTOPO_SIGNING_WINDOW_MS = 5 * 60 * 1000;
 
 const getTrimmedString = (value) => typeof value === 'string' ? value.trim() : '';
 
@@ -126,11 +126,12 @@ const normalizeCalTopoState = (payload) => {
 };
 
 const fetchMapHandler = async (req, res) => {
-    const requestData = req.method === 'POST' && req.body && typeof req.body === 'object'
+    const requestData = (req.method === 'POST' && req.body && typeof req.body === 'object')
         ? req.body
         : req.query;
     const mapId = getTrimmedString(requestData.mapId);
     const domain = getTrimmedString(requestData.domain);
+    const usePostToCalTopo = requestData.usePost || false;
 
     if (!mapId) {
         return res.status(400).json({
@@ -148,19 +149,22 @@ const fetchMapHandler = async (req, res) => {
     if (!creds.configured) {
         return res.status(500).json({
             error: 'Proxy Not Configured',
-            message: 'This proxy needs a CalTopo Credential ID and Credential Secret to sign the Team API request. Provide them in the server environment, or send credentialId and credentialSecret in this POST body.',
+            message: 'Provide credentialId and credentialSecret.',
             targetUrl,
             mapId: trimmedMapId,
-            signingRequired: true,
-            supportsClientSuppliedCredentials: true
+            signingRequired: true
         });
     }
 
-    const {expires, signature} = signCalTopoRequest('GET', endpoint, '', creds.credentialSecret);
+    const method = usePostToCalTopo ? 'POST' : 'GET';
+    const payload = ''; // Empty for since endpoint
+    const {expires, signature} = signCalTopoRequest(method, endpoint, payload, creds.credentialSecret);
 
     try {
-        console.log(`[PROXY] Fetching shapes from ${targetUrl}`);
-        const response = await axios.get(targetUrl, {
+        console.log(`[PROXY] Fetching shapes from ${targetUrl} (Method: ${method})`);
+        console.log(`[PROXY] Credentials Source: ${creds.source}, ID: ${creds.credentialId.slice(0, 4)}...`);
+        
+        const axiosConfig = {
             timeout: CALTOPO_TIMEOUT_MS,
             params: {
                 id: creds.credentialId,
@@ -168,7 +172,17 @@ const fetchMapHandler = async (req, res) => {
                 signature,
                 _: Date.now()
             }
-        });
+        };
+
+        let response;
+        if (usePostToCalTopo) {
+            response = await axios.post(targetUrl, {}, axiosConfig);
+        } else {
+            response = await axios.get(targetUrl, axiosConfig);
+        }
+
+        const dataSize = JSON.stringify(response.data).length;
+        console.log(`[PROXY] Success! Response size: ${Math.round(dataSize / 1024)} KB, Status: ${response.status}`);
 
         const normalizedState = normalizeCalTopoState(response.data);
 
@@ -179,29 +193,82 @@ const fetchMapHandler = async (req, res) => {
             source: 'caltopo-signed-proxy',
             credentialSource: creds.source,
             mapId: trimmedMapId,
-            domain: targetDomain
+            domain: targetDomain,
+            caltopoMethod: method
         });
     } catch (error) {
-        console.error(`[PROXY] Error fetching from ${targetUrl}:`, error.message);
+        console.error(`[PROXY] Error fetching from ${targetUrl} (${method}):`, error.message);
+        
+        // If GET fails, try POST automatically if not already using it
+        if (method === 'GET' && !usePostToCalTopo && (error.response?.status === 405 || error.response?.status === 403 || error.code === 'ECONNRESET')) {
+            console.log(`[PROXY] GET failed, retrying with POST...`);
+            // We'll call the handler again but with usePost=true
+            req.body = { ...requestData, usePost: true };
+            return fetchMapHandler(req, res);
+        }
 
         const responseStatus = error.response ? error.response.status : 500;
         const responseBody = error.response && error.response.data ? error.response.data : null;
-        const detailMessage = typeof responseBody === 'string'
-            ? responseBody.slice(0, 400)
-            : responseBody && responseBody.message
-                ? responseBody.message
-                : error.message;
+        
+        console.error(`[PROXY] CalTopo Response Code: ${responseStatus}`, responseBody);
 
         res.status(responseStatus).json({
             error: error.response ? `CalTopo Error ${responseStatus}` : 'Proxy Connection Error',
-            message: detailMessage,
+            message: error.message,
             targetUrl,
             mapId: trimmedMapId,
             signingRequired: true,
-            credentialSource: creds.source,
-            supportsClientSuppliedCredentials: true,
             caltopoResponse: responseBody
         });
+    }
+};
+
+const genericCallHandler = async (req, res) => {
+    const { method = 'GET', endpoint, payload, domain } = req.body;
+    
+    if (!endpoint) {
+        return res.status(400).json({ error: 'Missing endpoint' });
+    }
+
+    const targetDomain = ensureHttpsDomain(domain || req.body.domain);
+    const targetUrl = `https://${targetDomain}${endpoint}`;
+    const creds = resolveCalTopoCredentials(req.body);
+
+    if (!creds.configured) {
+        return res.status(500).json({ error: 'Proxy Not Configured' });
+    }
+
+    const payloadString = payload ? JSON.stringify(payload) : '';
+    const { expires, signature } = signCalTopoRequest(method, endpoint, payloadString, creds.credentialSecret);
+
+    try {
+        console.log(`[PROXY] Generic ${method} to ${targetUrl}`);
+        const axiosConfig = {
+            timeout: CALTOPO_TIMEOUT_MS,
+            params: {
+                id: creds.credentialId,
+                expires,
+                signature
+            },
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        };
+
+        let response;
+        if (method.toUpperCase() === 'POST') {
+            response = await axios.post(targetUrl, payload || {}, axiosConfig);
+        } else if (method.toUpperCase() === 'DELETE') {
+            response = await axios.delete(targetUrl, axiosConfig);
+        } else {
+            response = await axios.get(targetUrl, axiosConfig);
+        }
+
+        res.json(response.data);
+    } catch (error) {
+        console.error(`[PROXY] Error in generic call:`, error.message);
+        const status = error.response ? error.response.status : 500;
+        res.status(status).json(error.response ? error.response.data : { error: error.message });
     }
 };
 
@@ -221,6 +288,7 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/proxy', fetchMapHandler);
 app.post('/api/proxy', fetchMapHandler);
+app.post('/api/call', genericCallHandler);
 app.get('/fetch-map', fetchMapHandler);
 app.post('/fetch-map', fetchMapHandler);
 
