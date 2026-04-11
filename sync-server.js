@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'db');
 const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
 const CALTOPO_TIMEOUT_MS = 30000;
-const CALTOPO_SIGNING_WINDOW_MS = 5 * 60 * 1000;
+const CALTOPO_SIGNING_WINDOW_MS = 2 * 60 * 1000;
 
 const getTrimmedString = (value) => typeof value === 'string' ? value.trim() : '';
 
@@ -396,8 +396,9 @@ const fetchMapHandler = async (req, res) => {
     }
 
     const method = usePostToCalTopo ? 'POST' : 'GET';
-    const payload = ''; // Empty for since endpoint
-    const {expires, signature} = signCalTopoRequest(method, endpoint, payload, creds.credentialSecret);
+    const payloadString = ''; // Empty for since endpoint
+    
+    const {expires, signature} = signCalTopoRequest(method, endpoint, payloadString, creds.credentialSecret);
 
     try {
         console.log(`[PROXY] Fetching shapes from ${targetUrl} (Method: ${method})`);
@@ -413,8 +414,8 @@ const fetchMapHandler = async (req, res) => {
         };
 
         let response;
-        if (usePostToCalTopo) {
-            response = await axios.post(targetUrl, {}, axiosConfig);
+        if (method === 'POST') {
+            response = await axios.post(targetUrl, payloadString, axiosConfig);
         } else {
             response = await axios.get(targetUrl, axiosConfig);
         }
@@ -478,11 +479,17 @@ const genericCallHandler = async (req, res) => {
         return res.status(500).json({ error: 'Proxy Not Configured' });
     }
 
-    const payloadString = payload ? JSON.stringify(payload) : '';
+    // CalTopo Team API: if payload is an empty object, sign and send it as an empty string
+    const payloadString = (payload && typeof payload === 'object' && Object.keys(payload).length > 0) 
+        ? JSON.stringify(payload) 
+        : (typeof payload === 'string' ? payload : '');
+
     const { expires, signature } = signCalTopoRequest(method, endpoint, payloadString, creds.credentialSecret);
 
     try {
-        console.log(`[PROXY] Generic ${method} to ${targetUrl}`);
+        console.log(`[PROXY] Generic ${method.toUpperCase()} to ${targetUrl}`);
+        if (payloadString) console.log(`[PROXY] Payload size: ${payloadString.length} chars`);
+        
         const axiosConfig = {
             timeout: CALTOPO_TIMEOUT_MS,
             params: {
@@ -490,25 +497,38 @@ const genericCallHandler = async (req, res) => {
                 expires,
                 signature
             },
-            headers: {
-                'Content-Type': 'application/json'
-            }
+            headers: {}
         };
 
+        if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase())) {
+            axiosConfig.headers['Content-Type'] = 'application/json';
+        }
+
         let response;
-        if (method.toUpperCase() === 'POST') {
-            response = await axios.post(targetUrl, payload || {}, axiosConfig);
-        } else if (method.toUpperCase() === 'DELETE') {
-            response = await axios.delete(targetUrl, axiosConfig);
+        const upperMethod = method.toUpperCase();
+        if (upperMethod === 'POST') {
+            response = await axios.post(targetUrl, payloadString, axiosConfig);
+        } else if (upperMethod === 'PUT') {
+            response = await axios.put(targetUrl, payloadString, axiosConfig);
+        } else if (upperMethod === 'DELETE') {
+            // DELETE can have a body in some APIs, but let's stick to the signature
+            response = await axios.delete(targetUrl, { ...axiosConfig, data: payloadString });
         } else {
             response = await axios.get(targetUrl, axiosConfig);
         }
 
         res.json(response.data);
     } catch (error) {
-        console.error(`[PROXY] Error in generic call:`, error.message);
+        console.error(`[PROXY] Error in generic call to ${targetUrl}:`, error.message);
         const status = error.response ? error.response.status : 500;
-        res.status(status).json(error.response ? error.response.data : { error: error.message });
+        const responseData = error.response ? error.response.data : { error: error.message };
+        
+        if (status === 401 || (typeof responseData === 'string' && responseData.includes('Authentication'))) {
+            console.error(`[PROXY] Auth Failure! Method: ${method}, Endpoint: ${endpoint}, Expires: ${expires}`);
+            console.error(`[PROXY] Signature: ${signature}`);
+        }
+        
+        res.status(status).json(typeof responseData === 'object' ? responseData : { error: responseData });
     }
 };
 
