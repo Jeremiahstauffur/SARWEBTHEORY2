@@ -8718,7 +8718,7 @@ const calculateGeometry = (item) => {
     let props = item.properties || item;
 
     // Normalize CalTopo internal format to GeoJSON-like
-    if (['Shape', 'Assignment', 'Track', 'Route'].includes(geom.type) && (item.vertices || props.vertices)) {
+    if (['Shape', 'Assignment', 'Track', 'Route', 'Area', 'Sector', 'Buffer'].includes(geom.type) && (item.vertices || props.vertices)) {
         const vertices = item.vertices || props.vertices;
         const isClosed = item.closed === true || props.closed === true || (geom.type === 'Assignment' && (item.closed !== false && props.closed !== false));
         geom = {
@@ -9467,6 +9467,166 @@ function importCalTopoSegments(selected) {
     }, 7000);
 }
 
+async function caltopo_request(btn = null) {
+  const bundle = loadBundle();
+  const map = bundle.maps ? bundle.maps[0] : null;
+  if (!map || !map.id) return;
+
+  const activeMapId = map.id;
+  const activeMapDomain = map.domain || 'caltopo.com';
+
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.originalText = btn.textContent;
+    btn.textContent = 'Fetching...';
+  }
+
+  try {
+    const proxyUrl = getCalTopoProxy();
+    if (!proxyUrl) {
+      alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL.');
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    const savedSigningCreds = getCalTopoSigningCredentials();
+    const requestBody = { mapId: activeMapId, domain: activeMapDomain };
+    if (savedSigningCreds) {
+      requestBody.credentialId = savedSigningCreds.credentialId;
+      requestBody.credentialSecret = savedSigningCreds.credentialSecret;
+    }
+
+    const finalProxyUrl = normalizeCalTopoProxyUrl(proxyUrl);
+    const buster = finalProxyUrl.includes('?') ? `&_=${Date.now()}` : `?_=${Date.now()}`;
+    const proxyResp = await fetch(finalProxyUrl + buster, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (proxyResp.ok) {
+      const data = await proxyResp.json();
+      const features = (data.features || []).filter(f => {
+        const props = f.properties || f;
+        const hasGeom = !!(f.geometry || f.vertices || f.position || props.geometry || props.vertices || props.position);
+        const rawType = (f.geometry?.type || f.type || props.class || props.type || '').toString().toLowerCase();
+        
+        // Very lenient check - if it has geometry/vertices, we probably want it
+        // We only exclude things that are clearly not shapes (like Folders, though Folders don't have geometry)
+        const allowedTypes = [
+          'polygon', 'multipolygon', 'linestring', 'multilinestring', 'point', 'multipoint',
+          'shape', 'assignment', 'track', 'route', 'marker', 'clue', 'area', 'line', 'sector', 'buffer'
+        ];
+        
+        const isAllowed = allowedTypes.some(t => rawType.includes(t)) || rawType === 'feature' || rawType === '';
+        return hasGeom && isAllowed;
+      });
+
+      if (features.length === 0) {
+        alert('No compatible shapes found on this map.');
+      } else {
+        const b = loadBundle();
+        if (b.maps && b.maps[0]) {
+          b.maps[0].features = features;
+          saveBundle(b);
+        }
+        
+        if (isMapsPage()) {
+          const urlParams = new URLSearchParams(window.location.search);
+          const activeTab = urlParams.get('tab') || 'map';
+          if (activeTab === 'features') {
+            renderFeaturesList();
+          } else {
+            showCalTopoShapesPopup(features);
+          }
+        }
+      }
+    } else {
+      const errData = await proxyResp.json().catch(() => ({}));
+      const errMsg = errData.message || errData.error || proxyResp.statusText;
+      alert(`Proxy Error: ${errMsg}`);
+    }
+  } catch (err) {
+    console.error(err);
+    alert(`Could not fetch shapes: ${err.message}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.originalText || 'Fetch Shapes';
+    }
+  }
+}
+
+function renderFeaturesList() {
+  const tbody = document.getElementById('features-list-body');
+  if (!tbody) return;
+  
+  const bundle = loadBundle();
+  const currentMap = bundle.maps ? bundle.maps[0] : null;
+  const features = currentMap ? currentMap.features : [];
+
+  if (!features || features.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--muted);">No features loaded. Use "Fetch Shapes" to load features from the active map.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = '';
+  features.forEach(f => {
+    const tr = document.createElement('tr');
+    const props = f.properties || f;
+    const name = props.label || props.title || props.name || 'Unnamed';
+    const type = (f.geometry?.type || f.type || props.class || props.type || 'Unknown');
+    const id = f.id || props.id || 'N/A';
+
+    tr.innerHTML = `
+      <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-family: monospace; font-size: 0.8rem;">${id}</div></td>
+      <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${name}</div></td>
+      <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${type}</div></td>
+      <td style="padding: 8px 12px;">
+        <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <button class="mini-pill import-feat" style="background: rgba(64, 192, 87, 0.1); border-color: rgba(64, 192, 87, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">Import</button>
+          <button class="mini-pill color-feat" style="background: rgba(125, 198, 255, 0.1); border-color: rgba(125, 198, 255, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">Color</button>
+          <button class="mini-pill delete-feat" style="background: rgba(235, 87, 87, 0.1); border-color: rgba(235, 87, 87, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">Delete</button>
+        </div>
+      </td>
+    `;
+
+    tr.querySelector('.import-feat').onclick = () => {
+      const res = calculateGeometry(f);
+      importCalTopoSegments([{
+        name: name,
+        area: res.area > 0 ? res.area.toFixed(2) : '0.00',
+        length: res.length > 0 ? res.length.toFixed(2) : '0.00',
+        width: res.width > 0 ? res.width.toFixed(2) : '0.00',
+        height: res.height > 0 ? res.height.toFixed(2) : '0.00',
+        type: f.geometry?.type || f.type,
+        feature: f
+      }]);
+      alert(`Imported "${name}" to Segments.`);
+    };
+
+    tr.querySelector('.color-feat').onclick = () => {
+      alert('Changing color is currently local-only and not supported for write-back to CalTopo through the proxy.');
+    };
+
+    tr.querySelector('.delete-feat').onclick = () => {
+      if (confirm(`Delete feature "${name}" from local view?`)) {
+        const b = loadBundle();
+        if (b.maps && b.maps[0]) {
+          b.maps[0].features = (b.maps[0].features || []).filter(feat => (feat.id || feat.properties?.id) !== id);
+          saveBundle(b);
+          renderFeaturesList();
+        }
+      }
+    };
+
+    tbody.appendChild(tr);
+  });
+}
+
 function buildUserAccountPage() {
     const container = document.getElementById('user-account-container');
     const tabContainer = document.getElementById('user-tabs');
@@ -9824,10 +9984,19 @@ function buildMapsPage() {
   let bundle = loadBundle();
   if (!bundle.maps) bundle.maps = [];
 
+  const urlParams = new URLSearchParams(window.location.search);
+  const activeTab = urlParams.get('tab') || 'map';
+
   container.innerHTML = `
     <section class="hero">
       <h1>Maps Management</h1>
       <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
+      
+      <div class="tabs" style="display: flex; gap: 10px; margin-top: 20px;">
+        <button id="tab-map" class="mini-pill ${activeTab === 'map' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Map View</button>
+        <button id="tab-features" class="mini-pill ${activeTab === 'features' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Features</button>
+      </div>
+
       <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 20px; margin-top: 15px; border-radius: 16px; display: flex; align-items: center;">
         <div id="proxy-status-container" style="font-size: 1rem; display: flex; align-items: center; gap: 30px; flex-wrap: wrap; width: 100%;">
           <div style="display: flex; align-items: center; gap: 10px; padding-left: 20px;">
@@ -9839,30 +10008,58 @@ function buildMapsPage() {
       </div>
     </section>
 
-    <section id="map-view-section" class="table-card" style="display: none; padding: 0; overflow: hidden; height: 75vh; position: relative; margin-top: 20px; border-radius: 16px;">
-      <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
-        <h2 id="current-map-title" style="margin: 0; font-size: 1.2rem;">Map View</h2>
-        <div class="tool-actions">
-          <button id="fetch-shapes-btn" class="clear-btn">Fetch Shapes</button>
+    <div id="map-view-container" style="display: ${activeTab === 'map' ? 'block' : 'none'};">
+      <section id="map-view-section" class="table-card" style="display: none; padding: 0; overflow: hidden; height: 75vh; position: relative; margin-top: 20px; border-radius: 16px;">
+        <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
+          <h2 id="current-map-title" style="margin: 0; font-size: 1.2rem;">Map View</h2>
+          <div class="tool-actions">
+            <button id="fetch-shapes-btn" class="clear-btn">Fetch Shapes</button>
+          </div>
         </div>
-      </div>
-      <iframe id="map-iframe" style="width: 100%; height: calc(100% - 62px); border: none;" allow="geolocation" referrerpolicy="strict-origin-when-cross-origin"></iframe>
-    </section>
+        <iframe id="map-iframe" style="width: 100%; height: calc(100% - 62px); border: none;" allow="geolocation" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+      </section>
 
-    <section class="table-card" style="margin-top: 20px;">
-      <div class="table-tools">
-        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; width: 100%;">
-          <input id="map-id-input" class="pill-input" type="text" placeholder="Map ID (e.g. 0A1B2)" style="flex: 1.5; min-width: 150px;">
-          <input id="team-id-input" class="pill-input" type="text" placeholder="Team ID (6 chars, optional)" style="flex: 1; min-width: 150px;">
-          <input id="map-name-input" class="pill-input" type="text" placeholder="Map Name (Optional)" style="flex: 1.5; min-width: 150px;">
-          <button id="add-map-btn" class="clear-btn">Add Map</button>
+      <section class="table-card" style="margin-top: 20px;">
+        <div class="table-tools">
+          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; width: 100%;">
+            <input id="map-id-input" class="pill-input" type="text" placeholder="Map ID (e.g. 0A1B2)" style="flex: 1.5; min-width: 150px;">
+            <input id="team-id-input" class="pill-input" type="text" placeholder="Team ID (6 chars, optional)" style="flex: 1; min-width: 150px;">
+            <input id="map-name-input" class="pill-input" type="text" placeholder="Map Name (Optional)" style="flex: 1.5; min-width: 150px;">
+            <button id="add-map-btn" class="clear-btn">Add Map</button>
+          </div>
         </div>
-      </div>
 
-      <div id="maps-list" style="margin-top: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;">
-        <!-- Map cards will be injected here -->
-      </div>
-    </section>
+        <div id="maps-list" style="margin-top: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;">
+          <!-- Map cards will be injected here -->
+        </div>
+      </section>
+    </div>
+
+    <div id="features-view-container" style="display: ${activeTab === 'features' ? 'block' : 'none'}; margin-top: 20px;">
+      <section class="table-card">
+        <div class="table-tools">
+          <h2 style="margin: 0; font-size: 1.2rem;">Map Features</h2>
+          <div class="tool-actions">
+            <button id="refresh-features-btn" class="clear-btn">Fetch Shapes</button>
+          </div>
+        </div>
+        <div style="overflow-x: auto; padding-top: 10px;">
+          <table class="grid-table" style="width: 100%;">
+            <thead>
+              <tr>
+                <th style="padding: 12px; width: 120px;">ID</th>
+                <th style="padding: 12px;">Name</th>
+                <th style="padding: 12px;">Type</th>
+                <th style="padding: 12px; width: 280px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="features-list-body">
+              <tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--muted);">No features loaded. Use "Fetch Shapes" to load features from the active map.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   `;
 
   const addMapBtn = document.getElementById('add-map-btn');
@@ -9871,12 +10068,27 @@ function buildMapsPage() {
   const mapIframe = document.getElementById('map-iframe');
   const currentMapTitle = document.getElementById('current-map-title');
   const fetchShapesBtn = document.getElementById('fetch-shapes-btn');
+  const refreshFeaturesBtn = document.getElementById('refresh-features-btn');
+  const tabMap = document.getElementById('tab-map');
+  const tabFeatures = document.getElementById('tab-features');
 
-    checkProxyHealth();
+  tabMap.onclick = () => {
+    const newUrl = window.location.pathname + '?tab=map';
+    window.history.replaceState(null, '', newUrl);
+    buildMapsPage();
+  };
+
+  tabFeatures.onclick = () => {
+    const newUrl = window.location.pathname + '?tab=features';
+    window.history.replaceState(null, '', newUrl);
+    buildMapsPage();
+  };
+
+  checkProxyHealth();
 
   let activeMapId = null;
-    let activeMapTeamId = null;
-    let activeMapDomain = 'caltopo.com';
+  let activeMapTeamId = null;
+  let activeMapDomain = 'caltopo.com';
   let isFullMode = true;
 
   const renderMaps = (skipScroll = false) => {
@@ -9886,174 +10098,66 @@ function buildMapsPage() {
       mapViewSection.style.display = 'none';
       mapIframe.src = '';
       activeMapId = null;
-        activeMapTeamId = null;
+      activeMapTeamId = null;
       return;
     }
     const map = bundle.maps[0];
     mapsList.innerHTML = '';
     mapsList.style.display = 'none';
 
-      viewMap(map.id, map.name, map.domain, map.teamId, skipScroll);
+    viewMap(map.id, map.name, map.domain, map.teamId, skipScroll);
+    if (activeTab === 'features') renderFeaturesList();
   };
 
-    const viewMap = (id, name, domain, teamId, skipScroll = false) => {
+  const viewMap = (id, name, domain, teamId, skipScroll = false) => {
     activeMapId = id;
-        activeMapTeamId = teamId || null;
-        activeMapDomain = domain || 'caltopo.com';
+    activeMapTeamId = teamId || null;
+    activeMapDomain = domain || 'caltopo.com';
     currentMapTitle.textContent = name || id;
     const suffix = isFullMode ? '' : '/embed';
     mapIframe.src = `https://${activeMapDomain}/m/${id}${suffix}`;
     mapViewSection.style.display = 'block';
-    if (!skipScroll) {
+    if (!skipScroll && activeTab === 'map') {
       setTimeout(() => mapViewSection.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
     }
   };
-
 
   addMapBtn.onclick = () => {
     const mapIdInput = document.getElementById('map-id-input');
     const teamIdInput = document.getElementById('team-id-input');
     const mapNameInput = document.getElementById('map-name-input');
     const rawInput = mapIdInput.value.trim();
-      const teamId = teamIdInput.value.trim();
+    const teamId = teamIdInput.value.trim();
     const name = mapNameInput.value.trim();
     if (!rawInput) {
       alert('Please enter a Map ID or URL');
       return;
     }
-    
-    let id = rawInput;
-      let domain = 'caltopo.com';
 
-      if (rawInput.includes('caltopo.com') || rawInput.includes('sartopo.com')) {
+    let id = rawInput;
+    let domain = 'caltopo.com';
+    if (rawInput.includes('caltopo.com') || rawInput.includes('sartopo.com')) {
       domain = 'caltopo.com';
     }
 
-      // Extract ID from URL like https://caltopo.com/m/ABCDE or https://caltopo.com/m/ABCDE/embed
     const urlMatch = rawInput.match(/\/m\/([A-Za-z0-9-]+)/i);
     if (urlMatch) {
       id = urlMatch[1];
     } else if (rawInput.includes('/')) {
-        // Basic cleanup for other URL formats
-        const parts = rawInput.split('/');
-        id = parts[parts.length - 1] || parts[parts.length - 2];
+      const parts = rawInput.split('/');
+      id = parts[parts.length - 1] || parts[parts.length - 2];
     }
-    
-    if (bundle.maps && bundle.maps.length > 0) {
-        bundle.maps = [{id, name, domain, teamId}];
-    } else {
-        bundle.maps = [{id, name, domain, teamId}];
-    }
+
+    bundle.maps = [{ id, name, domain, teamId }];
     saveBundle(bundle);
     mapIdInput.value = '';
-      teamIdInput.value = '';
+    teamIdInput.value = '';
     mapNameInput.value = '';
     renderMaps();
   };
 
-
-
-
-
-
-
-    fetchShapesBtn.onclick = async () => {
-    if (!activeMapId) return;
-    fetchShapesBtn.disabled = true;
-    fetchShapesBtn.textContent = 'Fetching...';
-    
-    try {
-      let data = null;
-        const proxyUrl = getCalTopoProxy();
-
-        if (proxyUrl) {
-            try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
-                const savedSigningCreds = getCalTopoSigningCredentials();
-                const requestBody = {
-                    mapId: activeMapId,
-                    domain: activeMapDomain
-                };
-
-                if (savedSigningCreds) {
-                    requestBody.credentialId = savedSigningCreds.credentialId;
-                    requestBody.credentialSecret = savedSigningCreds.credentialSecret;
-                }
-
-                const finalProxyUrl = normalizeCalTopoProxyUrl(proxyUrl);
-
-                const buster = finalProxyUrl.includes('?') ? `&_=${Date.now()}` : `?_=${Date.now()}`;
-                const proxyResp = await fetch(finalProxyUrl + buster, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(requestBody),
-                    signal: controller.signal
-                });
-                clearTimeout(timeoutId);
-
-                if (proxyResp.ok) {
-                    data = await proxyResp.json();
-                } else {
-                    const errData = await proxyResp.json().catch(() => ({}));
-                    console.error('Proxy fetch failed', errData);
-                    const errMsg = errData.message || errData.error || proxyResp.statusText;
-
-                    if (errData.error === 'Proxy Not Configured') {
-                        alert(`Proxy Needs CalTopo Credentials\n\n${errMsg}\n\nTo continue, do one of these:\n- Save your CalTopo Credential ID and Credential Secret in Settings so this website can send them to the proxy in the request body, or\n- Configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.\n\nCalTopo signed requests should originate from the proxy, not from browser-direct calls to CalTopo.`);
-                    } else if (proxyResp.status === 403) {
-                        alert(`CalTopo Access Denied\n\n${errMsg}\n\nYour proxy reached CalTopo, but the signed request was not authorized. Verify that the credential pair used for signing has access to this map and the required Team API permission level.`);
-                    } else if (proxyResp.status === 404) {
-                        alert(`Map Not Found (404)\n\n${errMsg}\n\nTarget: ${errData.targetUrl || 'unknown'}\n\nPlease check that the Map ID is correct and exists on the selected domain.`);
-                    } else {
-                        alert(`Proxy Error: ${errMsg}\n\nStatus: ${proxyResp.status}\nTarget: ${errData.targetUrl || 'unknown'}\n\nThe proxy is reachable, but CalTopo rejected or failed the signed request. Check the CalTopo Credential ID/Secret being used for signing and confirm that the map is accessible to that service account.`);
-                    }
-                    return;
-                }
-            } catch (proxyErr) {
-                if (proxyErr.name === 'AbortError') {
-                    console.error('Proxy request timed out');
-                    alert('The proxy server took too long to respond. Please check your internet connection or if the map is excessively large.');
-                    return;
-                }
-                console.error('Proxy unreachable', proxyErr);
-                alert('Web Proxy is not reachable. All CalTopo correspondence must go through the proxy.\n\nError details: ' + proxyErr.message + '\n\nPlease check your internet connection and ensure the Proxy URL is configured correctly in Settings.');
-                return;
-            }
-      } else {
-            alert('No CalTopo Proxy configured. Please go to Settings and set the Proxy URL.');
-          return;
-      }
-      
-      const features = (data.features || []).filter(f => {
-        const props = f.properties || f;
-        const hasGeom = !!(f.geometry || f.vertices || f.position || props.geometry || props.vertices || props.position);
-        
-        // All map objects with geometry are potentially compatible, but we prioritize shapes
-        const type = (f.geometry?.type || f.type || props.class || props.type || '').toString();
-        const isCompatible = ['Polygon', 'MultiPolygon', 'LineString', 'MultiLineString', 'Shape', 'Assignment', 'Track', 'Route', 'Marker', 'Clue', 'Point'].includes(type);
-        
-        return hasGeom && isCompatible;
-      });
-      
-      console.log(`[FETCH SHAPES] Received ${data.features?.length || 0} total features, ${features.length} after filtering compatible shapes.`);
-      
-      if (features.length === 0) {
-          console.warn('[FETCH SHAPES] No compatible shapes found. Data sample:', data.features?.slice(0, 3));
-          alert('No compatible shapes (Assignments or Polygons) found on this map.');
-      } else {
-          showCalTopoShapesPopup(features);
-      }
-    } catch (err) {
-      console.error(err);
-        alert(`Could not fetch shapes: ${err.message}\n\nCalTopo private/team API access should go through the signed proxy flow.\n\nTo resolve:\n1. Save a CalTopo Credential ID and Credential Secret in Settings, or configure them on the proxy server.\n2. Keep "Bypass Proxy" OFF for private maps.\n3. Confirm the CalTopo service account can access the target map.`);
-    } finally {
-      fetchShapesBtn.disabled = false;
-      fetchShapesBtn.textContent = 'Fetch Shapes';
-    }
-  };
+  fetchShapesBtn.onclick = () => caltopo_request(fetchShapesBtn);
+  if (refreshFeaturesBtn) refreshFeaturesBtn.onclick = () => caltopo_request(refreshFeaturesBtn);
 
   renderMaps(true);
 }

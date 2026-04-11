@@ -69,7 +69,10 @@ const normalizeCalTopoState = (payload) => {
 
     // 2. Nested FeatureCollection in 'state' (common Team API response)
     if (payload.state && payload.state.type === 'FeatureCollection' && Array.isArray(payload.state.features)) {
-        return payload.state;
+        const fc = payload.state;
+        if (!fc.ids && payload.ids) fc.ids = payload.ids;
+        if (!fc.timestamp && payload.timestamp) fc.timestamp = payload.timestamp;
+        return fc;
     }
 
     // 3. Fallback: Aggregate features from typed arrays or 'state' object
@@ -77,36 +80,48 @@ const normalizeCalTopoState = (payload) => {
     const state = payload.state || payload;
     const collectedFeatures = [];
 
-    if (Array.isArray(state.features)) {
-        collectedFeatures.push(...state.features);
-    } else {
-        // Look for common typed arrays
-        const types = ['Marker', 'Shape', 'Assignment', 'Track', 'Route', 'Clue'];
-        types.forEach(t => {
-            if (Array.isArray(state[t])) {
-                // Ensure each item has a type property if it's a raw object
-                state[t].forEach(item => {
-                    if (item && typeof item === 'object') {
-                        if (!item.type && !item.geometry) item.type = t;
-                        collectedFeatures.push(item);
-                    }
-                });
-            }
-        });
-    }
+    if (Array.isArray(state)) {
+        // Direct array of features
+        collectedFeatures.push(...state);
+    } else if (state && typeof state === 'object') {
+        if (Array.isArray(state.features)) {
+            collectedFeatures.push(...state.features);
+        } else {
+            // Look for common typed arrays OR any array that might contain features
+            // CalTopo standard types:
+            const knownTypes = ['Marker', 'Shape', 'Assignment', 'Track', 'Route', 'Clue', 'Area', 'Line', 'Folder', 'Sector', 'Buffer'];
+            
+            // First check known types
+            knownTypes.forEach(t => {
+                if (Array.isArray(state[t])) {
+                    state[t].forEach(item => {
+                        if (item && typeof item === 'object') {
+                            if (!item.type && !item.geometry && !item.class) item.class = t;
+                            collectedFeatures.push(item);
+                        }
+                    });
+                }
+            });
 
-    if (collectedFeatures.length > 0) {
-        return {
-            type: 'FeatureCollection',
-            features: collectedFeatures,
-            ids: payload.ids || state.ids,
-            timestamp: payload.timestamp || state.timestamp
-        };
+            // Then check any other arrays (case-insensitive) just in case
+            Object.keys(state).forEach(key => {
+                if (Array.isArray(state[key]) && !knownTypes.includes(key) && key !== 'features' && key !== 'ids') {
+                    state[key].forEach(item => {
+                        if (item && typeof item === 'object') {
+                            if (!item.type && !item.geometry && !item.class) item.class = key;
+                            collectedFeatures.push(item);
+                        }
+                    });
+                }
+            });
+        }
     }
 
     return {
         type: 'FeatureCollection',
-        features: []
+        features: collectedFeatures,
+        ids: payload.ids || (state && typeof state === 'object' ? state.ids : null),
+        timestamp: payload.timestamp || (state && typeof state === 'object' ? state.timestamp : null)
     };
 };
 
