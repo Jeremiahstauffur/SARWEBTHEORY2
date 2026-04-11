@@ -157,7 +157,8 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-        const resp = await fetch(healthUrl, {signal: controller.signal});
+        const healthUrlWithBuster = healthUrl.includes('?') ? `${healthUrl}&_=${Date.now()}` : `${healthUrl}?_=${Date.now()}`;
+        const resp = await fetch(healthUrlWithBuster, {signal: controller.signal});
         clearTimeout(timeoutId);
 
         if (resp.ok) {
@@ -6217,7 +6218,8 @@ function buildSettingsPage() {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout for manual test
 
-                const resp = await fetch(healthUrl, {signal: controller.signal});
+                const healthUrlWithBuster = healthUrl.includes('?') ? `${healthUrl}&_=${Date.now()}` : `${healthUrl}?_=${Date.now()}`;
+                const resp = await fetch(healthUrlWithBuster, {signal: controller.signal});
                 const data = await resp.json().catch(() => ({}));
                 clearTimeout(timeoutId);
 
@@ -6301,8 +6303,8 @@ function buildSettingsPage() {
                 try {
                     const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
                     const [resp, listResp] = await Promise.all([
-                        fetch(`${apiBase}/bundle`),
-                        fetch(`${apiBase}/all-files`)
+                        fetch(`${apiBase}/bundle?_=${Date.now()}`),
+                        fetch(`${apiBase}/all-files?_=${Date.now()}`)
                     ]);
 
                     if (resp.ok || listResp.ok) {
@@ -9976,7 +9978,8 @@ function buildMapsPage() {
 
                 const finalProxyUrl = normalizeCalTopoProxyUrl(proxyUrl);
 
-                const proxyResp = await fetch(finalProxyUrl, {
+                const buster = finalProxyUrl.includes('?') ? `&_=${Date.now()}` : `?_=${Date.now()}`;
+                const proxyResp = await fetch(finalProxyUrl + buster, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -10169,7 +10172,7 @@ async function syncWithServer() {
         
         // 2. Sync active bundle
         const endpoint = isNewDevice ? 'latest' : 'bundle';
-        const resp = await fetch(`${apiBase}/${endpoint}`);
+        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`);
         if (resp.ok) {
             const serverBundle = await resp.json();
             if (serverBundle) {
@@ -10204,7 +10207,7 @@ async function syncWithServer() {
         }
 
         // 3. Sync entire file list
-        const listResp = await fetch(`${apiBase}/all-files`);
+        const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`);
         if (listResp.ok) {
             const serverFiles = await listResp.json();
             const localFiles = getSavedFiles();
@@ -10267,6 +10270,9 @@ async function pushBundleToServer(bundle) {
         });
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
+            if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
+                return; // Silently ignore sync conflicts
+            }
             console.error("Push bundle failed:", resp.status, errorData.message || '');
         }
     } catch (err) {
@@ -10294,6 +10300,9 @@ async function pushFileListToServer(files) {
         });
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
+            if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
+                return; // Silently ignore sync conflicts
+            }
             console.error("Push file list failed:", resp.status, errorData.message || '');
         }
     } catch (err) {
@@ -10316,10 +10325,13 @@ async function notifyActiveUser(user) {
         const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/user-${user.pin}`, {
             method: 'PUT',
             headers: headers,
-            body: JSON.stringify({deviceId: getDeviceId()})
+            body: JSON.stringify({deviceId: getDeviceId(), lastModified: new Date().toISOString()})
         });
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
+            if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
+                return; // Silently ignore sync conflicts
+            }
             console.error("Notify active user failed:", resp.status, errorData.message || '');
         }
     } catch (err) {

@@ -177,7 +177,8 @@ $signatureData = signRequest('GET', $endpoint, '', $creds['credentialSecret']);
 $result = performRequest($targetUrl, [
     'id' => $creds['credentialId'],
     'expires' => $signatureData['expires'],
-    'signature' => $signatureData['signature']
+    'signature' => $signatureData['signature'],
+    '_' => (int)round(microtime(true) * 1000)
 ]);
 
 $response = $result['response'];

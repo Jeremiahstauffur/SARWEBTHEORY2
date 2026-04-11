@@ -363,7 +363,8 @@ const fetchMapHandler = async (req, res) => {
             params: {
                 id: creds.credentialId,
                 expires,
-                signature
+                signature,
+                _: Date.now()
             }
         });
 
