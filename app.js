@@ -9832,6 +9832,9 @@ async function syncWithServer() {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
 
+    const currentUser = getCurrentUser();
+    if (!currentUser) return;
+
     const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
     
     isSyncing = true;
@@ -9929,11 +9932,15 @@ async function pushBundleToServer(bundle) {
     };
     
     try {
-        await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/bundle`, {
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/bundle`, {
             method: 'PUT',
             headers: headers,
             body: JSON.stringify(bundle)
         });
+        if (!resp.ok) {
+            const errorData = await resp.json().catch(() => ({}));
+            console.error("Push bundle failed:", resp.status, errorData.message || '');
+        }
     } catch (err) {
         console.error("Push bundle failed:", err);
     }
@@ -9952,11 +9959,15 @@ async function pushFileListToServer(files) {
     };
     
     try {
-        await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/all-files`, {
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/all-files`, {
             method: 'PUT',
             headers: headers,
             body: JSON.stringify(files)
         });
+        if (!resp.ok) {
+            const errorData = await resp.json().catch(() => ({}));
+            console.error("Push file list failed:", resp.status, errorData.message || '');
+        }
     } catch (err) {
         console.error("Push file list failed:", err);
     }
@@ -9966,13 +9977,23 @@ async function notifyActiveUser(user) {
     const bucket = getSyncBucket();
     const serverUrl = getSyncServerUrl();
     if (!serverUrl || !user || !user.pin) return;
+
+    const headers = {
+        'Content-Type': 'application/json',
+        'X-User-Name': getAccountName(user),
+        'X-User-Pin': user ? user.pin : ''
+    };
     
     try {
-        await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/user-${user.pin}`, {
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/user-${user.pin}`, {
             method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
+            headers: headers,
             body: JSON.stringify({deviceId: getDeviceId()})
         });
+        if (!resp.ok) {
+            const errorData = await resp.json().catch(() => ({}));
+            console.error("Notify active user failed:", resp.status, errorData.message || '');
+        }
     } catch (err) {
         console.error("Notify active user failed:", err);
     }
