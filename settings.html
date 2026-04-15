@@ -142,12 +142,10 @@
           <div class="home-panel full-width">
             <h2>CalTopo Credentials</h2>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-                CalTopo’s Team API uses a Credential ID + Credential Secret pair for signed requests. Save them here if
-                you want
-                this website to send them to your proxy in the POST body so the proxy can sign requests server-side for
-                this browser session,
-                or configure <code>CALTOPO_CREDENTIAL_ID</code> and <code>CALTOPO_CREDENTIAL_SECRET</code> directly on
-                Railway for backend-managed signing.
+                CalTopo’s Team API uses a Credential ID + Credential Secret pair for signed requests. Configure
+                <code>CALTOPO_CREDENTIAL_ID</code> and <code>CALTOPO_CREDENTIAL_SECRET</code> directly on your proxy
+                server so requests are signed backend-side. The fields below can still be saved locally for reference,
+                but the website no longer forwards those secrets to the proxy.
             </p>
             <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
               <input class="pill-input" id="caltopo-title-input" placeholder="Title (e.g. My Integration)" style="flex: 1; min-width: 200px;" type="text">

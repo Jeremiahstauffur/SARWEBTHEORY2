@@ -2,6 +2,7 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const cors = require('cors');
+const {resolveCalTopoCredentials} = require('..\\caltopo-credentials');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,25 +25,6 @@ const ensureHttpsDomain = (domain) => {
         return CALTOPO_DEFAULT_DOMAIN;
     }
     return normalized;
-};
-
-const resolveCalTopoCredentials = (requestCredentials = {}) => {
-    const requestCredentialId = getTrimmedString(requestCredentials.credentialId);
-    const requestCredentialSecret = getTrimmedString(requestCredentials.credentialSecret || requestCredentials.secret);
-    const envCredentialId = (process.env.CALTOPO_CREDENTIAL_ID || process.env.SARTOPO_CREDENTIAL_ID || '').trim();
-    const envCredentialSecret = (process.env.CALTOPO_CREDENTIAL_SECRET || process.env.CALTOPO_SECRET || process.env.SARTOPO_SECRET || '').trim();
-    const useRequestCredentials = Boolean(requestCredentialId && requestCredentialSecret);
-    const credentialId = useRequestCredentials ? requestCredentialId : envCredentialId;
-    const credentialSecret = useRequestCredentials ? requestCredentialSecret : envCredentialSecret;
-
-    return {
-        credentialId,
-        credentialSecret,
-        configured: Boolean(credentialId && credentialSecret),
-        source: useRequestCredentials
-            ? 'request-body'
-            : (envCredentialId && envCredentialSecret ? 'environment' : 'missing')
-    };
 };
 
 const signCalTopoRequest = (method, endpoint, payloadString, credentialSecret) => {
@@ -144,12 +126,12 @@ const fetchMapHandler = async (req, res) => {
     const targetDomain = ensureHttpsDomain(domain);
     const endpoint = `/api/v1/map/${trimmedMapId}/since/0`;
     const targetUrl = `https://${targetDomain}${endpoint}`;
-    const creds = resolveCalTopoCredentials(requestData);
+    const creds = resolveCalTopoCredentials();
 
     if (!creds.configured) {
         return res.status(500).json({
             error: 'Proxy Not Configured',
-            message: 'Provide credentialId and credentialSecret.',
+            message: 'Provide CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET in the server environment.',
             targetUrl,
             mapId: trimmedMapId,
             signingRequired: true
@@ -320,7 +302,7 @@ const genericCallHandler = async (req, res) => {
 
     const targetDomain = ensureHttpsDomain(domain || req.body.domain);
     const targetUrl = `https://${targetDomain}${endpoint}`;
-    const creds = resolveCalTopoCredentials(req.body);
+    const creds = resolveCalTopoCredentials();
 
     if (!creds.configured) {
         return res.status(500).json({ error: 'Proxy Not Configured' });
@@ -377,10 +359,10 @@ app.get('/api/health', (req, res) => {
         status: 'ok',
         version: '1.4.0',
         service: 'SARTopo Proxy',
-        message: 'Proxy is live and ready for signed CalTopo Team API requests',
+        message: 'Proxy is live and ready for signed CalTopo Team API requests using backend environment credentials',
         caltopoSigningConfigured: creds.configured,
         caltopoCredentialSource: creds.source,
-        supportsClientSuppliedCredentials: true,
+        supportsClientSuppliedCredentials: false,
         timestamp: new Date().toISOString()
     });
 });

@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const {resolveCalTopoCredentials} = require('./caltopo-credentials');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,25 +42,6 @@ const signCalTopoRequest = (method, endpoint, payloadString, credentialSecret) =
     const signature = crypto.createHmac('sha256', secret).update(message).digest('base64');
 
     return {expires, signature};
-};
-
-const resolveCalTopoCredentials = (requestCredentials = {}) => {
-    const requestCredentialId = getTrimmedString(requestCredentials.credentialId);
-    const requestCredentialSecret = getTrimmedString(requestCredentials.credentialSecret || requestCredentials.secret);
-    const envCredentialId = (process.env.CALTOPO_CREDENTIAL_ID || process.env.SARTOPO_CREDENTIAL_ID || '').trim();
-    const envCredentialSecret = (process.env.CALTOPO_CREDENTIAL_SECRET || process.env.CALTOPO_SECRET || process.env.SARTOPO_SECRET || '').trim();
-    const useRequestCredentials = Boolean(requestCredentialId && requestCredentialSecret);
-    const credentialId = useRequestCredentials ? requestCredentialId : envCredentialId;
-    const credentialSecret = useRequestCredentials ? requestCredentialSecret : envCredentialSecret;
-
-    return {
-        credentialId,
-        credentialSecret,
-        configured: Boolean(credentialId && credentialSecret),
-        source: useRequestCredentials
-            ? 'request-body'
-            : (envCredentialId && envCredentialSecret ? 'environment' : 'missing')
-    };
 };
 
 const normalizeCalTopoState = (payload) => {
@@ -354,10 +336,10 @@ app.get('/api/health', (req, res) => {
         status: 'ok',
         version: '1.3.0',
         service: 'SAR Proxy + Sync',
-        message: 'Unified server is live and ready to sign CalTopo Team API requests',
+        message: 'Unified server is live and ready to sign CalTopo Team API requests using backend environment credentials',
         caltopoSigningConfigured: creds.configured,
         caltopoCredentialSource: creds.source,
-        supportsClientSuppliedCredentials: true,
+        supportsClientSuppliedCredentials: false,
         timestamp: new Date().toISOString()
     });
 });
@@ -382,16 +364,16 @@ const fetchMapHandler = async (req, res) => {
     const targetDomain = ensureHttpsDomain(domain);
     const endpoint = `/api/v1/map/${trimmedMapId}/since/0`;
     const targetUrl = `https://${targetDomain}${endpoint}`;
-    const creds = resolveCalTopoCredentials(requestData);
+    const creds = resolveCalTopoCredentials();
 
     if (!creds.configured) {
         return res.status(500).json({
             error: 'Proxy Not Configured',
-            message: 'This proxy needs a CalTopo Credential ID and Credential Secret to sign the Team API request. Provide them in the server environment, or send credentialId and credentialSecret in this POST body.',
+            message: 'This proxy needs a CalTopo Credential ID and Credential Secret in the server environment to sign the Team API request.',
             targetUrl,
             mapId: trimmedMapId,
             signingRequired: true,
-            supportsClientSuppliedCredentials: true
+            supportsClientSuppliedCredentials: false
         });
     }
 
@@ -476,7 +458,7 @@ const fetchMapHandler = async (req, res) => {
             mapId: trimmedMapId,
             signingRequired: true,
             credentialSource: creds.source,
-            supportsClientSuppliedCredentials: true,
+            supportsClientSuppliedCredentials: false,
             caltopoResponse: responseBody
         });
     }
@@ -560,7 +542,7 @@ const genericCallHandler = async (req, res) => {
 
     const targetDomain = ensureHttpsDomain(domain || req.body.domain);
     const targetUrl = `https://${targetDomain}${endpoint}`;
-    const creds = resolveCalTopoCredentials(req.body);
+    const creds = resolveCalTopoCredentials();
 
     if (!creds.configured) {
         return res.status(500).json({ error: 'Proxy Not Configured' });

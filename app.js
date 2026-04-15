@@ -163,20 +163,14 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
 
         if (resp.ok) {
             const data = await resp.json().catch(() => ({}));
-            const localCreds = getCalTopoSigningCredentials();
-
             if (data.caltopoSigningConfigured) {
                 dot.style.background = '#40c057';
                 text.textContent = 'Ready' + (data.version ? ` (${data.version})` : '');
                 text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}. Proxy has CalTopo signing credentials ready on the backend.`;
-            } else if (data.supportsClientSuppliedCredentials && localCreds) {
-                dot.style.background = '#40c057';
-                text.textContent = 'Ready (Saved Credentials)';
-                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}. The proxy will sign requests using the CalTopo credentials saved in this browser.`;
-            } else if (data.supportsClientSuppliedCredentials) {
+            } else if (data.supportsClientSuppliedCredentials === false) {
                 dot.style.background = '#ffd43b';
                 text.textContent = 'Needs CalTopo Credentials';
-                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}, but you still need to save a CalTopo Credential ID and Credential Secret in Settings or configure them on the proxy server.`;
+                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}, but you still need to configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.`;
             } else {
                 dot.style.background = '#40c057';
                 text.textContent = 'Online' + (data.version ? ` (${data.version})` : '');
@@ -220,22 +214,6 @@ function getCalTopoCredentials() {
 function setCalTopoCredentials(creds) {
     localStorage.setItem(CALTOPO_CREDS_STORAGE_KEY, JSON.stringify(creds));
 }
-
-function getCalTopoSigningCredentials() {
-    const creds = getCalTopoCredentials();
-    const credentialId = (creds.credentialId || '').trim();
-    const credentialSecret = (creds.secret || '').trim();
-
-    if (!credentialId || !credentialSecret) {
-        return null;
-    }
-
-    return {
-        credentialId,
-        credentialSecret
-    };
-}
-
 
 function getDeviceId() {
     let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
@@ -6227,14 +6205,10 @@ function buildSettingsPage() {
                 clearTimeout(timeoutId);
 
                 if (resp.ok) {
-                    const localCreds = getCalTopoSigningCredentials();
-
                     if (data.caltopoSigningConfigured) {
                         alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and ready for signed CalTopo requests using backend credentials.`);
-                    } else if (data.supportsClientSuppliedCredentials && localCreds) {
-                        alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nThis proxy can sign CalTopo requests using the Credential ID and Credential Secret you saved in Settings.`);
-                    } else if (data.supportsClientSuppliedCredentials) {
-                        alert(`Proxy Reachable, Needs CalTopo Credentials\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nSave your CalTopo Credential ID and Credential Secret in Settings, or configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.`);
+                    } else if (data.supportsClientSuppliedCredentials === false) {
+                        alert(`Proxy Reachable, Needs CalTopo Credentials\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nConfigure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server, then redeploy or restart it.`);
                     } else {
                         alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}`);
                     }
@@ -6276,7 +6250,7 @@ function buildSettingsPage() {
                     credentialId: credentialIdInput.value.trim(),
                     secret: secretInput.value.trim()
                 });
-                status.textContent = 'CalTopo credentials saved locally. The proxy can now use them to sign Team API requests when you fetch shapes from this browser.';
+                status.textContent = 'CalTopo credentials saved locally for reference only. The proxy now signs requests using backend environment credentials, so configure those on the server before fetching shapes.';
             });
         };
     }
@@ -9476,12 +9450,7 @@ async function _execute_caltopo_api_call(method, endpoint, payload, domain) {
     return null;
   }
 
-  const savedSigningCreds = getCalTopoSigningCredentials();
   const requestBody = { method, endpoint, payload, domain };
-  if (savedSigningCreds) {
-    requestBody.credentialId = savedSigningCreds.credentialId;
-    requestBody.credentialSecret = savedSigningCreds.credentialSecret;
-  }
 
   // Ensure we call /api/call - normalizeCalTopoProxyUrl always ends in /api/proxy or is a .php file
   let proxyCallUrl = normalizeCalTopoProxyUrl(proxyUrl);
@@ -9682,12 +9651,7 @@ async function caltopo_request(btn = null) {
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
-    const savedSigningCreds = getCalTopoSigningCredentials();
     const requestBody = { mapId: activeMapId, domain: activeMapDomain };
-    if (savedSigningCreds) {
-      requestBody.credentialId = savedSigningCreds.credentialId;
-      requestBody.credentialSecret = savedSigningCreds.credentialSecret;
-    }
 
     const finalProxyUrl = normalizeCalTopoProxyUrl(proxyUrl);
     const buster = finalProxyUrl.includes('?') ? `&_=${Date.now()}` : `?_=${Date.now()}`;

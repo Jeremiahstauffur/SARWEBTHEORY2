@@ -34,19 +34,14 @@ function getJsonBody()
 
 function resolveCalTopoCredentials($requestData)
 {
-    $requestCredentialId = getTrimmedString(isset($requestData['credentialId']) ? $requestData['credentialId'] : '');
-    $requestCredentialSecret = getTrimmedString(isset($requestData['credentialSecret'])
-        ? $requestData['credentialSecret']
-        : (isset($requestData['secret']) ? $requestData['secret'] : ''));
     $envCredentialId = getTrimmedString(getenv('CALTOPO_CREDENTIAL_ID') ?: (getenv('SARTOPO_CREDENTIAL_ID') ?: ''));
     $envCredentialSecret = getTrimmedString(getenv('CALTOPO_CREDENTIAL_SECRET') ?: (getenv('CALTOPO_SECRET') ?: (getenv('SARTOPO_SECRET') ?: '')));
-    $useRequestCredentials = $requestCredentialId !== '' && $requestCredentialSecret !== '';
 
     return [
-        'credentialId' => $useRequestCredentials ? $requestCredentialId : $envCredentialId,
-        'credentialSecret' => $useRequestCredentials ? $requestCredentialSecret : $envCredentialSecret,
-        'configured' => $useRequestCredentials || ($envCredentialId !== '' && $envCredentialSecret !== ''),
-        'source' => $useRequestCredentials ? 'request-body' : (($envCredentialId !== '' && $envCredentialSecret !== '') ? 'environment' : 'missing')
+        'credentialId' => $envCredentialId,
+        'credentialSecret' => $envCredentialSecret,
+        'configured' => $envCredentialId !== '' && $envCredentialSecret !== '',
+        'source' => ($envCredentialId !== '' && $envCredentialSecret !== '') ? 'environment' : 'missing'
     ];
 }
 
@@ -134,11 +129,11 @@ if (isset($_GET['health']) || (isset($_SERVER['PATH_INFO']) && $_SERVER['PATH_IN
     $creds = resolveCalTopoCredentials($requestData);
     echo json_encode([
         'status' => 'ok',
-        'message' => 'PHP proxy is live and ready for signed CalTopo Team API requests',
+        'message' => 'PHP proxy is live and ready for signed CalTopo Team API requests using backend environment credentials',
         'version' => '1.3.0',
         'caltopoSigningConfigured' => $creds['configured'],
         'caltopoCredentialSource' => $creds['source'],
-        'supportsClientSuppliedCredentials' => true,
+        'supportsClientSuppliedCredentials' => false,
         'timestamp' => date('c')
     ]);
     exit;
@@ -164,11 +159,11 @@ if (!$creds['configured']) {
     http_response_code(500);
     echo json_encode([
         'error' => 'Proxy Not Configured',
-        'message' => 'This proxy needs a CalTopo Credential ID and Credential Secret to sign the Team API request. Provide them in the server environment, or send credentialId and credentialSecret in this POST body.',
+        'message' => 'This proxy needs a CalTopo Credential ID and Credential Secret in the server environment to sign the Team API request.',
         'targetUrl' => $targetUrl,
         'mapId' => $mapId,
         'signingRequired' => true,
-        'supportsClientSuppliedCredentials' => true
+        'supportsClientSuppliedCredentials' => false
     ]);
     exit;
 }
@@ -213,7 +208,7 @@ if ($httpCode >= 400) {
         'mapId' => $mapId,
         'signingRequired' => true,
         'credentialSource' => $creds['source'],
-        'supportsClientSuppliedCredentials' => true,
+        'supportsClientSuppliedCredentials' => false,
         'caltopoResponse' => $decoded
     ]);
     exit;
