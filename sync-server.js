@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const {resolveCalTopoCredentials} = require('./caltopo-credentials');
+const {getServerEnvironmentInfo, loadServerEnvironment, resolveCalTopoCredentials} = require('./caltopo-credentials');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -13,7 +13,29 @@ const CALTOPO_DEFAULT_DOMAIN = 'caltopo.com';
 const CALTOPO_TIMEOUT_MS = 30000;
 const CALTOPO_SIGNING_WINDOW_MS = 5 * 60 * 1000;
 
+loadServerEnvironment({
+    searchPaths: [__dirname]
+});
+
 const getTrimmedString = (value) => typeof value === 'string' ? value.trim() : '';
+const getCredentialConfigPaths = () => getServerEnvironmentInfo().checkedFiles.filter((filePath) => /\.env(\.local)?$/i.test(filePath));
+
+const getCredentialConfigurationHelp = () => {
+    const configPaths = getCredentialConfigPaths();
+    return configPaths.length
+        ? `Set CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET in the server environment or in ${configPaths.join(' or ')}.`
+        : 'Set CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET in the server environment.';
+};
+
+const logCredentialConfigurationStatus = () => {
+    const creds = resolveCalTopoCredentials();
+    if (creds.configured) {
+        console.log(`[CONFIG] CalTopo credentials loaded from ${creds.source}.`);
+        return;
+    }
+
+    console.warn(`[CONFIG] ${getCredentialConfigurationHelp()}`);
+};
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -332,13 +354,18 @@ app.get('/', (req, res) => {
 // Health check endpoint for the proxy
 app.get('/api/health', (req, res) => {
     const creds = resolveCalTopoCredentials();
+    const envInfo = getServerEnvironmentInfo();
     res.json({
         status: 'ok',
         version: '1.3.0',
         service: 'SAR Proxy + Sync',
-        message: 'Unified server is live and ready to sign CalTopo Team API requests using backend environment credentials',
+        message: creds.configured
+            ? 'Unified server is live and ready to sign CalTopo Team API requests using backend credentials.'
+            : getCredentialConfigurationHelp(),
         caltopoSigningConfigured: creds.configured,
         caltopoCredentialSource: creds.source,
+        credentialConfigPaths: getCredentialConfigPaths(),
+        credentialEnvFilesLoaded: envInfo.loadedFiles,
         supportsClientSuppliedCredentials: false,
         timestamp: new Date().toISOString()
     });
@@ -369,10 +396,11 @@ const fetchMapHandler = async (req, res) => {
     if (!creds.configured) {
         return res.status(500).json({
             error: 'Proxy Not Configured',
-            message: 'This proxy needs a CalTopo Credential ID and Credential Secret in the server environment to sign the Team API request.',
+            message: getCredentialConfigurationHelp(),
             targetUrl,
             mapId: trimmedMapId,
             signingRequired: true,
+            credentialConfigPaths: getCredentialConfigPaths(),
             supportsClientSuppliedCredentials: false
         });
     }
@@ -545,7 +573,12 @@ const genericCallHandler = async (req, res) => {
     const creds = resolveCalTopoCredentials();
 
     if (!creds.configured) {
-        return res.status(500).json({ error: 'Proxy Not Configured' });
+        return res.status(500).json({
+            error: 'Proxy Not Configured',
+            message: getCredentialConfigurationHelp(),
+            credentialConfigPaths: getCredentialConfigPaths(),
+            supportsClientSuppliedCredentials: false
+        });
     }
 
     // CalTopo Team API: if payload is an empty object, sign and send it as an empty string
@@ -597,6 +630,8 @@ app.post('/api/proxy', fetchMapHandler);
 app.post('/api/call', genericCallHandler);
 app.get('/fetch-map', fetchMapHandler); // Alias for compatibility
 app.post('/fetch-map', fetchMapHandler); // Alias for compatibility
+
+logCredentialConfigurationStatus();
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Sync server v1.3.0 listening on port ${PORT}`);

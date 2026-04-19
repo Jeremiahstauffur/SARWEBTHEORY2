@@ -170,7 +170,9 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
             } else if (data.supportsClientSuppliedCredentials === false) {
                 dot.style.background = '#ffd43b';
                 text.textContent = 'Needs CalTopo Credentials';
-                text.title = `Connected to proxy ${data.version || ''} at ${healthUrl}, but you still need to configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.`;
+                text.title = data.credentialConfigPaths && data.credentialConfigPaths.length
+                    ? `Connected to proxy ${data.version || ''} at ${healthUrl}, but you still need to configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server in ${data.credentialConfigPaths.join(' or ')} or as deployed environment variables.`
+                    : `Connected to proxy ${data.version || ''} at ${healthUrl}, but you still need to configure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server.`;
             } else {
                 dot.style.background = '#40c057';
                 text.textContent = 'Online' + (data.version ? ` (${data.version})` : '');
@@ -6208,7 +6210,10 @@ function buildSettingsPage() {
                     if (data.caltopoSigningConfigured) {
                         alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nYour proxy is reachable and ready for signed CalTopo requests using backend credentials.`);
                     } else if (data.supportsClientSuppliedCredentials === false) {
-                        alert(`Proxy Reachable, Needs CalTopo Credentials\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}\n\nConfigure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server, then redeploy or restart it.`);
+                        const configLocationHint = data.credentialConfigPaths && data.credentialConfigPaths.length
+                            ? `\n\nSuggested config file(s):\n${data.credentialConfigPaths.join('\n')}`
+                            : '';
+                        alert(`Proxy Reachable, Needs CalTopo Credentials\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}${configLocationHint}\n\nConfigure CALTOPO_CREDENTIAL_ID and CALTOPO_CREDENTIAL_SECRET on the proxy server, then redeploy or restart it.`);
                     } else {
                         alert(`Success!\n\nProxy Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nMessage: ${data.message}`);
                     }
