@@ -4,7 +4,179 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const {getServerEnvironmentInfo, loadServerEnvironment, resolveCalTopoCredentials} = require('./caltopo-credentials');
+
+const createCredentialHelperFallback = () => {
+    const serverEnvironmentState = {
+        checkedFiles: [],
+        loadedFiles: [],
+        loadedKeys: new Map(),
+        protectedKeys: new Set(Object.keys(process.env))
+    };
+
+    const getTrimmedEnvString = (value) => typeof value === 'string' ? value.trim() : '';
+
+    const getUniqueResolvedPaths = (pathsToResolve) => {
+        const seen = new Set();
+        const resolvedPaths = [];
+
+        (pathsToResolve || []).forEach((candidatePath) => {
+            if (!candidatePath || typeof candidatePath !== 'string') {
+                return;
+            }
+
+            const resolvedPath = path.resolve(candidatePath);
+            if (seen.has(resolvedPath)) {
+                return;
+            }
+
+            seen.add(resolvedPath);
+            resolvedPaths.push(resolvedPath);
+        });
+
+        return resolvedPaths;
+    };
+
+    const parseEnvFile = (content) => {
+        const values = {};
+        const lines = content.split(/\r?\n/);
+
+        lines.forEach((line) => {
+            const trimmedLine = line.trim();
+            if (!trimmedLine || trimmedLine.startsWith('#')) {
+                return;
+            }
+
+            const separatorIndex = trimmedLine.indexOf('=');
+            if (separatorIndex <= 0) {
+                return;
+            }
+
+            const key = trimmedLine.slice(0, separatorIndex).trim();
+            if (!key) {
+                return;
+            }
+
+            let value = trimmedLine.slice(separatorIndex + 1).trim();
+            const isQuoted = (value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"));
+
+            if (isQuoted) {
+                value = value.slice(1, -1)
+                    .replace(/\\n/g, '\n')
+                    .replace(/\\r/g, '\r');
+            } else {
+                const inlineCommentIndex = value.indexOf(' #');
+                if (inlineCommentIndex >= 0) {
+                    value = value.slice(0, inlineCommentIndex).trim();
+                }
+            }
+
+            values[key] = value;
+        });
+
+        return values;
+    };
+
+    const loadServerEnvironment = (options = {}) => {
+        const searchPaths = getUniqueResolvedPaths(options.searchPaths || [__dirname]);
+        const envFileNames = Array.isArray(options.envFileNames) && options.envFileNames.length
+            ? options.envFileNames
+            : ['.env', '.env.local'];
+        const result = {
+            checkedFiles: [],
+            loadedFiles: [],
+            loadedKeys: []
+        };
+
+        searchPaths.forEach((searchPath) => {
+            envFileNames.forEach((fileName) => {
+                const filePath = path.join(searchPath, fileName);
+                result.checkedFiles.push(filePath);
+
+                if (!serverEnvironmentState.checkedFiles.includes(filePath)) {
+                    serverEnvironmentState.checkedFiles.push(filePath);
+                }
+
+                if (!fs.existsSync(filePath)) {
+                    return;
+                }
+
+                const parsedValues = parseEnvFile(fs.readFileSync(filePath, 'utf8'));
+
+                if (!serverEnvironmentState.loadedFiles.includes(filePath)) {
+                    serverEnvironmentState.loadedFiles.push(filePath);
+                }
+                if (!result.loadedFiles.includes(filePath)) {
+                    result.loadedFiles.push(filePath);
+                }
+
+                Object.entries(parsedValues).forEach(([key, value]) => {
+                    if (serverEnvironmentState.protectedKeys.has(key)) {
+                        return;
+                    }
+
+                    process.env[key] = value;
+                    serverEnvironmentState.loadedKeys.set(key, value);
+                    if (!result.loadedKeys.includes(key)) {
+                        result.loadedKeys.push(key);
+                    }
+                });
+            });
+        });
+
+        return result;
+    };
+
+    const getServerEnvironmentInfo = () => ({
+        checkedFiles: [...serverEnvironmentState.checkedFiles],
+        loadedFiles: [...serverEnvironmentState.loadedFiles],
+        loadedKeys: [...serverEnvironmentState.loadedKeys.keys()]
+    });
+
+    const resolveCalTopoCredentials = (options = {}) => {
+        const env = options.env || process.env;
+        const credentialId = getTrimmedEnvString(env.CALTOPO_CREDENTIAL_ID || env.SARTOPO_CREDENTIAL_ID || '');
+        const credentialSecret = getTrimmedEnvString(env.CALTOPO_CREDENTIAL_SECRET || env.CALTOPO_SECRET || env.SARTOPO_SECRET || '');
+        const credentialKeys = [
+            'CALTOPO_CREDENTIAL_ID',
+            'SARTOPO_CREDENTIAL_ID',
+            'CALTOPO_CREDENTIAL_SECRET',
+            'CALTOPO_SECRET',
+            'SARTOPO_SECRET'
+        ];
+        const source = credentialId && credentialSecret
+            ? credentialKeys.some((key) => serverEnvironmentState.loadedKeys.has(key))
+                ? 'env-file'
+                : 'environment'
+            : 'missing';
+
+        return {
+            credentialId,
+            credentialSecret,
+            configured: Boolean(credentialId && credentialSecret),
+            source
+        };
+    };
+
+    return {
+        getServerEnvironmentInfo,
+        loadServerEnvironment,
+        resolveCalTopoCredentials
+    };
+};
+
+const loadCredentialHelpers = () => {
+    try {
+        return require('./caltopo-credentials');
+    } catch (error) {
+        if (error && error.code === 'MODULE_NOT_FOUND' && /caltopo-credentials/.test(error.message || '')) {
+            console.warn('[CONFIG] Missing optional helper module ./caltopo-credentials; using built-in credential loader fallback.');
+            return createCredentialHelperFallback();
+        }
+        throw error;
+    }
+};
+
+const {getServerEnvironmentInfo, loadServerEnvironment, resolveCalTopoCredentials} = loadCredentialHelpers();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
