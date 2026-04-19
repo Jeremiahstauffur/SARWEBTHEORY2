@@ -231,8 +231,51 @@ const signCalTopoRequest = (method, endpoint, payloadString, credentialSecret) =
     return {expires, signature};
 };
 
+const unwrapCalTopoPayload = (payload) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return payload;
+    }
+
+    if (payload.result && typeof payload.result === 'object' && !Array.isArray(payload.result)) {
+        const result = payload.result;
+
+        if (result.type === 'FeatureCollection' && Array.isArray(result.features)) {
+            return {
+                ...result,
+                timestamp: result.timestamp || payload.timestamp || null
+            };
+        }
+
+        if (result.state && result.state.type === 'FeatureCollection' && Array.isArray(result.state.features)) {
+            return {
+                ...result,
+                state: {
+                    ...result.state,
+                    ids: result.state.ids || result.ids || null,
+                    timestamp: result.state.timestamp || result.timestamp || payload.timestamp || null
+                },
+                ids: result.ids || null,
+                timestamp: result.timestamp || payload.timestamp || null
+            };
+        }
+
+        if (Array.isArray(result.features)) {
+            return {
+                type: 'FeatureCollection',
+                features: result.features,
+                ids: result.ids || null,
+                timestamp: result.timestamp || payload.timestamp || null
+            };
+        }
+    }
+
+    return payload;
+};
+
 const normalizeCalTopoState = (payload) => {
-    if (!payload || typeof payload !== 'object') {
+    const normalizedPayload = unwrapCalTopoPayload(payload);
+
+    if (!normalizedPayload || typeof normalizedPayload !== 'object') {
         return {
             type: 'FeatureCollection',
             features: []
@@ -240,21 +283,21 @@ const normalizeCalTopoState = (payload) => {
     }
 
     // 1. Direct FeatureCollection (standard GeoJSON)
-    if (payload.type === 'FeatureCollection' && Array.isArray(payload.features)) {
-        return payload;
+    if (normalizedPayload.type === 'FeatureCollection' && Array.isArray(normalizedPayload.features)) {
+        return normalizedPayload;
     }
 
     // 2. Nested FeatureCollection in 'state' (common Team API response)
-    if (payload.state && payload.state.type === 'FeatureCollection' && Array.isArray(payload.state.features)) {
-        const fc = payload.state;
-        if (!fc.ids && payload.ids) fc.ids = payload.ids;
-        if (!fc.timestamp && payload.timestamp) fc.timestamp = payload.timestamp;
+    if (normalizedPayload.state && normalizedPayload.state.type === 'FeatureCollection' && Array.isArray(normalizedPayload.state.features)) {
+        const fc = normalizedPayload.state;
+        if (!fc.ids && normalizedPayload.ids) fc.ids = normalizedPayload.ids;
+        if (!fc.timestamp && normalizedPayload.timestamp) fc.timestamp = normalizedPayload.timestamp;
         return fc;
     }
 
     // 3. Fallback: Aggregate features from typed arrays or 'state' object
     // CalTopo/SARTopo internal state often uses separate arrays for Marker, Shape, Assignment, etc.
-    const state = payload.state || payload;
+    const state = normalizedPayload.state || normalizedPayload;
     const collectedFeatures = [];
 
     if (Array.isArray(state)) {
@@ -297,9 +340,20 @@ const normalizeCalTopoState = (payload) => {
     return {
         type: 'FeatureCollection',
         features: collectedFeatures,
-        ids: payload.ids || (state && typeof state === 'object' ? state.ids : null),
-        timestamp: payload.timestamp || (state && typeof state === 'object' ? state.timestamp : null)
+        ids: normalizedPayload.ids || (state && typeof state === 'object' ? state.ids : null),
+        timestamp: normalizedPayload.timestamp || (state && typeof state === 'object' ? state.timestamp : null)
     };
+};
+
+const fetchPublicCalTopoState = async (targetUrl) => {
+    const response = await axios.get(targetUrl, {
+        timeout: CALTOPO_TIMEOUT_MS,
+        params: {
+            _: Date.now()
+        }
+    });
+
+    return normalizeCalTopoState(response.data);
 };
 
 const fetchMapHandler = async (req, res, overrideRequestData = null) => {
@@ -366,13 +420,27 @@ const fetchMapHandler = async (req, res, overrideRequestData = null) => {
         const dataSize = JSON.stringify(response.data).length;
         console.log(`[PROXY] Success! Response size: ${Math.round(dataSize / 1024)} KB, Status: ${response.status}`);
 
-        const normalizedState = normalizeCalTopoState(response.data);
+        let normalizedState = normalizeCalTopoState(response.data);
+        let responseSource = 'caltopo-signed-proxy';
+
+        if ((normalizedState.features || []).length === 0) {
+            try {
+                const publicState = await fetchPublicCalTopoState(targetUrl);
+                if ((publicState.features || []).length > 0) {
+                    normalizedState = publicState;
+                    responseSource = 'caltopo-public-fallback';
+                    console.log(`[PROXY] Recovered ${publicState.features.length} features from public fallback for map ${trimmedMapId}`);
+                }
+            } catch (publicError) {
+                console.warn(`[PROXY] Public fallback failed for ${targetUrl}:`, publicError.message);
+            }
+        }
 
         res.json({
             type: normalizedState.type,
             features: normalizedState.features || [],
             state: normalizedState,
-            source: 'caltopo-signed-proxy',
+            source: responseSource,
             credentialSource: creds.source,
             mapId: trimmedMapId,
             domain: targetDomain,

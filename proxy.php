@@ -76,6 +76,28 @@ function normalizeCalTopoState($payload)
         ];
     }
 
+    if (isset($payload['result']) && is_array($payload['result'])) {
+        $result = $payload['result'];
+
+        if ((isset($result['type']) ? $result['type'] : null) === 'FeatureCollection' && isset($result['features']) && is_array($result['features'])) {
+            if (!isset($result['timestamp']) && isset($payload['timestamp'])) {
+                $result['timestamp'] = $payload['timestamp'];
+            }
+            return $result;
+        }
+
+        if (isset($result['state']) && is_array($result['state']) && ((isset($result['state']['type']) ? $result['state']['type'] : null) === 'FeatureCollection') && isset($result['state']['features']) && is_array($result['state']['features'])) {
+            $state = $result['state'];
+            if (!isset($state['ids']) && isset($result['ids'])) {
+                $state['ids'] = $result['ids'];
+            }
+            if (!isset($state['timestamp'])) {
+                $state['timestamp'] = isset($result['timestamp']) ? $result['timestamp'] : (isset($payload['timestamp']) ? $payload['timestamp'] : null);
+            }
+            return $state;
+        }
+    }
+
     if ((isset($payload['type']) ? $payload['type'] : null) === 'FeatureCollection' && isset($payload['features']) && is_array($payload['features'])) {
         return $payload;
     }
