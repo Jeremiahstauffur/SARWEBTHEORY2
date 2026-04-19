@@ -12,6 +12,237 @@ const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
 const DEFAULT_BUCKET = 'MNSAR14';
 const SAVE_BUTTON_MIN_LOADING_MS = 1000;
 const SAVE_BUTTON_SUCCESS_MS = 3000;
+const MAP_PSRC_OVERLAY_STORAGE_KEY = 'sar-map-psrc-overlay-v1';
+const CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY = 'sar-caltopo-assignment-overlay-v1';
+
+function getMapSegmentUtils() {
+    return (typeof window !== 'undefined' && window.SARMapSegmentUtils) ? window.SARMapSegmentUtils : {};
+}
+
+function ensureSegmentsPageRows(bundle) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.ensureSegmentsPageRows === 'function') {
+        return utils.ensureSegmentsPageRows(bundle, defaultSegmentsData);
+    }
+    if (!bundle.pages) bundle.pages = {};
+    if (Array.isArray(bundle.pages.page2)) return bundle.pages.page2;
+    bundle.pages.page2 = defaultSegmentsData();
+    return bundle.pages.page2;
+}
+
+function getCalTopoFeatureTypeKey(feature) {
+    const utils = getMapSegmentUtils();
+    return typeof utils.getFeatureTypeKey === 'function' ? utils.getFeatureTypeKey(feature) : 'other';
+}
+
+function getCalTopoFeatureTypeLabel(feature) {
+    const utils = getMapSegmentUtils();
+    return typeof utils.getFeatureTypeLabel === 'function' ? utils.getFeatureTypeLabel(feature) : 'Graphic';
+}
+
+function getFilteredSegmentImports(items, typeKey) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.filterSegmentImportsByType === 'function') {
+        return utils.filterSegmentImportsByType(items, typeKey);
+    }
+    if (!typeKey || typeKey === 'all') return items.slice();
+    return items.filter(item => item.typeKey === typeKey);
+}
+
+function buildSegmentPsrcLookup(rows) {
+    const utils = getMapSegmentUtils();
+    return typeof utils.buildSegmentPsrcLookup === 'function'
+        ? utils.buildSegmentPsrcLookup(rows)
+        : {values: new Map(), maxValue: 0};
+}
+
+function getFeaturePsrcColor(feature, lookup) {
+    const utils = getMapSegmentUtils();
+    return typeof utils.getFeaturePsrcColor === 'function' ? utils.getFeaturePsrcColor(feature, lookup) : null;
+}
+
+function getFeaturePsrcAssignmentStyle(feature, lookup) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.getFeaturePsrcAssignmentStyle === 'function') {
+        return utils.getFeaturePsrcAssignmentStyle(feature, lookup);
+    }
+    const color = getFeaturePsrcColor(feature, lookup);
+    return color ? {stroke: color.css, fill: color.css, color} : null;
+}
+
+function normalizeSegmentNameForMatch(value) {
+    const utils = getMapSegmentUtils();
+    return typeof utils.normalizeSegmentName === 'function'
+        ? utils.normalizeSegmentName(value)
+        : String(value || '').trim().toLowerCase();
+}
+
+function buildSegmentNameSet(rows) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.buildSegmentNameSet === 'function') {
+        return utils.buildSegmentNameSet(rows);
+    }
+    const names = new Set();
+    (rows || []).forEach(row => {
+        const nameKey = normalizeSegmentNameForMatch(row?.[1]);
+        if (nameKey) names.add(nameKey);
+    });
+    return names;
+}
+
+function isMapPsrcOverlayEnabled() {
+    return localStorage.getItem(MAP_PSRC_OVERLAY_STORAGE_KEY) === 'true';
+}
+
+function setMapPsrcOverlayEnabled(enabled) {
+    localStorage.setItem(MAP_PSRC_OVERLAY_STORAGE_KEY, enabled ? 'true' : 'false');
+}
+
+function isCalTopoAssignmentOverlayEnabled() {
+    return localStorage.getItem(CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY) === 'true';
+}
+
+function setCalTopoAssignmentOverlayEnabled(enabled) {
+    localStorage.setItem(CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY, enabled ? 'true' : 'false');
+}
+
+function captureCalTopoFeatureStyle(attributes = {}) {
+    return {
+        stroke: Object.prototype.hasOwnProperty.call(attributes, 'stroke') ? attributes.stroke : null,
+        fill: Object.prototype.hasOwnProperty.call(attributes, 'fill') ? attributes.fill : null,
+        'fill-opacity': Object.prototype.hasOwnProperty.call(attributes, 'fill-opacity') ? attributes['fill-opacity'] : null,
+        opacity: Object.prototype.hasOwnProperty.call(attributes, 'opacity') ? attributes.opacity : null
+    };
+}
+
+function applyCapturedCalTopoFeatureStyle(attributes, style = {}) {
+    ['stroke', 'fill', 'fill-opacity', 'opacity'].forEach(key => {
+        if (!Object.prototype.hasOwnProperty.call(style, key)) {
+            return;
+        }
+        const value = style[key];
+        if (value === null || value === undefined || value === '') {
+            delete attributes[key];
+        } else {
+            attributes[key] = value;
+        }
+    });
+}
+
+function buildCalTopoFeatureUpdatePayload(feature, styleOverrides = {}) {
+    const attributes = {...(feature?.attributes || {})};
+    const geometry = feature?.geometry ? JSON.parse(JSON.stringify(feature.geometry)) : null;
+
+    delete attributes.ObjectID;
+    delete attributes.id;
+
+    applyCapturedCalTopoFeatureStyle(attributes, styleOverrides);
+
+    return {
+        id: feature?.attributes?.id || null,
+        type: 'Feature',
+        geometry,
+        properties: attributes
+    };
+}
+
+async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
+    const {ensureFeaturesLoaded = false} = options;
+    let bundle = loadBundle();
+    let map = bundle.maps && bundle.maps[0] ? bundle.maps[0] : null;
+
+    if (!map || !map.id) {
+        throw new Error('Please add a CalTopo map first.');
+    }
+
+    if ((!Array.isArray(map.features) || map.features.length === 0) && ensureFeaturesLoaded) {
+        await caltopo_request(null, {silent: true});
+        bundle = loadBundle();
+        map = bundle.maps && bundle.maps[0] ? bundle.maps[0] : null;
+    }
+
+    const features = Array.isArray(map?.features) ? map.features : [];
+    if (!features.length) {
+        throw new Error('Fetch Shapes first so the app knows which CalTopo assignments to update.');
+    }
+
+    if (!map.caltopoAssignmentOverlayState || typeof map.caltopoAssignmentOverlayState !== 'object') {
+        map.caltopoAssignmentOverlayState = {originals: {}};
+    }
+    if (!map.caltopoAssignmentOverlayState.originals || typeof map.caltopoAssignmentOverlayState.originals !== 'object') {
+        map.caltopoAssignmentOverlayState.originals = {};
+    }
+
+    const originals = map.caltopoAssignmentOverlayState.originals;
+    const psrcLookup = buildSegmentPsrcLookup(ensureSegmentsPageRows(bundle));
+    const matchingAssignments = features.filter(feature => {
+        const featureId = feature?.attributes?.id;
+        if (!featureId || getCalTopoFeatureTypeKey(feature) !== 'assignment') {
+            return false;
+        }
+        if (!enabled) {
+            return !!originals[featureId];
+        }
+        return !!getFeaturePsrcAssignmentStyle(feature, psrcLookup);
+    });
+
+    if (!matchingAssignments.length) {
+        if (!enabled) {
+            delete map.caltopoAssignmentOverlayState;
+            saveBundle(bundle);
+            return {updatedCount: 0};
+        }
+        throw new Error('No matching assignment shapes were found for your current segments.');
+    }
+
+    for (const feature of matchingAssignments) {
+        const featureId = feature.attributes.id;
+        const featureName = feature.attributes.name || featureId;
+        const style = enabled
+            ? getFeaturePsrcAssignmentStyle(feature, psrcLookup)
+            : originals[featureId];
+
+        if (!style) {
+            continue;
+        }
+
+        if (enabled && !Object.prototype.hasOwnProperty.call(originals, featureId)) {
+            originals[featureId] = captureCalTopoFeatureStyle(feature.attributes);
+        }
+
+        const payload = buildCalTopoFeatureUpdatePayload(feature, enabled
+            ? {
+                stroke: style.stroke,
+                fill: style.fill,
+                'fill-opacity': feature.attributes['fill-opacity'] ?? 0.35,
+                opacity: feature.attributes.opacity ?? 1
+            }
+            : style);
+        const endpoint = `/api/v1/map/${encodeURIComponent(map.id)}/Shape/${encodeURIComponent(featureId)}`;
+        const result = await caltopo_api_call('POST', endpoint, payload, map.domain || 'caltopo.com');
+        if (!result) {
+            throw new Error(`CalTopo could not update assignment "${featureName}".`);
+        }
+
+        applyCapturedCalTopoFeatureStyle(feature.attributes, enabled
+            ? {
+                stroke: style.stroke,
+                fill: style.fill,
+                'fill-opacity': feature.attributes['fill-opacity'] ?? 0.35,
+                opacity: feature.attributes.opacity ?? 1
+            }
+            : style);
+    }
+
+    if (enabled) {
+        map.caltopoAssignmentOverlayState.updatedAt = Date.now();
+    } else {
+        delete map.caltopoAssignmentOverlayState;
+    }
+
+    saveBundle(bundle);
+    return {updatedCount: matchingAssignments.length};
+}
 
 function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -8772,6 +9003,212 @@ const calculateGeometry = (item) => {
     return { area, length, width, height };
 };
 
+function buildCalTopoSegmentImportItem(feature) {
+    const attrs = feature.attributes || feature.properties || {};
+    const geometry = feature.geometry || feature;
+    const name = attrs.name || attrs.label || attrs.title || 'Unnamed Graphic';
+    const metrics = calculateGeometry(feature);
+
+    return {
+        region: '',
+        segment: name,
+        area: metrics.area > 0 ? metrics.area.toFixed(2) : '',
+        length: metrics.length > 0 ? metrics.length.toFixed(2) : '',
+        sweep: 20,
+        typeKey: getCalTopoFeatureTypeKey(feature),
+        typeLabel: getCalTopoFeatureTypeLabel(feature),
+        width: metrics.width > 0 ? metrics.width.toFixed(2) : '0.00',
+        height: metrics.height > 0 ? metrics.height.toFixed(2) : '0.00',
+        feature,
+        geometryType: geometry.type || attrs.class || attrs.type || 'Graphic'
+    };
+}
+
+function showSegmentsImportPreviewPopup(segments, options = {}) {
+    const popup = createPopup(options.title || 'Import Segments', null);
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    content.style.display = 'flex';
+    content.style.flexDirection = 'column';
+    content.style.maxHeight = '90vh';
+    content.style.width = '90vw';
+    content.style.maxWidth = '1100px';
+
+    const bodyContainer = document.createElement('div');
+    bodyContainer.style.flex = '1';
+    bodyContainer.style.display = 'flex';
+    bodyContainer.style.flexDirection = 'column';
+    bodyContainer.style.overflow = 'hidden';
+    content.insertBefore(bodyContainer, btnContainer);
+
+    bodyContainer.innerHTML = `
+      <p style="margin-bottom: 15px; opacity: 0.8; flex-shrink: 0;">${options.description || 'Review segments to be imported:'}</p>
+      <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+          <input type="checkbox" id="check-all-preview" checked style="width: 18px; height: 18px; cursor: pointer;">
+          <label for="check-all-preview" style="cursor: pointer; font-weight: bold;">Check / Uncheck All</label>
+      </div>
+  `;
+
+    const tableWrap = document.createElement('div');
+    tableWrap.style.overflowX = 'auto';
+    tableWrap.style.flex = '1';
+    tableWrap.style.overflowY = 'auto';
+    tableWrap.style.background = 'rgba(0,0,0,0.1)';
+    tableWrap.style.borderRadius = '12px';
+
+    const table = document.createElement('table');
+    table.className = 'grid-table';
+    table.style.width = '100%';
+
+    const thead = document.createElement('thead');
+    const headers = ['', 'Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc'];
+    const htr = document.createElement('tr');
+    headers.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        th.style.padding = '12px';
+        htr.appendChild(th);
+    });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    segments.forEach((seg, idx) => {
+        const tr = document.createElement('tr');
+        const lengthVal = parseFloat(seg.length) || 0;
+        const timeVal = lengthVal / 0.5;
+
+        const tdCheck = document.createElement('td');
+        tdCheck.style.textAlign = 'center';
+        const chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.className = 'preview-checkbox';
+        chk.dataset.index = idx;
+        chk.checked = true;
+        chk.style.width = '18px';
+        chk.style.height = '18px';
+        chk.style.cursor = 'pointer';
+        tdCheck.appendChild(chk);
+        tr.appendChild(tdCheck);
+
+        const rowData = [
+            seg.region || '',
+            seg.segment,
+            seg.area ? seg.area + ' ac' : '',
+            seg.length ? seg.length + ' mi' : '',
+            (seg.sweep || 20) + ' ft',
+            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
+            '',
+            ''
+        ];
+
+        rowData.forEach((val) => {
+            const td = document.createElement('td');
+            const pill = document.createElement('div');
+            pill.className = 'pill-cell readonly-pill';
+            pill.style.padding = '8px 12px';
+            pill.textContent = val;
+            td.appendChild(pill);
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    bodyContainer.appendChild(tableWrap);
+
+    const checkAll = bodyContainer.querySelector('#check-all-preview');
+    const checkboxes = bodyContainer.querySelectorAll('.preview-checkbox');
+    checkAll.onchange = () => {
+        checkboxes.forEach(cb => cb.checked = checkAll.checked);
+    };
+
+    btnContainer.innerHTML = '';
+    btnContainer.style.display = 'flex';
+    btnContainer.style.flexDirection = 'row';
+    btnContainer.style.justifyContent = 'flex-end';
+    btnContainer.style.marginTop = '20px';
+    btnContainer.style.flexShrink = '0';
+    btnContainer.style.gap = '12px';
+
+    if (typeof options.onBack === 'function') {
+        const backBtn = document.createElement('button');
+        backBtn.className = 'popup-btn';
+        backBtn.style.flex = '1';
+        backBtn.textContent = options.backLabel || 'Back';
+        backBtn.onclick = () => {
+            closePopup(popup);
+            options.onBack();
+        };
+        btnContainer.appendChild(backBtn);
+    } else {
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'popup-btn';
+        cancelBtn.style.flex = '1';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.onclick = () => closePopup(popup);
+        btnContainer.appendChild(cancelBtn);
+    }
+
+    const submitBtn = document.createElement('button');
+    submitBtn.className = 'popup-btn primary';
+    submitBtn.style.flex = '1';
+    submitBtn.textContent = 'Submit Import';
+    submitBtn.onclick = () => {
+        const selected = Array.from(checkboxes)
+            .filter(cb => cb.checked)
+            .map(cb => segments[parseInt(cb.dataset.index)]);
+
+        if (selected.length === 0) {
+            alert('No segments selected.');
+            return;
+        }
+
+        importSegmentsAction(selected);
+        closePopup(popup);
+    };
+    btnContainer.appendChild(submitBtn);
+}
+
+function importSegmentsAction(segments) {
+    const b = loadBundle();
+    const segmentRows = ensureSegmentsPageRows(b);
+
+    const importedNames = [];
+    segments.forEach(seg => {
+        const lengthVal = parseFloat(seg.length) || 0;
+        const timeVal = lengthVal / 0.5;
+        const newRow = [
+            '',
+            seg.segment,
+            seg.area ? seg.area + ' ac' : '',
+            seg.length ? seg.length + ' mi' : '',
+            (seg.sweep || 20) + ' ft',
+            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
+            '',
+            '',
+            ''
+        ];
+        segmentRows.push(newRow);
+        newlyImportedSegments.add(`|${seg.segment}`);
+        importedNames.push(seg.segment);
+    });
+
+    if (importedNames.length > 0) {
+        addActivityLogEntry('System', 'Imported segments: ' + importedNames.join(', '), b);
+    }
+
+    saveBundle(b);
+    recalculateEverything();
+    if (isSegmentsPage()) buildSegmentsTable();
+
+    setTimeout(() => {
+        newlyImportedSegments.clear();
+        if (isSegmentsPage()) buildSegmentsTable();
+    }, 7000);
+}
+
 function showImportSegmentsPopup() {
   const bundle = loadBundle();
   const uploads = bundle.uploads || [];
@@ -8984,7 +9421,11 @@ function showImportSegmentsPopup() {
       });
     });
 
-    renderPreviewTable(segmentsToImport);
+      closePopup(popup);
+      showSegmentsImportPreviewPopup(segmentsToImport, {
+          title: 'Import Segments from JSON',
+          onBack: showImportSegmentsPopup
+      });
   }
 
   function parseWithUnits(valStr, defaultUnit) {
@@ -9023,170 +9464,6 @@ function showImportSegmentsPopup() {
     if (defaultUnit === 'ft') return val / 5280;
     
     return val;
-  }
-
-  function renderPreviewTable(segments) {
-    bodyContainer.innerHTML = `
-        <p style="margin-bottom: 15px; opacity: 0.8; flex-shrink: 0;">Review segments to be imported:</p>
-        <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
-            <input type="checkbox" id="check-all-preview" checked style="width: 18px; height: 18px; cursor: pointer;">
-            <label for="check-all-preview" style="cursor: pointer; font-weight: bold;">Check / Uncheck All</label>
-        </div>
-    `;
-    content.style.width = '90vw';
-    content.style.maxWidth = '1100px';
-
-    const tableWrap = document.createElement('div');
-    tableWrap.style.overflowX = 'auto';
-    tableWrap.style.flex = '1';
-    tableWrap.style.overflowY = 'auto';
-    tableWrap.style.background = 'rgba(0,0,0,0.1)';
-    tableWrap.style.borderRadius = '12px';
-    
-    const table = document.createElement('table');
-    table.className = 'grid-table';
-    table.style.width = '100%';
-    
-    const thead = document.createElement('thead');
-    const headers = ['', 'Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc'];
-    const htr = document.createElement('tr');
-    headers.forEach(h => {
-      const th = document.createElement('th');
-      th.textContent = h;
-      th.style.padding = '12px';
-      htr.appendChild(th);
-    });
-    thead.appendChild(htr);
-    table.appendChild(thead);
-
-    const tbody = document.createElement('tbody');
-    segments.forEach((seg, idx) => {
-      const tr = document.createElement('tr');
-      const lengthVal = parseFloat(seg.length) || 0;
-      const timeVal = lengthVal / 0.5;
-      
-      const tdCheck = document.createElement('td');
-      tdCheck.style.textAlign = 'center';
-      const chk = document.createElement('input');
-      chk.type = 'checkbox';
-      chk.className = 'preview-checkbox';
-      chk.dataset.index = idx;
-      chk.checked = true;
-      chk.style.width = '18px';
-      chk.style.height = '18px';
-      chk.style.cursor = 'pointer';
-      tdCheck.appendChild(chk);
-      tr.appendChild(tdCheck);
-
-      const rowData = [
-        '',
-        seg.segment,
-        seg.area ? seg.area + ' ac' : '',
-        seg.length ? seg.length + ' mi' : '',
-        seg.sweep + ' ft',
-        timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
-        '',
-        ''
-      ];
-
-      rowData.forEach((val) => {
-        const td = document.createElement('td');
-        const pill = document.createElement('div');
-        pill.className = 'pill-cell readonly-pill';
-        pill.style.padding = '8px 12px';
-        pill.textContent = val;
-        td.appendChild(pill);
-        tr.appendChild(td);
-      });
-      tbody.appendChild(tr);
-    });
-    table.appendChild(tbody);
-    tableWrap.appendChild(table);
-    bodyContainer.appendChild(tableWrap);
-
-    const checkAll = bodyContainer.querySelector('#check-all-preview');
-    const checkboxes = bodyContainer.querySelectorAll('.preview-checkbox');
-    checkAll.onchange = () => {
-        checkboxes.forEach(cb => cb.checked = checkAll.checked);
-    };
-
-    btnContainer.innerHTML = '';
-    btnContainer.style.display = 'flex';
-    btnContainer.style.flexDirection = 'row';
-    btnContainer.style.justifyContent = 'flex-end';
-    btnContainer.style.marginTop = '20px';
-    btnContainer.style.flexShrink = '0';
-    btnContainer.style.gap = '12px';
-
-    const backBtn = document.createElement('button');
-    backBtn.className = 'popup-btn';
-    backBtn.style.flex = '1';
-    backBtn.textContent = 'Back';
-    backBtn.onclick = () => renderFileSelection();
-    btnContainer.appendChild(backBtn);
-
-    const submitBtn = document.createElement('button');
-    submitBtn.className = 'popup-btn primary';
-    submitBtn.style.flex = '1';
-    submitBtn.textContent = 'Submit Import';
-    submitBtn.onclick = () => {
-      const selected = Array.from(checkboxes)
-          .filter(cb => cb.checked)
-          .map(cb => segments[parseInt(cb.dataset.index)]);
-      
-      if (selected.length === 0) {
-          alert("No segments selected.");
-          return;
-      }
-      importSegmentsAction(selected);
-      closePopup(popup);
-    };
-    btnContainer.appendChild(submitBtn);
-  }
-
-  function importSegmentsAction(segments) {
-    const b = loadBundle();
-    if (!b.pages.page2) b.pages.page2 = defaultSegmentsData();
-    
-    // Ensure it's the correct format (headers + rows)
-    if (Array.isArray(b.pages.page2)) {
-        const rows = b.pages.page2;
-        b.pages.page2 = defaultSegmentsData();
-        b.pages.page2.rows = rows;
-    }
-
-    const importedNames = [];
-    segments.forEach(seg => {
-      const lengthVal = parseFloat(seg.length) || 0;
-      const timeVal = lengthVal / 0.5;
-      const newRow = [
-        '', // Region
-        seg.segment,
-        seg.area ? seg.area + ' ac' : '',
-        seg.length ? seg.length + ' mi' : '',
-        seg.sweep + ' ft',
-        timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
-        '', // PSRi
-        '', // PSRc
-        ''  // manual override
-      ];
-      b.pages.page2.rows.push(newRow);
-      newlyImportedSegments.add(`|${seg.segment}`);
-      importedNames.push(seg.segment);
-    });
-
-    if (importedNames.length > 0) {
-      addActivityLogEntry('System', 'Imported segments: ' + importedNames.join(', '), b);
-    }
-
-    saveBundle(b);
-    recalculateEverything();
-    buildSegmentsTable();
-
-    setTimeout(() => {
-      newlyImportedSegments.clear();
-      buildSegmentsTable();
-    }, 7000);
   }
 
   renderFileSelection();
@@ -9285,76 +9562,97 @@ function showCalTopoShapesPopup(features) {
   bodyContainer.style.overflow = 'hidden';
   content.insertBefore(bodyContainer, btnContainer);
 
-  const segmentsToPreview = features.map(f => {
-      const attrs = f.attributes || {};
-      const geom = f.geometry || f;
-      
-      const name = attrs.name || 'Unnamed Graphic';
-      const res = calculateGeometry(f);
-      return {
-          name: name,
-          area: res.area > 0 ? res.area.toFixed(2) : '0.00',
-          length: res.length > 0 ? res.length.toFixed(2) : '0.00',
-          width: res.width > 0 ? res.width.toFixed(2) : '0.00',
-          height: res.height > 0 ? res.height.toFixed(2) : '0.00',
-          type: geom.type || attrs.class || attrs.type || (attrs.vertices ? 'Shape' : 'Graphic'),
-          feature: f
-      };
-  });
+    const segmentsToPreview = features.map(buildCalTopoSegmentImportItem);
+    let activeFilter = 'all';
+    const selectionState = new Map(segmentsToPreview.map((seg, index) => [index, true]));
 
-  bodyContainer.innerHTML = `
-    <p style="margin-bottom: 15px; opacity: 0.8; flex-shrink: 0;">Select the shapes you want to import as segments:</p>
-    <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
-        <input type="checkbox" id="check-all-shapes" checked style="width: 18px; height: 18px; cursor: pointer;">
-        <label for="check-all-shapes" style="cursor: pointer; font-weight: bold;">Check / Uncheck All</label>
-    </div>
-  `;
+    const renderTable = () => {
+        const visibleSegments = getFilteredSegmentImports(segmentsToPreview, activeFilter);
+        const selectedVisibleCount = visibleSegments.filter(seg => selectionState.get(seg.featureIndex) !== false).length;
+        const allVisibleChecked = visibleSegments.length > 0 && selectedVisibleCount === visibleSegments.length;
 
-  const tableWrap = document.createElement('div');
-  tableWrap.style.overflowX = 'auto';
-  tableWrap.style.flex = '1';
-  tableWrap.style.overflowY = 'auto';
-  tableWrap.style.background = 'rgba(0,0,0,0.1)';
-  tableWrap.style.borderRadius = '12px';
-  
-  const table = document.createElement('table');
-  table.className = 'grid-table';
-  table.style.width = '100%';
-  
-  const thead = document.createElement('thead');
-  thead.innerHTML = `
-    <tr>
-        <th style="width: 40px; text-align: center; padding: 12px;"></th>
-        <th style="padding: 12px;">Name</th>
-        <th style="padding: 12px;">Type</th>
-        <th style="padding: 12px;">Max Dim (mi)</th>
-        <th style="padding: 12px;">Area (acres)</th>
-        <th style="padding: 12px;">W x H (mi)</th>
-    </tr>
-  `;
-  table.appendChild(thead);
+        bodyContainer.innerHTML = `
+      <p style="margin-bottom: 15px; opacity: 0.8; flex-shrink: 0;">Select the shapes you want to import as segments, then click <strong>Submit Import</strong> to open the same import preview used on the Segments page.</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; align-items: center;">
+        <span style="opacity: 0.8; font-size: 0.95rem;">Filter:</span>
+        <button type="button" class="mini-pill caltopo-filter-btn ${activeFilter === 'all' ? 'active' : ''}" data-filter="all">All (${segmentsToPreview.length})</button>
+        <button type="button" class="mini-pill caltopo-filter-btn ${activeFilter === 'marker' ? 'active' : ''}" data-filter="marker">Markers (${segmentsToPreview.filter(seg => seg.typeKey === 'marker').length})</button>
+        <button type="button" class="mini-pill caltopo-filter-btn ${activeFilter === 'assignment' ? 'active' : ''}" data-filter="assignment">Assignments (${segmentsToPreview.filter(seg => seg.typeKey === 'assignment').length})</button>
+        <button type="button" class="mini-pill caltopo-filter-btn ${activeFilter === 'track' ? 'active' : ''}" data-filter="track">Tracks (${segmentsToPreview.filter(seg => seg.typeKey === 'track').length})</button>
+        <span style="margin-left: auto; opacity: 0.7; font-size: 0.85rem;">Showing ${visibleSegments.length} of ${segmentsToPreview.length}</span>
+      </div>
+      <div style="margin-bottom: 10px; display: flex; align-items: center; gap: 10px;">
+          <input type="checkbox" id="check-all-shapes" ${allVisibleChecked ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;">
+          <label for="check-all-shapes" style="cursor: pointer; font-weight: bold;">Check / Uncheck Visible</label>
+      </div>
+    `;
 
-  const tbody = document.createElement('tbody');
-  segmentsToPreview.forEach((seg, idx) => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td style="text-align: center;"><input type="checkbox" class="shape-checkbox" data-index="${idx}" checked style="width: 18px; height: 18px; cursor: pointer;"></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.name}</div></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.type}</div></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.length} mi</div></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.area} ac</div></td>
-        <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-size: 0.8rem;">${seg.width} x ${seg.height}</div></td>
-      `;
-      tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  tableWrap.appendChild(table);
-  bodyContainer.appendChild(tableWrap);
+        const tableWrap = document.createElement('div');
+        tableWrap.style.overflowX = 'auto';
+        tableWrap.style.flex = '1';
+        tableWrap.style.overflowY = 'auto';
+        tableWrap.style.background = 'rgba(0,0,0,0.1)';
+        tableWrap.style.borderRadius = '12px';
 
-  const checkAll = bodyContainer.querySelector('#check-all-shapes');
-  const checkboxes = bodyContainer.querySelectorAll('.shape-checkbox');
-  checkAll.onchange = () => {
-      checkboxes.forEach(cb => cb.checked = checkAll.checked);
+        const table = document.createElement('table');
+        table.className = 'grid-table';
+        table.style.width = '100%';
+
+        const thead = document.createElement('thead');
+        thead.innerHTML = `
+      <tr>
+          <th style="width: 40px; text-align: center; padding: 12px;"></th>
+          <th style="padding: 12px;">Name</th>
+          <th style="padding: 12px;">Type</th>
+          <th style="padding: 12px;">Max Dim (mi)</th>
+          <th style="padding: 12px;">Area (acres)</th>
+          <th style="padding: 12px;">W x H (mi)</th>
+      </tr>
+    `;
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        if (visibleSegments.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 28px; color: var(--muted);">No shapes match the current filter.</td></tr>';
+        } else {
+            visibleSegments.forEach(seg => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+          <td style="text-align: center;"><input type="checkbox" class="shape-checkbox" data-index="${seg.featureIndex}" ${selectionState.get(seg.featureIndex) !== false ? 'checked' : ''} style="width: 18px; height: 18px; cursor: pointer;"></td>
+          <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.segment}</div></td>
+          <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.typeLabel}</div></td>
+          <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.length || '0.00'} mi</div></td>
+          <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${seg.area || '0.00'} ac</div></td>
+          <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-size: 0.8rem;">${seg.width} x ${seg.height}</div></td>
+        `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        table.appendChild(tbody);
+        tableWrap.appendChild(table);
+        bodyContainer.appendChild(tableWrap);
+
+        bodyContainer.querySelectorAll('.caltopo-filter-btn').forEach(btn => {
+            btn.onclick = () => {
+                activeFilter = btn.dataset.filter || 'all';
+                renderTable();
+            };
+        });
+
+        const checkAll = bodyContainer.querySelector('#check-all-shapes');
+        if (checkAll) {
+            checkAll.onchange = () => {
+                visibleSegments.forEach(seg => selectionState.set(seg.featureIndex, checkAll.checked));
+                renderTable();
+            };
+        }
+
+        bodyContainer.querySelectorAll('.shape-checkbox').forEach(cb => {
+            cb.onchange = () => {
+                selectionState.set(parseInt(cb.dataset.index, 10), cb.checked);
+            };
+        });
   };
 
   btnContainer.innerHTML = '';
@@ -9374,64 +9672,36 @@ function showCalTopoShapesPopup(features) {
   submitBtn.style.flex = '1';
   submitBtn.textContent = 'Submit Import';
   submitBtn.onclick = () => {
-      const selected = Array.from(checkboxes)
-          .filter(cb => cb.checked)
-          .map(cb => segmentsToPreview[parseInt(cb.dataset.index)]);
-      
+      const selected = segmentsToPreview.filter((seg, index) => selectionState.get(index) !== false);
       if (selected.length === 0) {
-          alert("No shapes selected.");
+          alert('No shapes selected.');
           return;
       }
 
-      importCalTopoSegments(selected);
       closePopup(popup);
+      showSegmentsImportPreviewPopup(selected, {
+          title: 'Import Segments from CalTopo',
+          description: 'Review the selected CalTopo shapes before importing them into Segments.',
+          onBack: () => showCalTopoShapesPopup(features)
+      });
   };
   btnContainer.appendChild(submitBtn);
+
+    segmentsToPreview.forEach((seg, index) => {
+        seg.featureIndex = index;
+    });
+
+    renderTable();
 }
 
 function importCalTopoSegments(selected) {
-    const b = loadBundle();
-    if (!b.pages.page2) b.pages.page2 = defaultSegmentsData();
-    
-    // Ensure it's the correct format (headers + rows)
-    if (Array.isArray(b.pages.page2)) {
-        const rows = b.pages.page2;
-        b.pages.page2 = defaultSegmentsData();
-        b.pages.page2.rows = rows;
-    }
-
-    const importedNames = [];
-    selected.forEach(seg => {
-        const lengthVal = parseFloat(seg.length) || 0;
-        const timeVal = lengthVal / 0.5;
-        const newRow = [
-            '', // Region
-            seg.name,
-            seg.area ? seg.area + ' ac' : '0.00 ac',
-            seg.length ? seg.length + ' mi' : '0.00 mi',
-            '20 ft', // Default sweep
-            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '0.00 hr',
-            '', // PSRi
-            '', // PSRc
-            ''  // manual override
-        ];
-        b.pages.page2.rows.push(newRow);
-        newlyImportedSegments.add(`|${seg.name}`);
-        importedNames.push(seg.name);
-    });
-
-    if (importedNames.length > 0) {
-        addActivityLogEntry('System', 'Imported CalTopo shapes as segments: ' + importedNames.join(', '), b);
-    }
-
-    saveBundle(b);
-    recalculateEverything();
-    if (isSegmentsPage()) buildSegmentsTable();
-
-    setTimeout(() => {
-        newlyImportedSegments.clear();
-        if (isSegmentsPage()) buildSegmentsTable();
-    }, 7000);
+    importSegmentsAction(selected.map(seg => ({
+        region: seg.region || '',
+        segment: seg.segment || seg.name || 'Unnamed Graphic',
+        area: seg.area || '',
+        length: seg.length || '',
+        sweep: seg.sweep || 20
+    })));
 }
 
 async function caltopo_api_call(method, endpoint, payload = null, domain = null) {
@@ -9633,7 +9903,8 @@ async function verifyCalTopoAccount() {
   }
 }
 
-async function caltopo_request(btn = null) {
+async function caltopo_request(btn = null, options = {}) {
+    const {silent = false} = options;
   const bundle = loadBundle();
   const map = bundle.maps ? bundle.maps[0] : null;
   if (!map || !map.id) return;
@@ -9742,7 +10013,7 @@ async function caltopo_request(btn = null) {
             renderFeaturesList();
           } else if (activeTab === 'arcgis') {
             renderArcGISMap();
-          } else {
+          } else if (!silent) {
             showCalTopoShapesPopup(features);
           }
         }
@@ -9770,13 +10041,24 @@ function renderArcGISMap() {
   if (!mapDiv) return;
   
   const refreshBtn = document.getElementById('refresh-arcgis-btn');
+    const psrcToggle = document.getElementById('maps-psrc-overlay-toggle');
   if (refreshBtn && !refreshBtn.onclick) {
     refreshBtn.onclick = () => caltopo_request(refreshBtn);
   }
+    if (psrcToggle && !psrcToggle.dataset.bound) {
+        psrcToggle.checked = isMapPsrcOverlayEnabled();
+        psrcToggle.onchange = () => {
+            setMapPsrcOverlayEnabled(psrcToggle.checked);
+            renderArcGISMap();
+        };
+        psrcToggle.dataset.bound = 'true';
+    }
 
   const bundle = loadBundle();
   const currentMap = bundle.maps ? bundle.maps[0] : null;
   const features = currentMap ? (currentMap.features || []) : [];
+    const psrcLookup = buildSegmentPsrcLookup(ensureSegmentsPageRows(bundle));
+    const usePsrcOverlay = isMapPsrcOverlayEnabled();
 
   if (typeof require === 'undefined') {
     mapDiv.innerHTML = '<p style="padding: 20px;">ArcGIS API not loaded yet. Please check your internet connection.</p>';
@@ -9855,23 +10137,27 @@ function renderArcGISMap() {
 
       if (!arcgisGeom) return null;
 
+        const overlayColor = usePsrcOverlay ? getFeaturePsrcColor(f, psrcLookup) : null;
+        const overlayRgb = overlayColor ? [...overlayColor.rgb, 1] : [64, 192, 87, 1];
+        const overlayFillRgb = overlayColor ? [...overlayColor.rgb, 0.42] : [64, 192, 87, 0.4];
+
       let symbol = {
         type: "simple-fill",
-        color: [64, 192, 87, 0.4],
-        outline: { color: [64, 192, 87, 1], width: 2 }
+          color: overlayFillRgb,
+          outline: {color: overlayRgb, width: overlayColor ? 3 : 2}
       };
 
       if (arcgisGeom.type === 'polyline') {
         symbol = {
           type: "simple-line",
-          color: [64, 192, 87, 1],
-          width: 3
+            color: overlayRgb,
+            width: overlayColor ? 4 : 3
         };
       } else if (arcgisGeom.type === 'point') {
         symbol = {
           type: "simple-marker",
-          color: [64, 192, 87, 1],
-          size: 8,
+            color: overlayRgb,
+            size: overlayColor ? 10 : 8,
           outline: { color: [255, 255, 255, 1], width: 1 }
         };
       }
@@ -9911,6 +10197,7 @@ function renderFeaturesList() {
   const bundle = loadBundle();
   const currentMap = bundle.maps ? bundle.maps[0] : null;
   const features = currentMap ? currentMap.features : [];
+    const segmentNames = buildSegmentNameSet(ensureSegmentsPageRows(bundle));
 
   if (!features || features.length === 0) {
     tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; padding: 40px; color: var(--muted);">No features loaded. Use "Fetch Shapes" to load features from the active map.</td></tr>';
@@ -9924,7 +10211,8 @@ function renderFeaturesList() {
     const name = attrs.name || 'Unnamed Graphic';
     const type = (f.geometry?.type || attrs.class || attrs.type || (attrs.vertices ? 'Shape' : 'Graphic'));
     const objectId = attrs.ObjectID || 'N/A';
-    const stableId = attrs.id || objectId;
+      const existingSegment = segmentNames.has(normalizeSegmentNameForMatch(name));
+      const importLabel = existingSegment ? 'Reimport' : 'Import';
 
     tr.innerHTML = `
       <td><div class="pill-cell readonly-pill" style="padding: 8px 12px; font-family: monospace; font-size: 0.8rem;">${objectId}</div></td>
@@ -9932,43 +10220,16 @@ function renderFeaturesList() {
       <td><div class="pill-cell readonly-pill" style="padding: 8px 12px;">${type}</div></td>
       <td style="padding: 8px 12px;">
         <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-          <button class="mini-pill import-feat" style="background: rgba(64, 192, 87, 0.1); border-color: rgba(64, 192, 87, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">Import</button>
-          <button class="mini-pill color-feat" style="background: rgba(125, 198, 255, 0.1); border-color: rgba(125, 198, 255, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">Color</button>
-          <button class="mini-pill delete-feat" style="background: rgba(235, 87, 87, 0.1); border-color: rgba(235, 87, 87, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">Delete</button>
+          <button class="mini-pill import-feat" style="background: rgba(64, 192, 87, 0.1); border-color: rgba(64, 192, 87, 0.3); padding: 5px 10px; font-size: 0.8rem; cursor: pointer;">${importLabel}</button>
         </div>
       </td>
     `;
 
     tr.querySelector('.import-feat').onclick = () => {
-      const res = calculateGeometry(f);
-      importCalTopoSegments([{
-        name: name,
-        area: res.area > 0 ? res.area.toFixed(2) : '0.00',
-        length: res.length > 0 ? res.length.toFixed(2) : '0.00',
-        width: res.width > 0 ? res.width.toFixed(2) : '0.00',
-        height: res.height > 0 ? res.height.toFixed(2) : '0.00',
-        type: f.geometry?.type || attrs.type,
-        feature: f
-      }]);
-      alert(`Imported "${name}" to Segments.`);
-    };
-
-    tr.querySelector('.color-feat').onclick = () => {
-      alert('Changing color is currently local-only and not supported for write-back to CalTopo through the proxy.');
-    };
-
-    tr.querySelector('.delete-feat').onclick = () => {
-      if (confirm(`Delete feature "${name}" from local view?`)) {
-        const b = loadBundle();
-        if (b.maps && b.maps[0]) {
-          b.maps[0].features = (b.maps[0].features || []).filter(feat => {
-            const fa = feat.attributes || {};
-            return (fa.ObjectID !== objectId) && (fa.id !== stableId);
-          });
-          saveBundle(b);
-          renderFeaturesList();
-        }
-      }
+        showSegmentsImportPreviewPopup([buildCalTopoSegmentImportItem(f)], {
+            title: 'Import Segments from CalTopo',
+            description: `Review the selected CalTopo shape before ${existingSegment ? 'reimporting' : 'importing'} "${name}" into Segments.`
+        });
     };
 
     tbody.appendChild(tr);
@@ -10333,7 +10594,8 @@ function buildMapsPage() {
   if (!bundle.maps) bundle.maps = [];
 
   const urlParams = new URLSearchParams(window.location.search);
-  const activeTab = urlParams.get('tab') || 'map';
+    const requestedTab = urlParams.get('tab') || 'map';
+    const activeTab = ['map', 'arcgis', 'features'].includes(requestedTab) ? requestedTab : 'map';
 
   container.innerHTML = `
     <section class="hero">
@@ -10344,7 +10606,6 @@ function buildMapsPage() {
         <button id="tab-map" class="mini-pill ${activeTab === 'map' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">CalTopo View</button>
         <button id="tab-arcgis" class="mini-pill ${activeTab === 'arcgis' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">ArcGIS View</button>
         <button id="tab-features" class="mini-pill ${activeTab === 'features' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Features</button>
-        <button id="tab-create" class="mini-pill ${activeTab === 'create' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">Create Map</button>
       </div>
 
       <div style="background: rgba(64, 192, 87, 0.1); border-left: 4px solid #40c057; padding: 20px; margin-top: 15px; border-radius: 16px; display: flex; align-items: center;">
@@ -10362,7 +10623,14 @@ function buildMapsPage() {
       <section id="map-view-section" class="table-card" style="display: none; padding: 0; overflow: hidden; height: 75vh; position: relative; margin-top: 20px; border-radius: 16px;">
         <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
           <h2 id="current-map-title" style="margin: 0; font-size: 1.2rem;">Map View</h2>
-          <div class="tool-actions">
+          <div class="tool-actions" style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <label style="display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.92rem; cursor: pointer;">
+              <span>PSRc Assignment Colors</span>
+              <span class="toggle-switch" style="transform: scale(0.9);">
+                <input type="checkbox" id="caltopo-assignment-overlay-toggle" ${isCalTopoAssignmentOverlayEnabled() ? 'checked' : ''}>
+                <span class="slider"></span>
+              </span>
+            </label>
             <button id="fetch-shapes-btn" class="clear-btn">Fetch Shapes</button>
           </div>
         </div>
@@ -10389,7 +10657,14 @@ function buildMapsPage() {
       <section class="table-card" style="padding: 0; overflow: hidden; height: 75vh; position: relative; border-radius: 16px;">
         <div class="table-tools" style="padding: 15px; background: var(--header-bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center;">
           <h2 style="margin: 0; font-size: 1.2rem;">ArcGIS Map View</h2>
-          <div class="tool-actions">
+          <div class="tool-actions" style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <label style="display: inline-flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.92rem; cursor: pointer;">
+              <span>PSRc Overlay</span>
+              <span class="toggle-switch" style="transform: scale(0.9);">
+                <input type="checkbox" id="maps-psrc-overlay-toggle" ${isMapPsrcOverlayEnabled() ? 'checked' : ''}>
+                <span class="slider"></span>
+              </span>
+            </label>
             <button id="refresh-arcgis-btn" class="clear-btn">Refresh Layer</button>
           </div>
         </div>
@@ -10422,63 +10697,18 @@ function buildMapsPage() {
         </div>
       </section>
     </div>
-
-    <div id="create-map-view-container" style="display: ${activeTab === 'create' ? 'block' : 'none'}; margin-top: 20px;">
-      <section class="table-card">
-        <div class="table-tools">
-          <h2 style="margin: 0; font-size: 1.2rem;">Create New Collaborative Map</h2>
-        </div>
-        <div style="padding: 20px;">
-          <p style="color: var(--muted); margin-bottom: 20px;">Using CalTopo Team API: <code>POST /api/v1/acct/{team_id}/CollaborativeMap</code></p>
-          <div style="display: flex; flex-direction: column; gap: 15px; max-width: 500px;">
-            <div>
-              <label style="display: block; margin-bottom: 5px; font-weight: 500;">CalTopo/SARTopo Domain</label>
-              <select id="create-map-domain" class="pill-input" style="width: 100%;">
-                <option value="caltopo.com">caltopo.com (Standard)</option>
-                <option value="sartopo.com">sartopo.com (Search & Rescue)</option>
-              </select>
-            </div>
-            <div>
-              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Team ID</label>
-              <div style="display: flex; gap: 10px;">
-                <input id="create-team-id" class="pill-input" type="text" placeholder="Enter your Team ID (6 chars)" style="flex: 1;">
-                <button id="verify-team-btn" class="clear-btn" style="padding: 0 15px; background: var(--pill-bg); border: 1px solid var(--pill-border);">Verify</button>
-              </div>
-              <small id="team-verify-result" style="display: block; margin-top: 4px; color: var(--muted);">Required to create a map in a team account. Your <strong>Service Account</strong> must have <strong>UPDATE</strong> or <strong>MANAGE</strong> permission.</small>
-            </div>
-            <div>
-              <label style="display: block; margin-bottom: 5px; font-weight: 500;">Map Title</label>
-              <input id="create-map-title" class="pill-input" type="text" placeholder="e.g. Incident #1234 - Search Area Alpha" style="width: 100%;">
-            </div>
-            <div style="margin-top: 10px;">
-              <button id="submit-create-map" class="clear-btn" style="padding: 12px 30px; font-size: 1.1rem; background: var(--accent); color: white; border: none;">Create Map</button>
-            </div>
-            <div id="create-map-status" style="margin-top: 15px; font-weight: 500; display: none;"></div>
-          </div>
-        </div>
-      </section>
-    </div>
   `;
-
-  const submitCreateMapBtn = document.getElementById('submit-create-map');
-  if (submitCreateMapBtn) {
-    submitCreateMapBtn.onclick = handleCreateMap;
-  }
-  const verifyTeamBtn = document.getElementById('verify-team-btn');
-  if (verifyTeamBtn) {
-    verifyTeamBtn.onclick = verifyCalTopoAccount;
-  }
   const addMapBtn = document.getElementById('add-map-btn');
   const mapsList = document.getElementById('maps-list');
   const mapViewSection = document.getElementById('map-view-section');
   const mapIframe = document.getElementById('map-iframe');
   const currentMapTitle = document.getElementById('current-map-title');
   const fetchShapesBtn = document.getElementById('fetch-shapes-btn');
+    const caltopoAssignmentOverlayToggle = document.getElementById('caltopo-assignment-overlay-toggle');
   const refreshFeaturesBtn = document.getElementById('refresh-features-btn');
   const tabMap = document.getElementById('tab-map');
   const tabArcGIS = document.getElementById('tab-arcgis');
   const tabFeatures = document.getElementById('tab-features');
-  const tabCreate = document.getElementById('tab-create');
 
   tabMap.onclick = () => {
     const newUrl = window.location.pathname + '?tab=map';
@@ -10498,11 +10728,36 @@ function buildMapsPage() {
     buildMapsPage();
   };
 
-  tabCreate.onclick = () => {
-    const newUrl = window.location.pathname + '?tab=create';
-    window.history.replaceState(null, '', newUrl);
-    buildMapsPage();
+    const refreshCalTopoIframe = () => {
+        if (!mapIframe || !mapIframe.src) return;
+        const refreshedUrl = new URL(mapIframe.src);
+        refreshedUrl.searchParams.set('_overlayRefresh', String(Date.now()));
+        mapIframe.src = refreshedUrl.toString();
   };
+
+    if (caltopoAssignmentOverlayToggle && !caltopoAssignmentOverlayToggle.dataset.bound) {
+        caltopoAssignmentOverlayToggle.checked = isCalTopoAssignmentOverlayEnabled();
+        caltopoAssignmentOverlayToggle.onchange = async () => {
+            const enabled = caltopoAssignmentOverlayToggle.checked;
+            caltopoAssignmentOverlayToggle.disabled = true;
+            try {
+                const result = await updateCalTopoAssignmentOverlay(enabled, {ensureFeaturesLoaded: true});
+                setCalTopoAssignmentOverlayEnabled(enabled);
+                refreshCalTopoIframe();
+                if (result.updatedCount > 0 && activeTab === 'features') {
+                    renderFeaturesList();
+                }
+            } catch (error) {
+                console.error(error);
+                caltopoAssignmentOverlayToggle.checked = !enabled;
+                setCalTopoAssignmentOverlayEnabled(!enabled);
+                alert(error.message || 'Unable to update CalTopo assignment colors.');
+            } finally {
+                caltopoAssignmentOverlayToggle.disabled = false;
+            }
+        };
+        caltopoAssignmentOverlayToggle.dataset.bound = 'true';
+    }
 
   checkProxyHealth();
 
