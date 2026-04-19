@@ -162,6 +162,16 @@ function isFeatureActivelyBeingSearched(feature, activeSearchNames) {
     return keys.some(key => activeSearchNames instanceof Set && activeSearchNames.has(key));
 }
 
+function resolveDisplayedSegmentOpacity(isActiveSearch, settings, baseOpacity = 0.2) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.resolveDisplayedSegmentOpacity === 'function') {
+        return utils.resolveDisplayedSegmentOpacity(isActiveSearch, settings, baseOpacity);
+    }
+
+    const safeBaseOpacity = Number.isFinite(baseOpacity) ? Math.min(1, Math.max(0, baseOpacity)) : 0.2;
+    return isActiveSearch ? getSegmentDisplaySettings(settings).activeSearchOpacity : safeBaseOpacity;
+}
+
 function buildSegmentNameSet(rows) {
     const utils = getMapSegmentUtils();
     if (typeof utils.buildSegmentNameSet === 'function') {
@@ -6272,9 +6282,6 @@ function buildSavedFilesTable() {
         nameBtn.textContent = name;
         nameBtn.onclick = () => {
             saveBundle(fileInfo.bundle);
-            // Sync bucket ID when switching files
-            const bucketName = name.replace(/\.json$/i, '');
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
             window.location.reload();
         };
         tdName.appendChild(nameBtn);
@@ -6400,9 +6407,6 @@ function buildHomePage() {
 
             logCreation('New Search File', newBundle.fileName, newBundle);
             saveBundle(newBundle);
-            // Sync bucket ID with new file name
-            const bucketName = newBundle.fileName.replace(/\.json$/i, '');
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
             window.location.reload();
         };
         
@@ -6500,9 +6504,6 @@ function buildHomePage() {
           logCreation('Imported Search File', importedBundle.fileName, importedBundle);
           saveBundle(importedBundle);
           saveFileToList(importedBundle.fileName, importedBundle);
-            // Sync bucket ID with imported file name
-            const bucketName = importedBundle.fileName.replace(/\.json$/i, '');
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
           window.location.reload();
         } catch (err) {
           alert('Error importing file: ' + err.message);
@@ -6523,10 +6524,6 @@ function buildHomePage() {
     
     currentBundle.fileName = nextName;
     saveBundle(currentBundle);
-
-      // Sync bucket ID with new file name
-      const bucketName = nextName.replace(/\.json$/i, '');
-      localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucketName);
 
     // If not already in the list, add it
     if (!files[nextName] && !files[oldName]) {
@@ -6627,9 +6624,9 @@ function buildSettingsPage() {
             : 'Scale max uses highest PSRc';
     };
 
-    const updateSegmentSearchOpacityLabel = settings => {
+    const updateSegmentSearchOpacityLabel = () => {
         if (!segmentSearchOpacityLabel) return;
-        segmentSearchOpacityLabel.textContent = `${settings.activeSearchOpacityPercent}% opacity while actively searched`;
+        segmentSearchOpacityLabel.textContent = '%';
     };
 
     if (segmentScaleMaxToggle) {
@@ -6830,32 +6827,6 @@ function buildSettingsPage() {
                 testProxyBtn.textContent = 'Test Connection';
                 testProxyBtn.disabled = false;
             }
-        };
-    }
-
-    const saveCalTopoCredsBtn = document.getElementById('save-caltopo-creds-btn');
-    if (saveCalTopoCredsBtn) {
-        const titleInput = document.getElementById('caltopo-title-input');
-        const accountIdInput = document.getElementById('caltopo-account-id-input');
-        const credentialIdInput = document.getElementById('caltopo-credential-id-input');
-        const secretInput = document.getElementById('caltopo-secret-input');
-
-        const creds = getCalTopoCredentials();
-        if (titleInput) titleInput.value = creds.title || '';
-        if (accountIdInput) accountIdInput.value = creds.accountId || '';
-        if (credentialIdInput) credentialIdInput.value = creds.credentialId || '';
-        if (secretInput) secretInput.value = creds.secret || '';
-
-        saveCalTopoCredsBtn.onclick = async () => {
-            await withSaveButtonFeedback(saveCalTopoCredsBtn, () => {
-                setCalTopoCredentials({
-                    title: titleInput.value.trim(),
-                    accountId: accountIdInput.value.trim(),
-                    credentialId: credentialIdInput.value.trim(),
-                    secret: secretInput.value.trim()
-                });
-                status.textContent = 'CalTopo credentials saved locally for reference only. The proxy now signs requests using backend environment credentials, so configure those on the server before fetching shapes.';
-            });
         };
     }
 
@@ -10512,9 +10483,10 @@ function renderArcGISMap() {
 
         const overlayColor = usePsrcOverlay ? getFeaturePsrcColor(f, psrcLookup, segmentDisplaySettings) : null;
         const isActiveSearch = isFeatureActivelyBeingSearched(f, activeSearchNames);
-        const opacityFactor = isActiveSearch ? segmentDisplaySettings.activeSearchOpacity : 1;
-        const overlayRgb = overlayColor ? [...overlayColor.rgb, opacityFactor] : [64, 192, 87, opacityFactor];
-        const overlayFillRgb = overlayColor ? [...overlayColor.rgb, 0.42 * opacityFactor] : [64, 192, 87, 0.4 * opacityFactor];
+        const strokeOpacity = resolveDisplayedSegmentOpacity(isActiveSearch, segmentDisplaySettings, overlayColor ? 1 : 0.2);
+        const fillOpacity = resolveDisplayedSegmentOpacity(isActiveSearch, segmentDisplaySettings, overlayColor ? 0.42 : 0.4);
+        const overlayRgb = overlayColor ? [...overlayColor.rgb, strokeOpacity] : [64, 192, 87, strokeOpacity];
+        const overlayFillRgb = overlayColor ? [...overlayColor.rgb, fillOpacity] : [64, 192, 87, fillOpacity];
 
       let symbol = {
         type: "simple-fill",
@@ -10533,7 +10505,7 @@ function renderArcGISMap() {
           type: "simple-marker",
             color: overlayRgb,
             size: overlayColor ? 10 : 8,
-            outline: {color: [255, 255, 255, opacityFactor], width: 1}
+            outline: {color: [255, 255, 255, strokeOpacity], width: 1}
         };
       }
 

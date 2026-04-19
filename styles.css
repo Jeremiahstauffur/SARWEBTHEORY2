@@ -2805,6 +2805,17 @@ tr.log-sweeps-due::after {
     color: var(--muted);
 }
 
+.no-spinner-number-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.no-spinner-number-input::-webkit-outer-spin-button,
+.no-spinner-number-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .mobile-nav-sheet-options {
     display: flex;
     flex-wrap: wrap;

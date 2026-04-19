@@ -139,9 +139,11 @@
               </label>
             </div>
             <div class="home-row" style="flex-wrap: wrap; gap: 12px; align-items: center;">
-              <input class="pill-cell" id="segment-search-opacity-input" max="100"
-                     min="0" step="1" style="width: 90px; text-align: center;" type="number">
-              <span id="segment-search-opacity-label">50% search opacity</span>
+              <label for="segment-search-opacity-input">Opacity of Segments Activly Being Searched</label>
+              <input class="pill-cell no-spinner-number-input" id="segment-search-opacity-input" inputmode="numeric"
+                     max="100"
+                     min="0" step="1" style="width: 90px; text-align: center;" type="number" value="50">
+              <span id="segment-search-opacity-label">%</span>
             </div>
           </div>
 
@@ -171,25 +173,6 @@
               <button class="clear-btn" id="test-proxy-btn" style="margin-left: 10px; border-color: var(--accent); color: var(--accent);"
                       type="button">Test Connection
               </button>
-            </div>
-          </div>
-
-          <div class="home-panel full-width">
-            <h2>CalTopo Credentials</h2>
-            <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-                CalTopo’s Team API uses a Credential ID + Credential Secret pair for signed requests. Configure
-                <code>CALTOPO_CREDENTIAL_ID</code> and <code>CALTOPO_CREDENTIAL_SECRET</code> directly on your proxy
-                server so requests are signed backend-side. You can place them in your server’s <code>.env</code> or
-                <code>.env.local</code> file (see the server root <code>.env.example</code>) or set them as deployed
-                environment variables. The fields below can still be saved locally for reference, but the website no
-                longer forwards those secrets to the proxy.
-            </p>
-            <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
-              <input class="pill-input" id="caltopo-title-input" placeholder="Title (e.g. My Integration)" style="flex: 1; min-width: 200px;" type="text">
-              <input class="pill-input" id="caltopo-account-id-input" placeholder="Account ID" style="flex: 1; min-width: 200px;" type="password">
-              <input class="pill-input" id="caltopo-credential-id-input" placeholder="Credential ID" style="flex: 1; min-width: 200px;" type="password">
-              <input class="pill-input" id="caltopo-secret-input" placeholder="Credential Secret" style="flex: 1; min-width: 200px;" type="password">
-              <button class="clear-btn" id="save-caltopo-creds-btn" style="white-space: nowrap;" type="button">Save Credentials</button>
             </div>
           </div>
 
