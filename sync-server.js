@@ -372,10 +372,12 @@ app.get('/api/health', (req, res) => {
 });
 
 // CalTopo Proxy endpoint
-const fetchMapHandler = async (req, res) => {
-    const requestData = req.method === 'POST' && req.body && typeof req.body === 'object'
-        ? req.body
-        : req.query;
+const fetchMapHandler = async (req, res, overrideRequestData = null) => {
+    const requestData = overrideRequestData && typeof overrideRequestData === 'object'
+        ? overrideRequestData
+        : req.method === 'POST' && req.body && typeof req.body === 'object'
+            ? req.body
+            : req.query;
     const mapId = getTrimmedString(requestData.mapId);
     const domain = getTrimmedString(requestData.domain);
     const usePostToCalTopo = requestData.usePost || false;
@@ -448,8 +450,7 @@ const fetchMapHandler = async (req, res) => {
         // If GET fails, try POST automatically if not already using it
         if (method === 'GET' && !usePostToCalTopo && (error.response?.status === 405 || error.response?.status === 403 || error.code === 'ECONNRESET')) {
             console.log(`[PROXY] GET failed, retrying with POST...`);
-            req.body = { ...requestData, usePost: true };
-            return fetchMapHandler(req, res);
+            return fetchMapHandler(req, res, {...requestData, usePost: true});
         }
 
         const responseStatus = error.response ? error.response.status : 500;
