@@ -111,6 +111,41 @@
           </div>
 
           <div class="home-panel full-width">
+            <h2>Segment Color Scale</h2>
+            <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
+              Control how segment colors are calculated on the map overlays. Segments always use their current PSRc for
+              color placement, while this toggle decides whether the scale tops out at the highest PSRc or the highest
+              PSRi from the Segments page.
+            </p>
+            <div class="home-row" style="margin-bottom: 15px;">
+              <label class="toggle-switch">
+                <input id="segment-scale-max-toggle" type="checkbox">
+                <span class="slider"></span>
+              </label>
+              <span id="segment-scale-max-label">Scale max uses highest PSRc</span>
+            </div>
+            <div class="home-row" style="flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 15px;">
+              <label style="display: flex; flex-direction: column; gap: 6px; font-size: 0.9rem;">
+                <span>Low Color (0)</span>
+                <input id="segment-scale-low-color-input" type="color" value="#40c057">
+              </label>
+              <label style="display: flex; flex-direction: column; gap: 6px; font-size: 0.9rem;">
+                <span>Mid Color (50%)</span>
+                <input id="segment-scale-mid-color-input" type="color" value="#ffd43b">
+              </label>
+              <label style="display: flex; flex-direction: column; gap: 6px; font-size: 0.9rem;">
+                <span>High Color (100%)</span>
+                <input id="segment-scale-high-color-input" type="color" value="#fa5252">
+              </label>
+            </div>
+            <div class="home-row" style="flex-wrap: wrap; gap: 12px; align-items: center;">
+              <input class="pill-cell" id="segment-search-opacity-input" max="100"
+                     min="0" step="1" style="width: 90px; text-align: center;" type="number">
+              <span id="segment-search-opacity-label">50% search opacity</span>
+            </div>
+          </div>
+
+          <div class="home-panel full-width">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <h2 style="margin: 0;">CalTopo Proxy Settings</h2>
               <div id="proxy-status-container"
@@ -205,6 +240,7 @@
         </a>
     </nav>
   </div>
+  <script src="map-segment-utils.js"></script>
   <script src="app.js"></script>
 
     <div class="notification-sidebar" id="notif-sidebar">

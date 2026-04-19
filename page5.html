@@ -37,7 +37,8 @@
 
     
         <section class="hero">
-        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <div class="page5-hero-row"
+                 style="display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 16px;">
           <div>
             <h1>Forms</h1>
             <div class="sub-nav">
@@ -53,14 +54,17 @@
 
       <section class="table-card" id="task-assignment-view">
         <div class="table-tools">
-          <div style="display: flex; flex-direction: column; gap: 10px; width: 100%;">
+            <div class="task-assignment-summary"
+                 style="display: flex; flex-direction: column; gap: 10px; width: 100%; min-width: 0;">
             <h2>Task Assignment Form</h2>
-            <div id="task-pills-container" style="display: flex; flex-wrap: wrap; gap: 10px;">
+                <div class="task-pills-row" id="task-pills-container"
+                     style="display: flex; flex-wrap: wrap; gap: 10px; width: 100%; min-width: 0;">
               <!-- Pill buttons for tasks will be injected here -->
             </div>
           </div>
         </div>
-        <div id="interactive-form-container" style="min-height: 800px; width: 100%; border-radius: 12px; background: rgba(128, 128, 128, 0.05); padding: 20px; box-sizing: border-box;">
+          <div class="interactive-form-shell" id="interactive-form-container"
+               style="min-height: 800px; width: 100%; border-radius: 12px; background: rgba(128, 128, 128, 0.05); padding: 20px; box-sizing: border-box; min-width: 0; overflow-wrap: anywhere;">
            <div style="text-align: center; color: var(--text); opacity: 0.6; margin-top: 100px;">Select a Task # above to manage its form.</div>
         </div>
       </section>

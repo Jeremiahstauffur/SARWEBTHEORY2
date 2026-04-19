@@ -49,24 +49,24 @@ function getFilteredSegmentImports(items, typeKey) {
     return items.filter(item => item.typeKey === typeKey);
 }
 
-function buildSegmentPsrcLookup(rows) {
+function buildSegmentPsrcLookup(rows, options = {}) {
     const utils = getMapSegmentUtils();
     return typeof utils.buildSegmentPsrcLookup === 'function'
-        ? utils.buildSegmentPsrcLookup(rows)
+        ? utils.buildSegmentPsrcLookup(rows, options)
         : {values: new Map(), maxValue: 0};
 }
 
-function getFeaturePsrcColor(feature, lookup) {
+function getFeaturePsrcColor(feature, lookup, options = {}) {
     const utils = getMapSegmentUtils();
-    return typeof utils.getFeaturePsrcColor === 'function' ? utils.getFeaturePsrcColor(feature, lookup) : null;
+    return typeof utils.getFeaturePsrcColor === 'function' ? utils.getFeaturePsrcColor(feature, lookup, options) : null;
 }
 
-function getFeaturePsrcAssignmentStyle(feature, lookup) {
+function getFeaturePsrcAssignmentStyle(feature, lookup, options = {}) {
     const utils = getMapSegmentUtils();
     if (typeof utils.getFeaturePsrcAssignmentStyle === 'function') {
-        return utils.getFeaturePsrcAssignmentStyle(feature, lookup);
+        return utils.getFeaturePsrcAssignmentStyle(feature, lookup, options);
     }
-    const color = getFeaturePsrcColor(feature, lookup);
+    const color = getFeaturePsrcColor(feature, lookup, options);
     return color ? {stroke: color.css, fill: color.css, color} : null;
 }
 
@@ -75,6 +75,91 @@ function normalizeSegmentNameForMatch(value) {
     return typeof utils.normalizeSegmentName === 'function'
         ? utils.normalizeSegmentName(value)
         : String(value || '').trim().toLowerCase();
+}
+
+function getSegmentDisplaySettings(bundle) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.normalizeSegmentDisplaySettings === 'function') {
+        return utils.normalizeSegmentDisplaySettings(bundle || {});
+    }
+
+    const normalizeColor = (value, fallback) => {
+        const raw = String(value || '').trim();
+        const stripped = raw.replace(/^#/, '').toLowerCase();
+        if (!/^[0-9a-f]{3}([0-9a-f]{3})?$/i.test(stripped)) {
+            return fallback;
+        }
+        const expanded = stripped.length === 3
+            ? stripped.split('').map(char => char + char).join('')
+            : stripped;
+        return `#${expanded}`;
+    };
+    const normalizeOpacity = value => {
+        const parsed = parseFloat(value);
+        return Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : 50;
+    };
+    const activeSearchOpacityPercent = normalizeOpacity(bundle?.segmentActiveSearchOpacityPercent);
+
+    return {
+        usePsriMax: bundle?.segmentColorScaleUsePsriMax === true,
+        lowColor: normalizeColor(bundle?.segmentColorScaleLowColor, '#40c057'),
+        midColor: normalizeColor(bundle?.segmentColorScaleMidColor, '#ffd43b'),
+        highColor: normalizeColor(bundle?.segmentColorScaleHighColor, '#fa5252'),
+        activeSearchOpacityPercent,
+        activeSearchOpacity: activeSearchOpacityPercent / 100
+    };
+}
+
+function formatSegmentAssignmentLabel(region, segment) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.formatSegmentAssignmentLabel === 'function') {
+        return utils.formatSegmentAssignmentLabel(region, segment);
+    }
+
+    const trimmedSegment = String(segment || '').trim();
+    const trimmedRegion = String(region || '').trim();
+    if (!trimmedSegment) return '';
+    return trimmedRegion ? `${trimmedRegion} - ${trimmedSegment}` : trimmedSegment;
+}
+
+function buildActiveSearchSegmentNameSet(bundle, rows) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.buildActiveSearchSegmentNameSet === 'function') {
+        return utils.buildActiveSearchSegmentNameSet(
+            rows || ensureSegmentsPageRows(bundle),
+            bundle?.currentAssignments || {},
+            bundle?.teamStatuses || {}
+        );
+    }
+
+    const names = new Set();
+    const currentAssignments = bundle?.currentAssignments || {};
+    const teamStatuses = bundle?.teamStatuses || {};
+    (rows || ensureSegmentsPageRows(bundle)).forEach(row => {
+        const fullName = formatSegmentAssignmentLabel(row?.[0], row?.[1]);
+        if (!fullName) return;
+        const isSearching = Object.entries(currentAssignments).some(([teamName, assignment]) => {
+            const status = String(teamStatuses[teamName] || '').trim().toLowerCase();
+            return String(assignment || '').includes(fullName) && status && !status.includes('finished segment') && !status.startsWith('at base');
+        });
+        if (!isSearching) return;
+        names.add(normalizeSegmentNameForMatch(row?.[1]));
+        names.add(normalizeSegmentNameForMatch(fullName));
+    });
+    return names;
+}
+
+function isFeatureActivelyBeingSearched(feature, activeSearchNames) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.isFeatureActivelyBeingSearched === 'function') {
+        return utils.isFeatureActivelyBeingSearched(feature, activeSearchNames);
+    }
+
+    const attributes = feature?.attributes || feature?.properties || {};
+    const keys = [attributes.name, feature?.name, attributes.label, attributes.title]
+        .map(normalizeSegmentNameForMatch)
+        .filter(Boolean);
+    return keys.some(key => activeSearchNames instanceof Set && activeSearchNames.has(key));
 }
 
 function buildSegmentNameSet(rows) {
@@ -113,6 +198,11 @@ function captureCalTopoFeatureStyle(attributes = {}) {
         'fill-opacity': Object.prototype.hasOwnProperty.call(attributes, 'fill-opacity') ? attributes['fill-opacity'] : null,
         opacity: Object.prototype.hasOwnProperty.call(attributes, 'opacity') ? attributes.opacity : null
     };
+}
+
+function resolveOverlayOpacity(value, fallback = 1) {
+    const parsed = parseFloat(value);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : fallback;
 }
 
 function applyCapturedCalTopoFeatureStyle(attributes, style = {}) {
@@ -174,7 +264,10 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
     }
 
     const originals = map.caltopoAssignmentOverlayState.originals;
-    const psrcLookup = buildSegmentPsrcLookup(ensureSegmentsPageRows(bundle));
+    const segmentRows = ensureSegmentsPageRows(bundle);
+    const segmentDisplaySettings = getSegmentDisplaySettings(bundle);
+    const psrcLookup = buildSegmentPsrcLookup(segmentRows, segmentDisplaySettings);
+    const activeSearchNames = buildActiveSearchSegmentNameSet(bundle, segmentRows);
     const matchingAssignments = features.filter(feature => {
         const featureId = feature?.attributes?.id;
         if (!featureId || getCalTopoFeatureTypeKey(feature) !== 'assignment') {
@@ -183,7 +276,7 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
         if (!enabled) {
             return !!originals[featureId];
         }
-        return !!getFeaturePsrcAssignmentStyle(feature, psrcLookup);
+        return !!getFeaturePsrcAssignmentStyle(feature, psrcLookup, segmentDisplaySettings);
     });
 
     if (!matchingAssignments.length) {
@@ -198,8 +291,9 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
     for (const feature of matchingAssignments) {
         const featureId = feature.attributes.id;
         const featureName = feature.attributes.name || featureId;
+        const originalStyle = originals[featureId] || captureCalTopoFeatureStyle(feature.attributes);
         const style = enabled
-            ? getFeaturePsrcAssignmentStyle(feature, psrcLookup)
+            ? getFeaturePsrcAssignmentStyle(feature, psrcLookup, segmentDisplaySettings)
             : originals[featureId];
 
         if (!style) {
@@ -207,31 +301,28 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
         }
 
         if (enabled && !Object.prototype.hasOwnProperty.call(originals, featureId)) {
-            originals[featureId] = captureCalTopoFeatureStyle(feature.attributes);
+            originals[featureId] = originalStyle;
         }
 
-        const payload = buildCalTopoFeatureUpdatePayload(feature, enabled
+        const isActiveSearch = enabled && isFeatureActivelyBeingSearched(feature, activeSearchNames);
+        const opacityFactor = isActiveSearch ? segmentDisplaySettings.activeSearchOpacity : 1;
+        const overlayStyle = enabled
             ? {
                 stroke: style.stroke,
                 fill: style.fill,
-                'fill-opacity': feature.attributes['fill-opacity'] ?? 0.35,
-                opacity: feature.attributes.opacity ?? 1
+                'fill-opacity': Number((resolveOverlayOpacity(originalStyle['fill-opacity'], resolveOverlayOpacity(feature.attributes['fill-opacity'], 0.35)) * opacityFactor).toFixed(4)),
+                opacity: Number((resolveOverlayOpacity(originalStyle.opacity, resolveOverlayOpacity(feature.attributes.opacity, 1)) * opacityFactor).toFixed(4))
             }
-            : style);
+            : style;
+
+        const payload = buildCalTopoFeatureUpdatePayload(feature, overlayStyle);
         const endpoint = `/api/v1/map/${encodeURIComponent(map.id)}/Shape/${encodeURIComponent(featureId)}`;
         const result = await caltopo_api_call('POST', endpoint, payload, map.domain || 'caltopo.com');
         if (!result) {
             throw new Error(`CalTopo could not update assignment "${featureName}".`);
         }
 
-        applyCapturedCalTopoFeatureStyle(feature.attributes, enabled
-            ? {
-                stroke: style.stroke,
-                fill: style.fill,
-                'fill-opacity': feature.attributes['fill-opacity'] ?? 0.35,
-                opacity: feature.attributes.opacity ?? 1
-            }
-            : style);
+        applyCapturedCalTopoFeatureStyle(feature.attributes, overlayStyle);
     }
 
     if (enabled) {
@@ -470,6 +561,41 @@ const PAGE_DEFS = [
   { key: 'settings', title: 'Settings', href: 'settings.html' }
 ];
 
+const MOBILE_NAV_PAGE_DEFS = [
+    {key: 'home', title: 'Home', href: 'home.html'},
+    ...PAGE_DEFS
+];
+
+const MOBILE_NAV_ITEMS = [
+    {
+        key: 'home',
+        title: 'Home',
+        href: 'home.html',
+        label: 'Home',
+        icon: '<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>'
+    },
+    {
+        key: 'index',
+        title: 'Regions',
+        href: 'index.html',
+        label: 'Regions',
+        icon: '<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24"><polyline points="12 2 2 7 12 12 22 7 12 2"></polyline><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>'
+    },
+    {
+        key: 'pages',
+        title: 'Pages',
+        label: 'Pages',
+        icon: '<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="7" height="7" rx="1.5"></rect><rect x="14" y="4" width="7" height="7" rx="1.5"></rect><rect x="3" y="13" width="7" height="7" rx="1.5"></rect><rect x="14" y="13" width="7" height="7" rx="1.5"></rect></svg>'
+    },
+    {
+        key: 'page10',
+        title: 'Maps',
+        href: 'page10.html',
+        label: 'Maps',
+        icon: '<svg fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" x2="8" y1="2" y2="18"></line><line x1="16" x2="16" y1="6" y2="22"></line></svg>'
+    }
+];
+
 const BRAND_NAME = 'Search & Rescue Theory Software';
 
 let newlyImportedSegments = new Set();
@@ -558,6 +684,178 @@ function getAccountName(user) {
     return (user.firstName + (user.lastName ? ' ' + (user.lastName || '') : '')).trim();
 }
 
+function getVisibleMobileNavPages(user = getCurrentUser()) {
+    const visibleKeys = Array.isArray(user?.visiblePages) && user.visiblePages.length
+        ? new Set(user.visiblePages)
+        : null;
+    const currentPage = pageKey();
+    const pages = MOBILE_NAV_PAGE_DEFS.filter(def => {
+        if (!visibleKeys) return true;
+        return visibleKeys.has(def.key) || def.key === 'home' || def.key === currentPage;
+    });
+
+    if (currentPage === 'more' && !pages.some(def => def.key === 'more')) {
+        pages.push({key: 'more', title: 'Navigation', href: 'more.html'});
+    }
+
+    return pages;
+}
+
+function isMobilePagesActionActive(currentPage = pageKey()) {
+    return !['home', 'index', 'page10'].includes(currentPage);
+}
+
+function getMobileNavSheet() {
+    let overlay = document.getElementById('mobile-nav-sheet-overlay');
+    if (overlay) return overlay;
+
+    overlay = document.createElement('div');
+    overlay.id = 'mobile-nav-sheet-overlay';
+    overlay.className = 'mobile-nav-sheet-overlay';
+    overlay.hidden = true;
+    overlay.innerHTML = `
+      <div class="mobile-nav-sheet-backdrop"></div>
+      <div class="mobile-nav-sheet" role="dialog" aria-modal="true" aria-labelledby="mobile-nav-sheet-title">
+        <div class="mobile-nav-sheet-handle" aria-hidden="true"></div>
+        <div class="mobile-nav-sheet-header">
+          <div>
+            <div class="mobile-nav-sheet-eyebrow">Quick navigation</div>
+            <h2 class="mobile-nav-sheet-title" id="mobile-nav-sheet-title">Choose a page</h2>
+          </div>
+          <div class="mobile-nav-sheet-subtitle" id="mobile-nav-sheet-subtitle"></div>
+        </div>
+        <div class="mobile-nav-sheet-options" id="mobile-nav-sheet-options"></div>
+        <button type="button" class="mobile-nav-sheet-cancel" id="mobile-nav-sheet-cancel">Cancel</button>
+      </div>
+    `;
+
+    overlay.addEventListener('click', event => {
+        if (event.target === overlay || event.target.classList.contains('mobile-nav-sheet-backdrop')) {
+            closeMobileNavSheet();
+        }
+    });
+
+    overlay.querySelector('#mobile-nav-sheet-cancel').addEventListener('click', closeMobileNavSheet);
+
+    if (!document.body.dataset.mobileNavSheetBound) {
+        document.addEventListener('keydown', event => {
+            if (event.key === 'Escape') closeMobileNavSheet();
+        });
+        document.body.dataset.mobileNavSheetBound = 'true';
+    }
+
+    document.body.appendChild(overlay);
+    return overlay;
+}
+
+function closeMobileNavSheet() {
+    const overlay = document.getElementById('mobile-nav-sheet-overlay');
+    if (!overlay || overlay.hidden) return;
+    overlay.classList.remove('is-open');
+    document.body.classList.remove('mobile-nav-sheet-open');
+    window.setTimeout(() => {
+        overlay.hidden = true;
+    }, 180);
+}
+
+function openMobileNavSheet() {
+    const overlay = getMobileNavSheet();
+    overlay.hidden = false;
+    window.requestAnimationFrame(() => {
+        overlay.classList.add('is-open');
+    });
+    document.body.classList.add('mobile-nav-sheet-open');
+}
+
+function syncMobileBottomNav() {
+    if (typeof document === 'undefined') return;
+
+    const navs = document.querySelectorAll('.bottom-nav');
+    if (!navs.length) return;
+
+    const currentPage = pageKey();
+    const visiblePages = getVisibleMobileNavPages();
+    const overlay = getMobileNavSheet();
+    const options = overlay.querySelector('#mobile-nav-sheet-options');
+    const subtitle = overlay.querySelector('#mobile-nav-sheet-subtitle');
+    const currentUser = getCurrentUser();
+
+    subtitle.textContent = currentUser ? `Signed in as ${getAccountName(currentUser) || 'Current User'}` : 'Available pages';
+
+    options.replaceChildren();
+    visiblePages.forEach(def => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = `mobile-nav-option${currentPage === def.key ? ' active' : ''}`;
+        option.textContent = def.title;
+        option.addEventListener('click', () => {
+            closeMobileNavSheet();
+            navigateToPage(def.href);
+        });
+        options.appendChild(option);
+    });
+
+    navs.forEach(nav => {
+        nav.classList.add('bottom-nav--enhanced');
+        nav.replaceChildren();
+
+        MOBILE_NAV_ITEMS.forEach(item => {
+            const isActive = item.key === 'pages'
+                ? isMobilePagesActionActive(currentPage)
+                : currentPage === item.key;
+            const element = document.createElement(item.href ? 'a' : 'button');
+            if (item.href) {
+                element.href = item.href;
+            } else {
+                element.type = 'button';
+            }
+            element.className = `bottom-nav-action${isActive ? ' active' : ''}`;
+            element.setAttribute('aria-label', item.title);
+            element.innerHTML = `${item.icon}<span>${item.label}</span>`;
+
+            if (!item.href) {
+                element.addEventListener('click', openMobileNavSheet);
+            }
+
+            nav.appendChild(element);
+        });
+    });
+}
+
+function applyResponsiveTableLabels(table) {
+    if (!table) return;
+    const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+    if (!headers.length) return;
+
+    table.querySelectorAll('tbody tr').forEach(row => {
+        Array.from(row.children).forEach((cell, index) => {
+            if (!cell || cell.nodeType !== 1) return;
+            const label = headers[index] || '';
+            if (label) {
+                cell.dataset.label = label;
+            }
+        });
+    });
+}
+
+function refreshTaskAssignmentMobileLayout(container = document.getElementById('interactive-form-container')) {
+    if (!container) return;
+    container.querySelectorAll('.form-grid-table').forEach(applyResponsiveTableLabels);
+}
+
+function initTaskAssignmentMobileLayout() {
+    const container = document.getElementById('interactive-form-container');
+    if (!container || container.dataset.mobileLayoutReady === 'true') return;
+
+    refreshTaskAssignmentMobileLayout(container);
+
+    const observer = new MutationObserver(() => {
+        refreshTaskAssignmentMobileLayout(container);
+    });
+    observer.observe(container, {childList: true, subtree: true});
+    container.dataset.mobileLayoutReady = 'true';
+}
+
 function setupAutoFormatDate(input) {
   input.oninput = () => {
       let val = input.value.replace(/\D/g, '');
@@ -629,6 +927,7 @@ function setCurrentUser(user) {
   } else {
     sessionStorage.removeItem('sar-current-user');
   }
+    syncMobileBottomNav();
 }
 
 function checkAccess() {
@@ -698,6 +997,11 @@ function defaultBundle() {
     deleteMode: false,
     theme: 'dark',
     showTips: true,
+      segmentColorScaleUsePsriMax: false,
+      segmentColorScaleLowColor: '#40c057',
+      segmentColorScaleMidColor: '#ffd43b',
+      segmentColorScaleHighColor: '#fa5252',
+      segmentActiveSearchOpacityPercent: 50,
     background: 'assets/us-night.jpg',
     activityLog: [],
     currentAssignments: {},
@@ -6302,11 +6606,75 @@ function buildSettingsPage() {
   const themeLabel = document.getElementById('theme-label');
   const tipsToggle = document.getElementById('tips-toggle');
   const tipsLabel = document.getElementById('tips-label');
+    const segmentScaleMaxToggle = document.getElementById('segment-scale-max-toggle');
+    const segmentScaleMaxLabel = document.getElementById('segment-scale-max-label');
+    const segmentScaleLowColorInput = document.getElementById('segment-scale-low-color-input');
+    const segmentScaleMidColorInput = document.getElementById('segment-scale-mid-color-input');
+    const segmentScaleHighColorInput = document.getElementById('segment-scale-high-color-input');
+    const segmentSearchOpacityInput = document.getElementById('segment-search-opacity-input');
+    const segmentSearchOpacityLabel = document.getElementById('segment-search-opacity-label');
   const status = document.getElementById('settings-status');
   const bgInput = document.getElementById('bg-image-input');
   const resetBgBtn = document.getElementById('reset-bg-btn');
   const parFreqInput = document.getElementById('par-freq-input');
   const bundle = loadBundle();
+    const segmentDisplaySettings = getSegmentDisplaySettings(bundle);
+
+    const updateSegmentScaleLabel = settings => {
+        if (!segmentScaleMaxLabel) return;
+        segmentScaleMaxLabel.textContent = settings.usePsriMax
+            ? 'Scale max uses highest PSRi'
+            : 'Scale max uses highest PSRc';
+    };
+
+    const updateSegmentSearchOpacityLabel = settings => {
+        if (!segmentSearchOpacityLabel) return;
+        segmentSearchOpacityLabel.textContent = `${settings.activeSearchOpacityPercent}% opacity while actively searched`;
+    };
+
+    if (segmentScaleMaxToggle) {
+        segmentScaleMaxToggle.checked = segmentDisplaySettings.usePsriMax;
+        updateSegmentScaleLabel(segmentDisplaySettings);
+        segmentScaleMaxToggle.onchange = () => {
+            const nextBundle = loadBundle();
+            nextBundle.segmentColorScaleUsePsriMax = segmentScaleMaxToggle.checked;
+            saveBundle(nextBundle);
+            updateSegmentScaleLabel(getSegmentDisplaySettings(nextBundle));
+            status.textContent = 'Segment color scale maximum source updated.';
+        };
+    }
+
+    [
+        [segmentScaleLowColorInput, 'segmentColorScaleLowColor', 'Low color updated.'],
+        [segmentScaleMidColorInput, 'segmentColorScaleMidColor', 'Mid color updated.'],
+        [segmentScaleHighColorInput, 'segmentColorScaleHighColor', 'High color updated.']
+    ].forEach(([input, key, message]) => {
+        if (!input) return;
+        input.value = segmentDisplaySettings[key === 'segmentColorScaleLowColor' ? 'lowColor' : key === 'segmentColorScaleMidColor' ? 'midColor' : 'highColor'];
+        input.oninput = () => {
+            const nextBundle = loadBundle();
+            nextBundle[key] = input.value;
+            saveBundle(nextBundle);
+            status.textContent = message;
+        };
+    });
+
+    if (segmentSearchOpacityInput) {
+        segmentSearchOpacityInput.value = segmentDisplaySettings.activeSearchOpacityPercent;
+        updateSegmentSearchOpacityLabel(segmentDisplaySettings);
+        segmentSearchOpacityInput.onchange = () => {
+            const nextBundle = loadBundle();
+            const nextSettings = getSegmentDisplaySettings({
+                ...nextBundle,
+                segmentActiveSearchOpacityPercent: segmentSearchOpacityInput.value
+            });
+            nextBundle.segmentActiveSearchOpacityPercent = nextSettings.activeSearchOpacityPercent;
+            segmentSearchOpacityInput.value = nextSettings.activeSearchOpacityPercent;
+            saveBundle(nextBundle);
+            updateSegmentSearchOpacityLabel(nextSettings);
+            status.textContent = 'Active-search segment opacity updated.';
+        };
+    }
 
   toggle.checked = !!bundle.deleteMode;
   label.textContent = `Delete Mode is ${toggle.checked ? 'ON' : 'OFF'}`;
@@ -8625,6 +8993,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     applyTipsVisibility(bundle);
     updateFileNameDisplay();
     updateHeaderProfile();
+    syncMobileBottomNav();
 
     const currentUser = getCurrentUser();
     if (!currentUser) {
@@ -8707,6 +9076,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     buildSearchLogTable();
   } else if (isFormsPage()) {
     buildFormsPage();
+      initTaskAssignmentMobileLayout();
   } else if (isProfilePage()) {
     buildProfilePage();
   } else if (isPage8()) {
@@ -10057,7 +10427,10 @@ function renderArcGISMap() {
   const bundle = loadBundle();
   const currentMap = bundle.maps ? bundle.maps[0] : null;
   const features = currentMap ? (currentMap.features || []) : [];
-    const psrcLookup = buildSegmentPsrcLookup(ensureSegmentsPageRows(bundle));
+    const segmentRows = ensureSegmentsPageRows(bundle);
+    const segmentDisplaySettings = getSegmentDisplaySettings(bundle);
+    const psrcLookup = buildSegmentPsrcLookup(segmentRows, segmentDisplaySettings);
+    const activeSearchNames = buildActiveSearchSegmentNameSet(bundle, segmentRows);
     const usePsrcOverlay = isMapPsrcOverlayEnabled();
 
   if (typeof require === 'undefined') {
@@ -10137,9 +10510,11 @@ function renderArcGISMap() {
 
       if (!arcgisGeom) return null;
 
-        const overlayColor = usePsrcOverlay ? getFeaturePsrcColor(f, psrcLookup) : null;
-        const overlayRgb = overlayColor ? [...overlayColor.rgb, 1] : [64, 192, 87, 1];
-        const overlayFillRgb = overlayColor ? [...overlayColor.rgb, 0.42] : [64, 192, 87, 0.4];
+        const overlayColor = usePsrcOverlay ? getFeaturePsrcColor(f, psrcLookup, segmentDisplaySettings) : null;
+        const isActiveSearch = isFeatureActivelyBeingSearched(f, activeSearchNames);
+        const opacityFactor = isActiveSearch ? segmentDisplaySettings.activeSearchOpacity : 1;
+        const overlayRgb = overlayColor ? [...overlayColor.rgb, opacityFactor] : [64, 192, 87, opacityFactor];
+        const overlayFillRgb = overlayColor ? [...overlayColor.rgb, 0.42 * opacityFactor] : [64, 192, 87, 0.4 * opacityFactor];
 
       let symbol = {
         type: "simple-fill",
@@ -10158,7 +10533,7 @@ function renderArcGISMap() {
           type: "simple-marker",
             color: overlayRgb,
             size: overlayColor ? 10 : 8,
-          outline: { color: [255, 255, 255, 1], width: 1 }
+            outline: {color: [255, 255, 255, opacityFactor], width: 1}
         };
       }
 
