@@ -3025,6 +3025,16 @@ function buildPersonnelAllMembersTable() {
     deleteBtn.onclick = () => {
       confirmDeleteRow(tr, () => {
         const memberName = (data[originalRowIndex] && data[originalRowIndex][0]) || 'unnamed person';
+        
+        // Also remove from permanent storage
+        if (memberName && memberName !== 'unnamed person') {
+          const global = getPermanentPersonnel();
+          if (global[memberName]) {
+            delete global[memberName];
+            setPermanentPersonnel(global);
+          }
+        }
+
         data.splice(originalRowIndex, 1);
         logDeletion('Personnel', memberName);
         if (data.length === 0) data.push(Array.from({ length: 7 }, () => ''));
