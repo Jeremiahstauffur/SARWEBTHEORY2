@@ -9,7 +9,7 @@ const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
 const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
-const DEFAULT_BUCKET = 'MNSAR14';
+// const DEFAULT_BUCKET = 'MNSAR14';
 const SAVE_BUTTON_MIN_LOADING_MS = 1000;
 const SAVE_BUTTON_SUCCESS_MS = 3000;
 const MAP_PSRC_OVERLAY_STORAGE_KEY = 'sar-map-psrc-overlay-v1';
@@ -397,12 +397,68 @@ function getSyncServerUrl() {
 }
 
 function getSyncBucket() {
-    let bucket = localStorage.getItem(SYNC_BUCKET_STORAGE_KEY);
-    if (!bucket) {
-        bucket = DEFAULT_BUCKET;
-        localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
-    }
-    return bucket;
+    return localStorage.getItem(SYNC_BUCKET_STORAGE_KEY) || '';
+}
+
+function showBucketPromptPopup() {
+    const onCancel = () => {
+        if (!getSyncBucket()) {
+            // We need a slight delay because createPopup handles its own close which might conflict with immediate reshhow
+            setTimeout(() => {
+                if (!getSyncBucket()) {
+                    alert('A Bucket ID is required to synchronize data.');
+                    showBucketPromptPopup();
+                }
+            }, 300);
+        }
+    };
+    const popup = createPopup('Set Bucket ID', null, onCancel);
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    const inputs = document.createElement('div');
+    inputs.className = 'popup-input-container';
+    inputs.style.flexDirection = 'column';
+    inputs.style.gap = '15px';
+
+    const promptText = document.createElement('p');
+    promptText.textContent = 'Please enter a unique Bucket ID to synchronize your data across devices.';
+    promptText.style.textAlign = 'center';
+    promptText.style.marginBottom = '10px';
+    inputs.appendChild(promptText);
+
+    const bucketInput = document.createElement('input');
+    bucketInput.type = 'text';
+    bucketInput.placeholder = 'e.g., my-team-bucket';
+    bucketInput.className = 'pill-input';
+    bucketInput.style.textAlign = 'center';
+    bucketInput.style.width = '100%';
+    inputs.appendChild(bucketInput);
+
+    content.insertBefore(inputs, btnContainer);
+
+    const setBtn = document.createElement('button');
+    setBtn.className = 'pill-btn';
+    setBtn.textContent = 'Set Bucket ID & Reload';
+    setBtn.onclick = () => {
+        const val = bucketInput.value.trim();
+        if (val) {
+            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, val);
+            closePopup(popup);
+            window.location.reload();
+        } else {
+            alert('Please enter a valid Bucket ID');
+        }
+    };
+    btnContainer.appendChild(setBtn);
+
+    bucketInput.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+            setBtn.click();
+        }
+    };
+
+    setTimeout(() => bucketInput.focus(), 100);
 }
 
 function normalizeCalTopoProxyUrl(url) {
@@ -892,6 +948,37 @@ function setupAutoFormatTime(input) {
   };
 }
 
+function showStatusPicker(currentStatus, onSelect) {
+    const statuses = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'Arrived Home', 'Off Duty'];
+    const popup = createPopup('Select Status');
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+    
+    const list = document.createElement('div');
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '10px';
+    list.style.marginBottom = '20px';
+    
+    statuses.forEach(status => {
+        const btn = document.createElement('button');
+        btn.className = 'popup-btn';
+        btn.style.width = '100%';
+        btn.style.textAlign = 'center';
+        btn.textContent = status;
+        if (currentStatus === status || (currentStatus === 'true' && status === 'On-Scene') || (currentStatus === 'false' && status === 'Off Duty')) {
+            btn.classList.add('primary');
+        }
+        btn.onclick = () => {
+            onSelect(status);
+            popup.remove();
+        };
+        list.appendChild(btn);
+    });
+    
+    content.insertBefore(list, btnContainer);
+}
+
 function showTimePrompt(title, onConfirm, onCancel) {
     const popup = createPopup(title, null, onCancel);
     const content = popup.querySelector('.popup-content');
@@ -946,6 +1033,11 @@ function checkAccess() {
   const bundle = loadBundle();
 
   if (!user) {
+    const superAdmin = (bundle.accounts || []).find(a => a.pin === '1976');
+    if (superAdmin) {
+        setCurrentUser(superAdmin);
+        return;
+    }
     if (page !== 'index') navigateToPage('index.html');
     return;
   }
@@ -2838,7 +2930,7 @@ function buildPersonnelAllMembersTable() {
   tableHead.innerHTML = '';
   tableBody.innerHTML = '';
 
-  const headers = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'On Scene', 'Delete'];
+  const headers = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Delete'];
   const headerRow = document.createElement('tr');
   headers.forEach(h => {
     const th = document.createElement('th');
@@ -2851,10 +2943,6 @@ function buildPersonnelAllMembersTable() {
   const teamOptions = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Command', 'Off Duty', 'Base Support'];
   
   let filteredData = [...data];
-  if (filterOnScene) {
-    filteredData = filteredData.filter(row => row[6] === 'true');
-  }
-
   filteredData.sort((a, b) => {
     if (sortByTeam) {
       const teamA = (a[1] || '').toLowerCase();
@@ -2866,6 +2954,11 @@ function buildPersonnelAllMembersTable() {
     const nameB = (b[0] || '').toLowerCase();
     return nameA.localeCompare(nameB);
   });
+
+  const activeStatuses = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'true'];
+  if (filterOnScene) {
+    filteredData = filteredData.filter(row => activeStatuses.includes(row[6]));
+  }
 
   if (highlightedRowIndex === -2 && window.lastAddedRow) {
     highlightedRowIndex = filteredData.indexOf(window.lastAddedRow);
@@ -2881,9 +2974,9 @@ function buildPersonnelAllMembersTable() {
     animateNewRow(tr, r);
     const originalRowIndex = data.indexOf(filteredData[r]);
     
-    const rowHeaders = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'On Scene', 'Delete'];
+    const rowHeaders = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Delete'];
     for (let c = 0; c < 7; c++) {
-      if (c === 2) continue; // Skip Team Leader column
+      if (c === 2) continue; 
       const td = document.createElement('td');
       td.dataset.label = rowHeaders[c < 2 ? c : c - 1];
       const cellContainer = document.createElement('div');
@@ -2985,33 +3078,45 @@ function buildPersonnelAllMembersTable() {
         };
         cellContainer.appendChild(selectLead);
       } else {
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'pill-checkbox';
-        checkbox.checked = filteredData[r][c] === 'true';
-        checkbox.onchange = () => {
-          const isChecked = checkbox.checked;
-          const memberName = data[originalRowIndex][0];
+        if (c === 6) { // Status column
+          const statusLabel = data[originalRowIndex][c] === 'true' ? 'On-Scene' : (data[originalRowIndex][c] || 'Off Duty');
+          const statusBtn = document.createElement('button');
+          statusBtn.className = 'mini-pill status-pill-btn';
+          statusBtn.style.width = '100%';
+          statusBtn.style.cursor = 'pointer';
+          statusBtn.textContent = statusLabel === 'false' ? 'Off Duty' : statusLabel;
           
-          if (c === 6) { // On Scene column
-            showTimePrompt(isChecked ? 'Mark On Scene' : 'Mark Off Scene', (date, time) => {
-              data[originalRowIndex][c] = isChecked ? 'true' : 'false';
-              if (!isChecked) {
-                data[originalRowIndex][1] = ''; // Clear Team
-                data[originalRowIndex][2] = ''; // Clear Team Lead
-              }
-              saveCurrentPageData(data);
-              addActivityLogEntry('Personnel', `${memberName} is now ${isChecked ? 'On Scene' : 'Off Scene'} at ${date} ${time}`, null, memberName);
-              buildPersonnelTable();
-            }, () => {
-              checkbox.checked = !isChecked;
+          statusBtn.onclick = () => {
+            showStatusPicker(data[originalRowIndex][c], (newStatus) => {
+              showTimePrompt(`Mark ${newStatus}`, (date, time) => {
+                const memberName = data[originalRowIndex][0];
+                const oldStatus = data[originalRowIndex][c];
+                data[originalRowIndex][c] = newStatus;
+                
+                if (newStatus === 'Arrived Home' || newStatus === 'Off Duty') {
+                  data[originalRowIndex][1] = ''; // Clear Team
+                  data[originalRowIndex][2] = ''; // Clear Team Lead
+                }
+                
+                saveCurrentPageData(data);
+                addActivityLogEntry('Personnel', `${memberName} status changed from ${oldStatus === 'true' ? 'On-Scene' : (oldStatus || 'Off Duty')} to ${newStatus} at ${date} ${time}`, null, memberName);
+                buildPersonnelTable();
+              });
             });
-          } else { // GPS, Radio, Medic columns
+          };
+          cellContainer.appendChild(statusBtn);
+        } else { // GPS, Radio, Medic columns
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'pill-checkbox';
+          checkbox.checked = filteredData[r][c] === 'true';
+          checkbox.onchange = () => {
+            const isChecked = checkbox.checked;
             data[originalRowIndex][c] = isChecked ? 'true' : 'false';
             saveCurrentPageData(data);
-          }
-        };
-        cellContainer.appendChild(checkbox);
+          };
+          cellContainer.appendChild(checkbox);
+        }
       }
       td.appendChild(cellContainer);
       tr.appendChild(td);
@@ -3055,7 +3160,7 @@ function buildPersonnelAllMembersTable() {
   addRowBtn.onclick = () => {
     const newRow = Array.from({ length: 7 }, () => '');
     newRow[1] = 'Off Duty';
-    newRow[6] = 'true'; // Default to On Scene so it shows up if filter is on
+    newRow[6] = 'Enroute'; // Default to Enroute
     
     data.push(newRow);
     logCreation('Personnel', 'New Person');
@@ -3424,8 +3529,9 @@ function buildPersonnelActivityTable() {
   const baseTeamsMap = new Map();
   const baseTeamNames = ['Base Support', 'Off Duty', 'Command'];
 
-    data.forEach((row) => {
-    if (row[1] && row[6] === 'true') {
+  const activeStatuses = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'true'];
+  data.forEach((row) => {
+    if (row[1] && activeStatuses.includes(row[6])) {
       if (baseTeamNames.includes(row[1])) {
         if (!baseTeamsMap.has(row[1])) baseTeamsMap.set(row[1], []);
         baseTeamsMap.get(row[1]).push(row);
@@ -4272,9 +4378,10 @@ function callAllTeamsToBase() {
   const bundle = loadBundle();
   const searchTeams = [];
   const personnel = bundle.pages.page3 || [];
+  const activeStatuses = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'true'];
   personnel.forEach(row => {
     const team = row[1];
-    const onScene = row[6] === 'true';
+    const onScene = activeStatuses.includes(row[6]);
     if (team && onScene && !['Base Support', 'Off Duty', 'Command'].includes(team)) {
       if (!searchTeams.includes(team)) searchTeams.push(team);
     }
@@ -8963,6 +9070,11 @@ function initPageTransitions() {
 document.addEventListener('DOMContentLoaded', async () => {
     initPageTransitions();
     
+    if (!getSyncBucket()) {
+        showBucketPromptPopup();
+        return; // Stop initialization until bucket is set
+    }
+    
     // For new devices, attempt an immediate sync to get the latest file from the server
     if (!localStorage.getItem(BUNDLE_STORAGE_KEY)) {
         await syncWithServer();
@@ -8978,7 +9090,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const currentUser = getCurrentUser();
     if (!currentUser) {
-        showLoginPopup();
+        const superAdmin = (bundle.accounts || []).find(a => a.pin === '1976');
+        if (superAdmin) {
+            setCurrentUser(superAdmin);
+            checkAccess();
+        } else {
+            showLoginPopup();
+        }
     } else {
         checkAccess();
     }

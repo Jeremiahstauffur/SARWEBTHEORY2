@@ -627,6 +627,8 @@ footer {
 }
 
 @media (max-width: 860px) {
+  .site-shell > header { display: none !important; }
+  .mobile-only { display: block !important; }
   .nav-wrap { flex-wrap: wrap; justify-content: center; }
   .nav-wrap > div:first-child { flex: 0 0 100%; }
   .brand { width: 100%; text-align: center; }
@@ -674,6 +676,10 @@ footer {
   margin-top: 6px;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.mobile-only {
+  display: none;
 }
 
 .home-card {
