@@ -43,6 +43,7 @@
             <h1>Forms</h1>
             <div class="sub-nav">
               <button class="sub-nav-btn active" id="btn-task-assignment">Task Assignment</button>
+              <button class="sub-nav-btn" id="btn-incident-times">Incident Times</button>
               <button class="sub-nav-btn" id="btn-manage-forms">Manage Forms</button>
             </div>
           </div>
@@ -67,6 +68,24 @@
                style="min-height: 800px; width: 100%; border-radius: 12px; background: rgba(128, 128, 128, 0.05); padding: 20px; box-sizing: border-box; min-width: 0; overflow-wrap: anywhere;">
            <div style="text-align: center; color: var(--text); opacity: 0.6; margin-top: 100px;">Select a Task # above to manage its form.</div>
         </div>
+      </section>
+
+      <section class="table-card" id="incident-times-view" style="display: none;">
+        <div class="table-tools">
+          <h2>Incident Times Report</h2>
+        </div>
+        <table class="grid-table" aria-label="Incident Times table">
+          <thead id="incident-times-head">
+            <tr>
+              <th>Member</th>
+              <th>Enroute</th>
+              <th>On-Scene</th>
+              <th>Leave-Scene</th>
+              <th>Home/Hotel</th>
+            </tr>
+          </thead>
+          <tbody id="incident-times-body"></tbody>
+        </table>
       </section>
 
       <section class="table-card" id="manage-forms-view" style="display: none;">

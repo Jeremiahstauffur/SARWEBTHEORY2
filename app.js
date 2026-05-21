@@ -7122,14 +7122,22 @@ function buildFormsPage() {
   }
 
   const btnTask = document.getElementById('btn-task-assignment');
+  const btnIncidentTimes = document.getElementById('btn-incident-times');
   const btnManage = document.getElementById('btn-manage-forms');
   const taskView = document.getElementById('task-assignment-view');
+  const incidentTimesView = document.getElementById('incident-times-view');
   const manageView = document.getElementById('manage-forms-view');
   const printContainer = document.getElementById('print-btn-container');
 
   if (btnTask) {
     btnTask.onclick = () => {
       currentFormsSubpage = 'task-assignment';
+      buildFormsPage();
+    };
+  }
+  if (btnIncidentTimes) {
+    btnIncidentTimes.onclick = () => {
+      currentFormsSubpage = 'incident-times';
       buildFormsPage();
     };
   }
@@ -7143,13 +7151,24 @@ function buildFormsPage() {
   // Set visibility and active classes based on state
   if (currentFormsSubpage === 'task-assignment') {
     if (btnTask) btnTask.classList.add('active');
+    if (btnIncidentTimes) btnIncidentTimes.classList.remove('active');
     if (btnManage) btnManage.classList.remove('active');
     if (taskView) taskView.style.display = 'block';
+    if (incidentTimesView) incidentTimesView.style.display = 'none';
+    if (manageView) manageView.style.display = 'none';
+  } else if (currentFormsSubpage === 'incident-times') {
+    if (btnIncidentTimes) btnIncidentTimes.classList.add('active');
+    if (btnTask) btnTask.classList.remove('active');
+    if (btnManage) btnManage.classList.remove('active');
+    if (taskView) taskView.style.display = 'none';
+    if (incidentTimesView) incidentTimesView.style.display = 'block';
     if (manageView) manageView.style.display = 'none';
   } else {
     if (btnManage) btnManage.classList.add('active');
     if (btnTask) btnTask.classList.remove('active');
+    if (btnIncidentTimes) btnIncidentTimes.classList.remove('active');
     if (taskView) taskView.style.display = 'none';
+    if (incidentTimesView) incidentTimesView.style.display = 'none';
     if (manageView) manageView.style.display = 'block';
   }
 
@@ -7179,9 +7198,189 @@ function buildFormsPage() {
       printContainer.appendChild(printBtn);
     }
     buildTaskAssignmentForm();
+  } else if (currentFormsSubpage === 'incident-times') {
+    buildIncidentTimesReport();
   } else {
     buildManageFormsTable();
   }
+}
+
+function buildIncidentTimesReport() {
+  const tableBody = document.getElementById('incident-times-body');
+  if (!tableBody) return;
+  tableBody.innerHTML = '';
+
+  const bundle = loadBundle();
+  const logs = bundle.activityLog || [];
+  
+  // Sort logs by timestamp ascending to process them chronologically
+  const sortedLogs = [...logs].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  
+  const memberSessions = {}; // { memberName: [ { enroute, onScene, leaveScene, homeHotel } ] }
+  const currentStatus = {}; // { memberName: status }
+  const activeSession = {}; // { memberName: sessionIndex }
+
+  sortedLogs.forEach(log => {
+    if (!log.action) return;
+    
+    // We are looking for status changes
+    // Regex to match: "Name status changed to Status at ..." or "Name status changed from Old to New at ..."
+    const statusMatch = log.action.match(/^(.*?) status changed (?:from .*? )?to (.*?) at/i);
+    if (statusMatch) {
+      const memberName = statusMatch[1].trim().replace(/\*$/, ''); // Remove lead marker if present
+      const newStatus = statusMatch[2].trim();
+      const timestamp = log.timestamp;
+      const dateTimeStr = `${log.date} ${log.time}`;
+
+      if (!memberSessions[memberName]) {
+        memberSessions[memberName] = [];
+        currentStatus[memberName] = 'Off Duty';
+      }
+
+      const prevStatus = currentStatus[memberName];
+      currentStatus[memberName] = newStatus;
+
+      // Start a new session if moving from Off Duty to something else
+      if (prevStatus === 'Off Duty' && newStatus !== 'Off Duty') {
+        memberSessions[memberName].push({
+          enroute: '',
+          onScene: '',
+          leaveScene: '',
+          homeHotel: '',
+          onSceneTS: null,
+          leaveSceneTS: null
+        });
+        activeSession[memberName] = memberSessions[memberName].length - 1;
+      }
+
+      const sessionIdx = activeSession[memberName];
+      if (sessionIdx !== undefined) {
+        const session = memberSessions[memberName][sessionIdx];
+        if (newStatus === 'Enroute' && !session.enroute) {
+          session.enroute = dateTimeStr;
+          session.enrouteLogId = log.id;
+        } else if (newStatus === 'On-Scene' && !session.onScene) {
+          session.onScene = dateTimeStr;
+          session.onSceneTS = timestamp;
+          session.onSceneLogId = log.id;
+        } else if (prevStatus === 'On-Scene' && newStatus !== 'On-Scene' && !session.leaveScene) {
+          session.leaveScene = dateTimeStr;
+          session.leaveSceneTS = timestamp;
+          session.leaveSceneLogId = log.id;
+        } 
+        
+        if (['Hotel', 'Arrived Home', 'Arrived home', 'hotel'].some(s => newStatus.toLowerCase().includes(s.toLowerCase()))) {
+          session.homeHotel = dateTimeStr;
+          session.homeHotelLogId = log.id;
+        }
+
+        if (newStatus === 'Off Duty') {
+           // If they went off duty but never officially "left scene", mark it now if they were on scene
+           if (prevStatus === 'On-Scene' && !session.leaveScene) {
+             session.leaveScene = dateTimeStr;
+             session.leaveSceneTS = timestamp;
+             session.leaveSceneLogId = log.id;
+           }
+           delete activeSession[memberName];
+        }
+      }
+    }
+  });
+
+  // Collect all sessions into a flat list for sorting
+  const reportRows = [];
+  for (const memberName in memberSessions) {
+    memberSessions[memberName].forEach(session => {
+      reportRows.push({
+        name: memberName,
+        ...session
+      });
+    });
+  }
+
+  // Sort by name
+  reportRows.sort((a, b) => a.name.localeCompare(b.name));
+
+  if (reportRows.length === 0) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 5;
+    td.style.textAlign = 'center';
+    td.style.opacity = '0.5';
+    td.style.padding = '40px';
+    td.textContent = 'No incident time records found.';
+    tr.appendChild(td);
+    tableBody.appendChild(tr);
+    return;
+  }
+
+  reportRows.forEach(row => {
+    const tr = document.createElement('tr');
+    
+    const tdMember = document.createElement('td');
+    tdMember.innerHTML = `<strong>${row.name}</strong>`;
+    
+    if (row.onSceneTS && row.leaveSceneTS) {
+      const diffMs = row.leaveSceneTS - row.onSceneTS;
+      const diffHrs = Math.floor(diffMs / 3600000);
+      const diffMins = Math.round((diffMs % 3600000) / 60000);
+      const durationStr = `${diffHrs}h ${diffMins}m`;
+      tdMember.innerHTML += `<div style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Time On Scene: ${durationStr}</div>`;
+    }
+    
+    tr.appendChild(tdMember);
+    
+    const columns = [
+      { key: 'enroute', logIdKey: 'enrouteLogId' },
+      { key: 'onScene', logIdKey: 'onSceneLogId' },
+      { key: 'leaveScene', logIdKey: 'leaveSceneLogId' },
+      { key: 'homeHotel', logIdKey: 'homeHotelLogId' }
+    ];
+
+    columns.forEach(col => {
+      const td = document.createElement('td');
+      td.style.textAlign = 'center';
+      td.style.verticalAlign = 'middle';
+      
+      const val = row[col.key];
+      const logId = row[col.logIdKey];
+      
+      if (val) {
+        const parts = val.split(' ');
+        const datePart = parts[0];
+        const timePart = parts[1];
+        
+        const container = document.createElement('div');
+        container.style.display = 'flex';
+        container.style.flexDirection = 'column';
+        container.style.alignItems = 'center';
+        container.style.gap = '4px';
+        
+        const datePill = document.createElement('button');
+        datePill.className = 'mini-pill';
+        datePill.style.fontSize = '0.7rem';
+        datePill.style.padding = '2px 8px';
+        datePill.textContent = datePart;
+        datePill.onclick = () => editIncidentTimestamp(logId);
+        
+        const timePill = document.createElement('button');
+        timePill.className = 'mini-pill';
+        timePill.style.fontSize = '0.75rem';
+        timePill.style.padding = '2px 10px';
+        timePill.style.fontWeight = 'bold';
+        timePill.textContent = timePart;
+        timePill.onclick = () => editIncidentTimestamp(logId);
+        
+        container.appendChild(datePill);
+        container.appendChild(timePill);
+        td.appendChild(container);
+      }
+      
+      tr.appendChild(td);
+    });
+    
+    tableBody.appendChild(tr);
+  });
 }
 
 function buildTaskAssignmentForm() {
