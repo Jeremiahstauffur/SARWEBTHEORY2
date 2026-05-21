@@ -2358,6 +2358,26 @@ tr.log-sweeps-due::after {
   opacity: 0;
 }
 
+.pill-hover-trash {
+  display: none;
+  color: #eb5757 !important;
+  cursor: pointer;
+  margin-left: 8px;
+  line-height: 1;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.pill-hover-trash:hover {
+  transform: scale(1.2);
+}
+
+.pill-cell:hover .pill-hover-trash,
+.readonly-pill:hover .pill-hover-trash {
+  display: flex;
+  align-items: center;
+}
+
 @media print {
   /* Basic resets for printing */
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }

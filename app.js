@@ -7734,18 +7734,43 @@ function buildIncidentTimesReport() {
     const namePill = document.createElement('div');
     namePill.className = 'pill-cell readonly-pill';
     namePill.style.display = 'flex';
-    namePill.style.flexDirection = 'column';
-    namePill.style.justifyContent = 'center';
+    namePill.style.alignItems = 'center';
     namePill.style.minHeight = '46px';
-    namePill.innerHTML = `<strong>${row.name}</strong>`;
+    namePill.style.padding = '8px 15px';
+    
+    const textWrap = document.createElement('div');
+    textWrap.style.display = 'flex';
+    textWrap.style.flexDirection = 'column';
+    textWrap.style.flex = '1';
+    textWrap.innerHTML = `<strong>${row.name}</strong>`;
     
     if (row.onSceneTS && row.leaveSceneTS) {
       const diffMs = row.leaveSceneTS - row.onSceneTS;
       const diffHrs = Math.floor(diffMs / 3600000);
       const diffMins = Math.round((diffMs % 3600000) / 60000);
       const durationStr = `${diffHrs}h ${diffMins}m`;
-      namePill.innerHTML += `<div style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Time On Scene: ${durationStr}</div>`;
+      textWrap.innerHTML += `<div style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Time On Scene: ${durationStr}</div>`;
     }
+    namePill.appendChild(textWrap);
+
+    // Hover trash icon to delete the entire row (associated logs)
+    const trashIcon = document.createElement('div');
+    trashIcon.className = 'pill-hover-trash no-print';
+    trashIcon.title = 'Delete Incident Row';
+    trashIcon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+    trashIcon.onclick = (e) => {
+        e.stopPropagation();
+        if (confirm(`Delete incident time row for ${row.name}? This will remove the associated activity logs.`)) {
+            const b = loadBundle();
+            const logIdsToRemove = [row.enrouteLogId, row.onSceneLogId, row.leaveSceneLogId, row.homeHotelLogId].filter(id => id);
+            if (logIdsToRemove.length > 0) {
+                b.activityLog = (b.activityLog || []).filter(l => !logIdsToRemove.includes(l.id));
+                saveBundle(b);
+                buildIncidentTimesReport();
+            }
+        }
+    };
+    namePill.appendChild(trashIcon);
     
     tdMember.appendChild(namePill);
     tr.appendChild(tdMember);
@@ -8695,6 +8720,21 @@ function renderTaskForm(container, taskNum, formData) {
     };
     row.appendChild(nameSpan);
 
+    // Hover trash icon inside the pill
+    const trashIcon = document.createElement('div');
+    trashIcon.className = 'pill-hover-trash no-print';
+    trashIcon.title = 'Remove Member';
+    trashIcon.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+    trashIcon.onclick = (e) => {
+       e.stopPropagation();
+       if (confirm(`Remove ${m.name || 'this member'}?`)) {
+         formData.teamMembers.splice(idx, 1);
+         save();
+         renderTaskForm(container, taskNum, formData);
+       }
+    };
+    row.appendChild(trashIcon);
+
     const rolesWrap = document.createElement('div');
     rolesWrap.style.display = 'flex';
     rolesWrap.style.gap = '15px';
@@ -8736,25 +8776,6 @@ function renderTaskForm(container, taskNum, formData) {
     addRoleCB('Medic', 'medic');
     
     row.appendChild(rolesWrap);
-
-    const delBtn = document.createElement('button');
-    delBtn.innerHTML = '&times;';
-    delBtn.style.background = 'none';
-    delBtn.style.border = 'none';
-    delBtn.style.color = 'inherit';
-    delBtn.style.cursor = 'pointer';
-    delBtn.style.fontSize = '1.2rem';
-    delBtn.style.lineHeight = '1';
-    delBtn.style.padding = '0 5px';
-    delBtn.style.marginLeft = '10px';
-    delBtn.title = 'Remove Member';
-    delBtn.onclick = (e) => {
-       e.stopPropagation();
-       formData.teamMembers.splice(idx, 1);
-       save();
-       renderTaskForm(container, taskNum, formData);
-    };
-    row.appendChild(delBtn);
 
     return row;
   };
