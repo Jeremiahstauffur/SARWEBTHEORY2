@@ -734,6 +734,10 @@ function isMapsPage() {
   return pageKey() === 'page10';
 }
 
+function isMobileStatusPage() {
+  return pageKey() === 'mobile-status';
+}
+
 function getCurrentUser() {
   const userJson = sessionStorage.getItem('sar-current-user');
   if (!userJson) return null;
@@ -1073,7 +1077,7 @@ function defaultPersonnelData() {
 
 function defaultSegmentsData() {
   return Array.from({ length: ROWS }, () =>
-    Array.from({ length: 9 }, () => '')
+    Array.from({ length: 10 }, () => '')
   );
 }
 
@@ -1184,7 +1188,7 @@ function sanitizeSegmentsData(parsed) {
   if (!Array.isArray(parsed) || parsed.length === 0) return defaultSegmentsData();
   return parsed.map(row => {
     const sourceLen = row.length;
-    const targetRow = Array.from({ length: 9 }, (_, c) => (row?.[c] ?? '').toString());
+    const targetRow = Array.from({ length: 10 }, (_, c) => (row?.[c] ?? '').toString());
     if (sourceLen === 7) {
        // Old index 6 was PSR. Now it's PSRi and we initialize PSRc with it.
        targetRow[7] = targetRow[6];
@@ -1198,11 +1202,7 @@ function sanitizePersonnelData(parsed) {
   return parsed.map(row => {
     // Keep at least 9 columns to preserve PIN link at index 8
     const r = Array.from({ length: Math.max(7, row?.length || 0) }, (_, c) => (row?.[c] ?? '').toString());
-    // Clear team/lead if off-scene
-    if (r[6] === 'false' || r[6] === '') {
-      r[1] = '';
-      r[2] = '';
-    }
+    // Removed clearing of team/lead if off-scene to allow team assignment for off-duty members
     return r;
   });
 }
@@ -2383,7 +2383,7 @@ function buildSegmentsTable() {
   tableHead.innerHTML = '';
   tableBody.innerHTML = '';
 
-  const headers = ['Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc', 'Delete'];
+  const headers = ['Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc', 'CalTopo', 'Delete'];
   const headerRow = document.createElement('tr');
   headers.forEach(h => {
     const th = document.createElement('th');
@@ -2407,7 +2407,7 @@ function buildSegmentsTable() {
       tr.classList.add('new-import-row');
     }
 
-    const headers = ['Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc', 'Delete'];
+    const headers = ['Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc', 'CalTopo', 'Delete'];
     for (let c = 0; c < 8; c++) {
       const td = document.createElement('td');
       td.dataset.label = headers[c];
@@ -2621,6 +2621,32 @@ function buildSegmentsTable() {
       tr.appendChild(td);
     }
 
+    const caltopoTd = document.createElement('td');
+    caltopoTd.dataset.label = 'CalTopo';
+    const caltopoContainer = document.createElement('div');
+    caltopoContainer.className = 'pill-cell-container';
+    
+    const caltopoBtn = document.createElement('button');
+    caltopoBtn.className = 'mini-pill';
+    const caltopoId = sortedData[r][9];
+    caltopoBtn.textContent = caltopoId ? `Linked: ${caltopoId}` : 'Link CalTopo';
+    caltopoBtn.style.cursor = 'pointer';
+    caltopoBtn.style.width = '100%';
+    caltopoBtn.style.textAlign = 'center';
+    if (caltopoId) {
+        caltopoBtn.style.background = 'rgba(64, 192, 87, 0.1)';
+        caltopoBtn.style.borderColor = 'rgba(64, 192, 87, 0.3)';
+    }
+    
+    caltopoBtn.onclick = () => {
+        const originalIdx = data.indexOf(sortedData[r]);
+        showCalTopoLinkPopup(originalIdx);
+    };
+    
+    caltopoContainer.appendChild(caltopoBtn);
+    caltopoTd.appendChild(caltopoContainer);
+    tr.appendChild(caltopoTd);
+
     const deleteTd = document.createElement('td');
     deleteTd.dataset.label = 'Delete';
     const deleteContainer = document.createElement('div');
@@ -2636,7 +2662,7 @@ function buildSegmentsTable() {
         if (indexInData > -1) {
           data.splice(indexInData, 1);
           logDeletion('Segment', segName);
-          if (data.length === 0) data.push(Array.from({ length: 8 }, () => ''));
+          if (data.length === 0) data.push(Array.from({ length: 10 }, () => ''));
           saveCurrentPageData(data);
           buildSegmentsTable();
         }
@@ -2655,7 +2681,7 @@ function buildSegmentsTable() {
   addRowBtn.className = 'add-row-btn';
   addRowBtn.textContent = '+ Add new segment';
   addRowBtn.onclick = () => {
-    data.push(Array.from({ length: 8 }, () => ''));
+    data.push(Array.from({ length: 10 }, () => ''));
     logCreation('Segment', 'new empty segment');
     saveCurrentPageData(data);
     highlightedRowIndex = data.length - 1;
@@ -2754,6 +2780,14 @@ function buildPersonnelTable() {
   if (btnPrintAllMem) btnPrintAllMem.onclick = () => printAllReports('member');
 
   const btnReset = document.getElementById('btn-reset-members');
+  const btnMobileStatus = document.getElementById('btn-mobile-status');
+
+  if (btnMobileStatus) {
+    btnMobileStatus.onclick = () => {
+      navigateToPage('mobile-status.html');
+    };
+  }
+
   if (btnReset) {
     btnReset.onclick = () => {
       const popup = createPopup('Delete All Members?');
@@ -3093,10 +3127,7 @@ function buildPersonnelAllMembersTable() {
                 const oldStatus = data[originalRowIndex][c];
                 data[originalRowIndex][c] = newStatus;
                 
-                if (newStatus === 'Arrived Home' || newStatus === 'Off Duty') {
-                  data[originalRowIndex][1] = ''; // Clear Team
-                  data[originalRowIndex][2] = ''; // Clear Team Lead
-                }
+                // Do not clear team when status changes to allow assignment even when off duty
                 
                 saveCurrentPageData(data);
                 addActivityLogEntry('Personnel', `${memberName} status changed from ${oldStatus === 'true' ? 'On-Scene' : (oldStatus || 'Off Duty')} to ${newStatus} at ${date} ${time}`, null, memberName);
@@ -8938,8 +8969,7 @@ function promptMemberOffScene(member) {
     
     if (originalRow) {
       originalRow[6] = 'false'; // On Scene = false
-      originalRow[1] = '';      // Clear Team
-      originalRow[2] = '';      // Clear Team Lead
+      // Do not clear team when marking off scene to allow assignment
       
       saveBundle(bundle);
       addActivityLogEntry('Personnel', `${memberName} is now Off Scene at ${date} ${time}`, null, memberName);
@@ -9531,7 +9561,7 @@ function showSegmentsImportPreviewPopup(segments, options = {}) {
     table.style.width = '100%';
 
     const thead = document.createElement('thead');
-    const headers = ['', 'Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc'];
+    const headers = ['', 'Region', 'Segment', 'Area (acres)', 'Length (mi)', 'Sweep (ft)', 'Time per Sweep (hr)', 'PSRi', 'PSRc', 'CalTopo'];
     const htr = document.createElement('tr');
     headers.forEach(h => {
         const th = document.createElement('th');
@@ -9569,7 +9599,8 @@ function showSegmentsImportPreviewPopup(segments, options = {}) {
             (seg.sweep || 20) + ' ft',
             timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
             '',
-            ''
+            '',
+            seg.feature?.attributes?.id || ''
         ];
 
         rowData.forEach((val) => {
@@ -9657,7 +9688,8 @@ function importSegmentsAction(segments) {
             timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
             '',
             '',
-            ''
+            '',
+            seg.feature?.attributes?.id || ''
         ];
         segmentRows.push(newRow);
         newlyImportedSegments.add(`|${seg.segment}`);
@@ -9676,6 +9708,94 @@ function importSegmentsAction(segments) {
         newlyImportedSegments.clear();
         if (isSegmentsPage()) buildSegmentsTable();
     }, 7000);
+}
+
+async function showCalTopoLinkPopup(originalIdx) {
+    const bundle = loadBundle();
+    const map = bundle.maps?.[0];
+    if (!map || !map.id) {
+        alert('Please add a CalTopo map first on the Maps page.');
+        return;
+    }
+
+    let features = map.features || [];
+    if (features.length === 0) {
+        const confirmFetch = confirm('No CalTopo features loaded. Fetch them now?');
+        if (confirmFetch) {
+            try {
+                const fetchBtn = document.getElementById('fetch-shapes-btn');
+                if (fetchBtn) fetchBtn.click(); // If on maps page
+                else await caltopo_request(null, {silent: false});
+                
+                const updatedBundle = loadBundle();
+                features = updatedBundle.maps?.[0]?.features || [];
+                if (features.length === 0) {
+                    alert('Still no features found after fetch.');
+                    return;
+                }
+            } catch (err) {
+                alert('Error fetching shapes: ' + err.message);
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+
+    const assignments = features.filter(f => getCalTopoFeatureTypeKey(f) === 'assignment');
+    if (assignments.length === 0) {
+        alert('No assignment shapes (polygons) found on this map.');
+        return;
+    }
+
+    const popup = createPopup('Link Segment to CalTopo', null);
+    const content = popup.querySelector('.popup-content');
+    
+    content.innerHTML = `
+        <p style="margin-bottom: 15px; opacity: 0.8;">Select a CalTopo assignment to link with this segment. This ID will be used for color updates.</p>
+        <div style="max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.1); border-radius: 12px; border: 1px solid var(--line);">
+            <table class="grid-table" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr>
+                        <th style="padding: 12px; text-align: left; background: var(--header-bg); position: sticky; top: 0;">Name</th>
+                        <th style="padding: 12px; text-align: left; background: var(--header-bg); position: sticky; top: 0;">ID</th>
+                        <th style="padding: 12px; text-align: center; background: var(--header-bg); position: sticky; top: 0;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="caltopo-link-list"></tbody>
+            </table>
+        </div>
+    `;
+    
+    const tbody = content.querySelector('#caltopo-link-list');
+    assignments.forEach(feat => {
+        const tr = document.createElement('tr');
+        const attrs = feat.attributes || {};
+        const name = attrs.name || 'Unnamed Graphic';
+        const id = attrs.id;
+        
+        tr.innerHTML = `
+            <td style="padding: 12px; border-bottom: 1px solid var(--line);">${name}</td>
+            <td style="padding: 12px; border-bottom: 1px solid var(--line); font-family: monospace; font-size: 0.8rem; color: var(--muted);">${id}</td>
+            <td style="padding: 12px; border-bottom: 1px solid var(--line); text-align: center;">
+                <button class="mini-pill select-link" style="cursor: pointer; padding: 6px 12px;">Link</button>
+            </td>
+        `;
+        
+        tr.querySelector('.select-link').onclick = () => {
+            const bundleToUpdate = loadBundle();
+            const data = bundleToUpdate.pages.page2;
+            if (data && data[originalIdx]) {
+                data[originalIdx][9] = id;
+                saveBundle(bundleToUpdate);
+                popup.remove();
+                buildSegmentsTable();
+                addActivityLogEntry('System', `Linked segment to CalTopo feature "${name}" (${id})`);
+            }
+        };
+        
+        tbody.appendChild(tr);
+    });
 }
 
 function showImportSegmentsPopup() {
@@ -11559,7 +11679,8 @@ async function pushFileListToServer(files) {
     const headers = { 
         'Content-Type': 'application/json',
         'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : ''
+        'X-User-Pin': user ? user.pin : '',
+        'X-Last-Modified': new Date().toISOString()
     };
     
     try {

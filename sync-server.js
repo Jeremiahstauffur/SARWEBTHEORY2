@@ -435,7 +435,7 @@ app.get('/api/v1/:bucket/latest', (req, res) => {
                 updatedAt = fs.statSync(filePath).mtimeMs;
             }
 
-            if (updatedAt > latestTime) {
+            if (updatedAt >= latestTime) {
                 latestTime = updatedAt;
                 latestFile = f;
             }
@@ -456,7 +456,7 @@ app.get('/api/v1/:bucket/latest', (req, res) => {
                 bundleTime = fs.statSync(bundlePath).mtimeMs;
             }
 
-            if (bundleTime > latestTime) {
+            if (bundleTime >= latestTime) {
                 latestTime = bundleTime;
                 latestFile = 'bundle.json';
             }
@@ -501,18 +501,24 @@ app.put('/api/v1/:bucket/:key', (req, res) => {
     const userPin = req.headers['x-user-pin'] || '';
     const isSuperAdmin = userPin === '1976';
 
-    let incomingLastModified = 0;
-    if (req.body) {
+    let incomingLastModified = Date.now();
+    if (req.headers['x-last-modified']) {
+        incomingLastModified = new Date(req.headers['x-last-modified']).getTime();
+    } else if (req.body) {
         if (req.body.lastModified) {
             incomingLastModified = new Date(req.body.lastModified).getTime();
-        } else if (typeof req.body === 'object') {
+        } else if (typeof req.body === 'object' && req.body !== null) {
             // Try to find latest modified time in a collection of files
+            let found = false;
+            let maxM = 0;
             for (const key in req.body) {
                 if (req.body[key] && req.body[key].lastModified) {
                     const m = new Date(req.body[key].lastModified).getTime();
-                    if (m > incomingLastModified) incomingLastModified = m;
+                    if (m > maxM) maxM = m;
+                    found = true;
                 }
             }
+            if (found) incomingLastModified = maxM;
         }
     }
 
@@ -537,17 +543,6 @@ app.put('/api/v1/:bucket/:key', (req, res) => {
                         error: 'Conflict',
                         message: 'Incoming data is older than server data.'
                     });
-                }
-                
-                if (incomingLastModified === existingLastModified) {
-                    const incoming = userName.toLowerCase();
-                    const existing = meta.userName.toLowerCase();
-                    if (incoming !== existing && incoming > existing) {
-                        return res.status(403).json({
-                            error: 'Conflict',
-                            message: `Changes by ${meta.userName} have priority (alphabetically closer to A).`
-                        });
-                    }
                 }
             }
         } catch (err) {
