@@ -2811,6 +2811,7 @@ function buildPersonnelTable() {
   const memberReportsContainer = document.getElementById('member-reports-container');
   const searchTeamsContainer = document.getElementById('search-teams-container');
   const controls = document.getElementById('all-members-controls');
+  const personnelGrid = document.querySelector('.personnel-grid');
 
   const subNavBtns = [btnAll, btnAct, btnTeamRep, btnMemRep];
   const containers = [controls, baseContainer, teamReportsContainer, memberReportsContainer, searchTeamsContainer];
@@ -2835,6 +2836,7 @@ function buildPersonnelTable() {
   function hideAll() {
     containers.forEach(c => { if (c) c.style.display = 'none'; });
     subNavBtns.forEach(b => { if (b) b.classList.remove('active'); });
+    if (personnelGrid) personnelGrid.classList.remove('all-members-active');
   }
 
   if (btnAll) {
@@ -2994,6 +2996,7 @@ function buildPersonnelTable() {
   if (logContainer) logContainer.style.display = 'block';
 
   if (currentPersonnelSubpage === 'all-members') {
+    if (personnelGrid) personnelGrid.classList.add('all-members-active');
     if (controls) controls.style.display = 'flex';
     if (searchTeamsContainer) {
       searchTeamsContainer.style.display = 'block';

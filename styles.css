@@ -1681,6 +1681,15 @@ tr.log-sweeps-due::after {
   align-items: start;
 }
 
+.personnel-grid.all-members-active {
+  grid-template-columns: 1fr;
+}
+
+.personnel-grid.all-members-active .personnel-col-log {
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+
 .personnel-grid .grid-table {
   width: 100%;
   table-layout: fixed;
