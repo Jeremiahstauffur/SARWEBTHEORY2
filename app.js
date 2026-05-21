@@ -5636,6 +5636,24 @@ function renderMemberIncidentCards(memberName, container) {
         title.className = 'incident-card-title';
         title.textContent = `Incident Set ${index + 1}`;
         header.appendChild(title);
+
+        const delBtn = document.createElement('div');
+        delBtn.className = 'delete-card-btn no-print';
+        delBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+        delBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (confirm('Delete this incident row?')) {
+                const page3 = bundle.pages.page3 || [];
+                // Find the absolute index in page3
+                const absoluteIndex = page3.indexOf(pRow);
+                if (absoluteIndex > -1) {
+                    page3.splice(absoluteIndex, 1);
+                    saveBundle(bundle);
+                    renderMemberIncidentCards(memberName, container);
+                }
+            }
+        };
+        header.appendChild(delBtn);
         card.appendChild(header);
         
         const grid = document.createElement('div');
@@ -5693,6 +5711,39 @@ function renderMemberIncidentCards(memberName, container) {
         cardsWrapper.appendChild(card);
     });
     
+    // Add "Add Incident Row" button back as requested in previous requirements
+    const placeholder = document.createElement('div');
+    placeholder.className = 'add-card-placeholder no-print';
+    placeholder.onclick = () => {
+        const page3 = bundle.pages.page3 || [];
+        // Create a new row for the same member
+        // Assuming the structure from previous knowledge: member name is index 0
+        const firstRow = allRows[0];
+        const newRow = [...firstRow];
+        // Clear incident times in the new row (indexes 9-12)
+        newRow[9] = '';
+        newRow[10] = '';
+        newRow[11] = '';
+        newRow[12] = '';
+        // Clear old sets JSON if it exists
+        if (newRow[13]) newRow[13] = '';
+        
+        page3.push(newRow);
+        saveBundle(bundle);
+        renderMemberIncidentCards(memberName, container);
+    };
+    
+    const icon = document.createElement('div');
+    icon.className = 'add-card-icon';
+    icon.textContent = '+';
+    placeholder.appendChild(icon);
+    
+    const txt = document.createElement('div');
+    txt.className = 'add-card-text';
+    txt.textContent = 'Add Incident Row';
+    placeholder.appendChild(txt);
+    
+    cardsWrapper.appendChild(placeholder);
     container.appendChild(cardsWrapper);
 }
 
