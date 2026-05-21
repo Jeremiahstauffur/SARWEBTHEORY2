@@ -1272,7 +1272,7 @@ function sanitizeBundle(bundle) {
   const personnelData = pages.page3 || [];
   personnelData.forEach(row => {
     const team = (row[1] || '').trim();
-    const onScene = row[6] === 'true';
+    const onScene = isActiveMemberStatus(row[6]);
     if (team && onScene && !teamStatuses[team]) {
         const now = new Date();
         const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
@@ -2145,7 +2145,7 @@ function buildRegionsTable() {
   // Delete Header
   const deleteTh = document.createElement('th');
   deleteTh.textContent = 'Delete';
-  deleteTh.className = 'fixed-header';
+  deleteTh.className = 'fixed-header no-print';
   headerRow.appendChild(deleteTh);
 
   tableHead.appendChild(headerRow);
@@ -2221,7 +2221,7 @@ function buildRegionsTable() {
     // New Delete Column
     const deleteTd = document.createElement('td');
     deleteTd.dataset.label = 'Delete';
-    deleteTd.className = 'regions-td';
+    deleteTd.className = 'regions-td no-print';
     const deleteContainer = document.createElement('div');
     deleteContainer.className = 'pill-cell-container';
     const delBtn = document.createElement('button');
@@ -3060,7 +3060,7 @@ function buildPersonnelAllMembersTable() {
   tableHead.innerHTML = '';
   tableBody.innerHTML = '';
 
-  const headers = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Enroute', 'On Scene', 'Returning', 'Arrived', 'Delete'];
+  const headers = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Delete'];
   const headerRow = document.createElement('tr');
   headers.forEach(h => {
     const th = document.createElement('th');
@@ -3104,8 +3104,8 @@ function buildPersonnelAllMembersTable() {
     animateNewRow(tr, r);
     const originalRowIndex = data.indexOf(filteredData[r]);
     
-    const rowHeaders = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Enroute', 'On Scene', 'Returning', 'Arrived', 'Delete'];
-    const cellIndices = [0, 1, 3, 4, 5, 6, 9, 10, 11, 12, -1]; // -1 for delete
+    const rowHeaders = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status'];
+    const cellIndices = [0, 1, 3, 4, 5, 6];
     
     for (let i = 0; i < rowHeaders.length; i++) {
       const c = cellIndices[i];
@@ -3237,54 +3237,11 @@ function buildPersonnelAllMembersTable() {
           statusBtn.textContent = statusLabel === 'false' ? 'Off Duty' : statusLabel;
           
           statusBtn.onclick = () => {
-            showStatusPicker(data[originalRowIndex][c], (newStatus) => {
-              showTimePrompt(`Mark ${newStatus}`, (date, time) => {
-                const memberName = data[originalRowIndex][0];
-                const oldStatus = data[originalRowIndex][c];
-                data[originalRowIndex][c] = newStatus;
-                
-                // Do not clear team when status changes to allow assignment even when off duty
-                
-                saveCurrentPageData(data);
-                addActivityLogEntry('Personnel', `${memberName} status changed from ${oldStatus === 'true' ? 'On-Scene' : (oldStatus || 'Off Duty')} to ${newStatus} at ${date} ${time}`, null, memberName);
-                buildPersonnelTable();
-              });
-            });
+            const memberName = data[originalRowIndex][0] || '';
+            sessionStorage.setItem('mobile-status-member', memberName);
+            navigateToPage('mobile-status.html');
           };
           cellContainer.appendChild(statusBtn);
-        } else if (c >= 9 && c <= 12) { // Incident Time columns
-          const cell = document.createElement('div');
-          cell.className = 'mini-pill';
-          cell.style.width = '100%';
-          cell.style.cursor = 'pointer';
-          cell.textContent = filteredData[r][c] || '';
-          cell.onclick = () => {
-              const label = rowHeaders[i];
-              const currentVal = filteredData[r][c];
-              showTimePrompt(`Edit ${label}`, (d, t) => {
-                  data[originalRowIndex][c] = t;
-                  saveCurrentPageData(data);
-                  addActivityLogEntry('Personnel', `${data[originalRowIndex][0]} ${label} time set to ${t}`, null, data[originalRowIndex][0]);
-                  buildPersonnelTable();
-              }, null, currentVal.includes(':') ? currentVal : null, (popup) => {
-                  // Add "Clear Info" button to the popup
-                  const btnContainer = popup.querySelector('.popup-buttons');
-                  const clearBtn = document.createElement('button');
-                  clearBtn.className = 'popup-btn';
-                  clearBtn.style.marginRight = 'auto';
-                  clearBtn.style.color = '#eb5757';
-                  clearBtn.textContent = 'Clear Info';
-                  clearBtn.onclick = () => {
-                      data[originalRowIndex][c] = '';
-                      saveCurrentPageData(data);
-                      addActivityLogEntry('Personnel', `${data[originalRowIndex][0]} ${label} time cleared`, null, data[originalRowIndex][0]);
-                      buildPersonnelTable();
-                      popup.remove();
-                  };
-                  btnContainer.insertBefore(clearBtn, btnContainer.firstChild);
-              });
-          };
-          cellContainer.appendChild(cell);
         } else { // GPS, Radio, Medic columns
           const checkbox = document.createElement('input');
           checkbox.type = 'checkbox';
@@ -3524,10 +3481,17 @@ function createProgressBar(progress, keyRaw) {
   return progFill;
 }
 
+function isActiveMemberStatus(status) {
+  if (!status) return false;
+  const s = status.toString();
+  const activeStatuses = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'true'];
+  return activeStatuses.includes(s);
+}
+
 function getTeamMembers(teamName) {
   const bundle = loadBundle();
   const data = bundle.pages.page3 || [];
-  return data.filter(row => row[1] === teamName && row[6] === 'true');
+  return data.filter(row => row[1] === teamName);
 }
 
 function isParCheckDue(teamName, bundle) {
@@ -3709,15 +3673,17 @@ function buildPersonnelActivityTable() {
   const baseTeamsMap = new Map();
   const baseTeamNames = ['Base Support', 'Off Duty', 'Command'];
 
-  const activeStatuses = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'true'];
   data.forEach((row) => {
-    if (row[1] && activeStatuses.includes(row[6])) {
-      if (baseTeamNames.includes(row[1])) {
-        if (!baseTeamsMap.has(row[1])) baseTeamsMap.set(row[1], []);
-        baseTeamsMap.get(row[1]).push(row);
+    // Show all members that have a name regardless of status
+    if (row[0] && row[0].trim() !== '') {
+      let teamName = row[1] && row[1].trim() !== '' ? row[1] : 'Off Duty';
+      
+      if (baseTeamNames.includes(teamName)) {
+        if (!baseTeamsMap.has(teamName)) baseTeamsMap.set(teamName, []);
+        baseTeamsMap.get(teamName).push(row);
       } else {
-        if (!teamsMap.has(row[1])) teamsMap.set(row[1], []);
-        teamsMap.get(row[1]).push(row);
+        if (!teamsMap.has(teamName)) teamsMap.set(teamName, []);
+        teamsMap.get(teamName).push(row);
       }
     }
   });
@@ -4026,7 +3992,7 @@ function showReassignPopup(member, currentTeam) {
 function showTeamLeadSwapPopup(currentLeadRow, teamName) {
   const bundle = loadBundle();
   const data = bundle.pages.page3 || [];
-  const teamMembers = data.filter(row => row[1] === teamName && row[0] !== currentLeadRow[0] && row[6] === 'true');
+  const teamMembers = data.filter(row => row[1] === teamName && row[0] !== currentLeadRow[0] && isActiveMemberStatus(row[6]));
   
   const popup = createPopup(`Change Team Lead for ${teamName}`);
   const btnContainer = popup.querySelector('.popup-buttons');
@@ -4236,8 +4202,16 @@ function showNewSegmentPopup(teamName, parentPopup) {
     p.textContent = 'No segments defined.';
     content.appendChild(p);
   } else {
-    const segmentsGrid = document.createElement('div');
-    segmentsGrid.className = 'popup-segments-grid';
+    const select = document.createElement('select');
+    select.className = 'popup-select';
+    select.style.width = '100%';
+    select.style.marginBottom = '15px';
+    select.style.padding = '8px';
+    
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = "";
+    defaultOpt.textContent = "Select a segment...";
+    select.appendChild(defaultOpt);
     
     segments.forEach(seg => {
       const region = seg[0];
@@ -4245,65 +4219,40 @@ function showNewSegmentPopup(teamName, parentPopup) {
       const psr = getLatestPSR(region, segment);
       const val = `${region} - ${segment}`;
       
-      const btn = document.createElement('button');
-      btn.className = 'mini-pill';
-      btn.style.padding = '8px 12px';
-      btn.style.textAlign = 'center';
-      btn.style.display = 'flex';
-      btn.style.flexDirection = 'column';
-      btn.style.justifyContent = 'center';
-      btn.style.alignItems = 'center';
-      btn.style.gap = '2px';
-      btn.style.width = '100%';
-      btn.style.cursor = 'pointer';
-      btn.style.fontSize = '0.85rem';
-
-      const title = document.createElement('div');
-      title.style.fontWeight = '700';
-      title.textContent = val;
-      
-      const details = document.createElement('div');
-      details.style.fontSize = '0.7rem';
-      details.style.opacity = '0.8';
-      details.textContent = `PSR: ${psr || 'N/A'}`;
-      
-      btn.appendChild(title);
-      btn.appendChild(details);
-
-      // Highlight if currently being searched
-      const isSearching = Object.entries(bundle.currentAssignments).some(([t, ass]) => {
-          if (!ass.includes(val)) return false;
-          const status = bundle.teamStatuses[t] || '';
-          return !status.includes('finished segment') && !status.startsWith('at base');
-      });
-
-      if (isSearching) {
-          btn.style.background = 'rgba(235, 87, 87, 0.25)';
-          btn.style.borderColor = 'rgba(235, 87, 87, 0.5)';
-          btn.style.color = '#ff4d4d';
-      }
-
-      btn.onclick = () => {
-        showMissingStepsPopup(teamName, null, () => {
-          const taskNumber = addAutoSearchLogEntry(teamName, region, segment);
-          const fullAssignment = `#${taskNumber} ${val}`;
-          
-          const b2 = loadBundle();
-          b2.currentAssignments[teamName] = fullAssignment;
-          b2.teamAssignmentTimes[teamName] = Date.now();
-          b2.teamStatuses[teamName] = 'assigned';
-          if (!b2.parChecks) b2.parChecks = {};
-          b2.parChecks[teamName] = { lastTime: Date.now() };
-          saveBundle(b2);
-          markTaskUpdated(teamName);
-          addActivityLogEntry(teamName, 'Assigned to segment: ' + fullAssignment);
-          closePopup(popup);
-          refreshCurrentPageTable();
-        });
-      };
-      segmentsGrid.appendChild(btn);
+      const opt = document.createElement('option');
+      opt.value = JSON.stringify({region, segment, val});
+      opt.textContent = `${segment} (PSRc: ${psr || 'N/A'})`;
+      select.appendChild(opt);
     });
-    content.appendChild(segmentsGrid);
+    
+    content.appendChild(select);
+    
+    const assignBtn = document.createElement('button');
+    assignBtn.className = 'popup-btn primary';
+    assignBtn.textContent = 'Assign Selected Task';
+    assignBtn.onclick = () => {
+      if (!select.value) return;
+      
+      const {region, segment, val} = JSON.parse(select.value);
+      
+      showMissingStepsPopup(teamName, null, () => {
+        const taskNumber = addAutoSearchLogEntry(teamName, region, segment);
+        const fullAssignment = `#${taskNumber} ${val}`;
+        
+        const b2 = loadBundle();
+        b2.currentAssignments[teamName] = fullAssignment;
+        b2.teamAssignmentTimes[teamName] = Date.now();
+        b2.teamStatuses[teamName] = 'assigned';
+        if (!b2.parChecks) b2.parChecks = {};
+        b2.parChecks[teamName] = { lastTime: Date.now() };
+        saveBundle(b2);
+        markTaskUpdated(teamName);
+        addActivityLogEntry(teamName, 'Assigned to segment: ' + fullAssignment);
+        closePopup(popup);
+        refreshCurrentPageTable();
+      });
+    };
+    content.appendChild(assignBtn);
   }
 }
 
@@ -4312,7 +4261,7 @@ function showTeamSelectionPopup(onTeamSelected) {
   const data = bundle.pages.page3 || [];
   const teamsMap = new Map();
   data.forEach(row => {
-    if (row[1] && row[6] === 'true') {
+    if (row[1]) {
       teamsMap.set(row[1], true);
     }
   });
@@ -4328,12 +4277,12 @@ function showTeamSelectionPopup(onTeamSelected) {
   
   if (sortedTeams.length === 0) {
     const p = document.createElement('p');
-    p.textContent = 'No teams currently on scene.';
+    p.textContent = 'No teams currently available.';
     segmentsGrid.appendChild(p);
   }
 
   sortedTeams.forEach(team => {
-    const status = bundle.teamStatuses[team] || '';
+    const status = bundle.teamStatuses[team] || 'unassigned';
     const assignment = bundle.currentAssignments[team] || '';
     
     const btn = document.createElement('button');
@@ -4357,17 +4306,23 @@ function showTeamSelectionPopup(onTeamSelected) {
       pill.style.opacity = '0.7';
       pill.textContent = status;
       btn.appendChild(pill);
-    } else if (status !== '') {
+    } else {
       btn.style.background = 'rgba(125, 198, 255, 0.15)';
       btn.style.borderColor = 'rgba(125, 198, 255, 0.4)';
       const match = assignment.match(/#\d+/);
+      
+      const pill = document.createElement('div');
+      pill.style.fontSize = '0.75rem';
+      pill.style.color = 'var(--accent)';
+      
+      let displayText = status;
       if (match) {
-        const pill = document.createElement('div');
-        pill.style.fontSize = '0.75rem';
-        pill.style.color = 'var(--accent)';
-        pill.textContent = 'Task ' + match[0];
-        btn.appendChild(pill);
+        displayText += ` (Task ${match[0]})`;
+      } else if (assignment) {
+        displayText += ` (${assignment})`;
       }
+      pill.textContent = displayText;
+      btn.appendChild(pill);
     }
 
     btn.onclick = () => {
@@ -5298,14 +5253,22 @@ function createLogTimestampPill(entry) {
     resetBtn.textContent = '↺';
     resetBtn.onclick = (e) => {
       e.stopPropagation();
+      const oldTimestamp = entry.timestamp;
       entry.date = entry.originalDate;
       entry.time = entry.originalTime;
+      
+      const [lm, ld, ly] = entry.date.split('-').map(Number);
+      const [lh, lmin] = entry.time.split(':').map(Number);
+      const resetTimestamp = new Date(ly, lm - 1, ld, lh, lmin).getTime();
+      
       delete entry.originalDate;
       delete entry.originalTime;
       const bundle = loadBundle();
-      const idx = bundle.activityLog.findIndex(l => l.timestamp === entry.timestamp);
+      const idx = bundle.activityLog.findIndex(l => l.timestamp === oldTimestamp);
       if (idx > -1) {
+        entry.timestamp = resetTimestamp;
         bundle.activityLog[idx] = entry;
+        bundle.activityLog.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         saveBundle(bundle);
         refreshCurrentPageTable();
       }
@@ -5379,13 +5342,20 @@ function showEditLogTimePopup(entry) {
                     entry.originalDate = entry.date;
                     entry.originalTime = entry.time;
                 }
+                const oldTimestamp = entry.timestamp;
                 entry.date = dateInput.value;
                 entry.time = timeInput.value;
+                
+                const [lm, ld, ly] = entry.date.split('-').map(Number);
+                const [lh, lmin] = entry.time.split(':').map(Number);
+                const newTimestamp = new Date(ly, lm - 1, ld, lh, lmin).getTime();
 
                 const bundle = loadBundle();
-                const idx = bundle.activityLog.findIndex(l => l.timestamp === entry.timestamp);
+                const idx = bundle.activityLog.findIndex(l => l.timestamp === oldTimestamp);
                 if (idx > -1) {
+                    entry.timestamp = newTimestamp;
                     bundle.activityLog[idx] = entry;
+                    bundle.activityLog.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
                     saveBundle(bundle);
                     refreshCurrentPageTable();
                 }
@@ -5649,29 +5619,13 @@ function renderMemberIncidentCards(memberName, container) {
     container.innerHTML = '';
     
     const bundle = loadBundle();
-    const pRow = (bundle.pages.page3 || []).find(r => r[0] === memberName);
-    if (!pRow) return;
-
-    let sets = [];
-    try {
-        if (pRow[13]) {
-            sets = JSON.parse(pRow[13]);
-        }
-    } catch(e) { console.error("Error parsing sets", e); }
-
-    if (sets.length === 0) {
-        sets.push({
-            enroute: pRow[9] || '',
-            onScene: pRow[10] || '',
-            returning: pRow[11] || '',
-            arrived: pRow[12] || ''
-        });
-    }
+    const allRows = (bundle.pages.page3 || []).filter(r => r[0] === memberName);
+    if (allRows.length === 0) return;
 
     const cardsWrapper = document.createElement('div');
     cardsWrapper.className = 'incident-times-container';
 
-    sets.forEach((set, index) => {
+    allRows.forEach((pRow, index) => {
         const card = document.createElement('div');
         card.className = 'incident-card';
         
@@ -5682,36 +5636,16 @@ function renderMemberIncidentCards(memberName, container) {
         title.className = 'incident-card-title';
         title.textContent = `Incident Set ${index + 1}`;
         header.appendChild(title);
-        
-        const delBtn = document.createElement('div');
-        delBtn.className = 'delete-card-btn';
-        delBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
-        delBtn.onclick = (e) => {
-            e.stopPropagation();
-            if (confirm('Delete this incident row?')) {
-                sets.splice(index, 1);
-                pRow[13] = JSON.stringify(sets);
-                // Sync latest to legacy
-                const lastSet = sets[sets.length - 1] || {enroute:'', onScene:'', returning:'', arrived:''};
-                pRow[9] = lastSet.enroute || '';
-                pRow[10] = lastSet.onScene || '';
-                pRow[11] = lastSet.returning || '';
-                pRow[12] = lastSet.arrived || '';
-                saveBundle(bundle);
-                renderMemberIncidentCards(memberName, container);
-            }
-        };
-        header.appendChild(delBtn);
         card.appendChild(header);
         
         const grid = document.createElement('div');
         grid.className = 'incident-times-grid';
         
         const fields = [
-            { key: 'enroute', label: 'Enroute' },
-            { key: 'onScene', label: 'On Scene' },
-            { key: 'returning', label: 'Returning' },
-            { key: 'arrived', label: 'Arrived Home' }
+            { key: 'enroute', idx: 9, label: 'Enroute' },
+            { key: 'onScene', idx: 10, label: 'On Scene' },
+            { key: 'returning', idx: 11, label: 'Returning' },
+            { key: 'arrived', idx: 12, label: 'Arrived Home' }
         ];
         
         fields.forEach(f => {
@@ -5719,15 +5653,10 @@ function renderMemberIncidentCards(memberName, container) {
             slot.className = 'time-slot';
             slot.onclick = () => {
                 showTimePrompt(`Set ${f.label}`, (d, t) => {
-                    set[f.key] = t;
-                    pRow[13] = JSON.stringify(sets);
-                    if (index === sets.length - 1) {
-                        const map = { enroute: 9, onScene: 10, returning: 11, arrived: 12 };
-                        pRow[map[f.key]] = t;
-                    }
+                    pRow[f.idx] = t;
                     saveBundle(bundle);
                     renderMemberIncidentCards(memberName, container);
-                }, null, set[f.key] || null, (popup) => {
+                }, null, pRow[f.idx] || null, (popup) => {
                     const btnContainer = popup.querySelector('.popup-buttons');
                     const clearBtn = document.createElement('button');
                     clearBtn.className = 'popup-btn';
@@ -5735,12 +5664,7 @@ function renderMemberIncidentCards(memberName, container) {
                     clearBtn.style.color = '#eb5757';
                     clearBtn.textContent = 'Clear Info';
                     clearBtn.onclick = () => {
-                        set[f.key] = '';
-                        pRow[13] = JSON.stringify(sets);
-                        if (index === sets.length - 1) {
-                            const map = { enroute: 9, onScene: 10, returning: 11, arrived: 12 };
-                            pRow[map[f.key]] = '';
-                        }
+                        pRow[f.idx] = '';
                         saveBundle(bundle);
                         renderMemberIncidentCards(memberName, container);
                         popup.remove();
@@ -5756,8 +5680,8 @@ function renderMemberIncidentCards(memberName, container) {
             
             const val = document.createElement('div');
             val.className = 'time-slot-value';
-            if (set[f.key]) {
-                val.textContent = set[f.key];
+            if (pRow[f.idx]) {
+                val.textContent = pRow[f.idx];
             } else {
                 val.className += ' add-time-btn-small';
                 val.textContent = '+';
@@ -5768,28 +5692,7 @@ function renderMemberIncidentCards(memberName, container) {
         card.appendChild(grid);
         cardsWrapper.appendChild(card);
     });
-
-    // Add Placeholder
-    const placeholder = document.createElement('div');
-    placeholder.className = 'add-card-placeholder';
-    placeholder.onclick = () => {
-        sets.push({ enroute: '', onScene: '', returning: '', arrived: '' });
-        pRow[13] = JSON.stringify(sets);
-        saveBundle(bundle);
-        renderMemberIncidentCards(memberName, container);
-    };
     
-    const icon = document.createElement('div');
-    icon.className = 'add-card-icon';
-    icon.textContent = '+';
-    placeholder.appendChild(icon);
-    
-    const txt = document.createElement('div');
-    txt.className = 'add-card-text';
-    txt.textContent = 'Add Incident Row';
-    placeholder.appendChild(txt);
-    
-    cardsWrapper.appendChild(placeholder);
     container.appendChild(cardsWrapper);
 }
 
@@ -5906,6 +5809,96 @@ function buildMemberReports() {
   });
 }
 
+function recountTeamMembersForSearchLog() {
+  const bundle = loadBundle();
+  const logData = bundle.pages.page4 || [];
+  const personnelData = bundle.pages.page3 || [];
+  const activityLog = bundle.activityLog || [];
+
+  let changed = false;
+
+  logData.forEach(entry => {
+    const taskNum = entry[0];
+    const teamCell = entry[7] || '';
+    
+    let teamName = teamCell;
+    const match = teamCell.match(/^(.*)\s\(\d+\)$/);
+    if (match) {
+       teamName = match[1].trim();
+    } else {
+       teamName = teamCell.trim();
+    }
+    if (!teamName) return;
+
+    const dateStr = entry[1];
+    const timeStr = entry[2];
+    if (!dateStr || !timeStr) return;
+    
+    const [m, d, y] = dateStr.split('-').map(Number);
+    const [h, min] = timeStr.split(':').map(Number);
+    const assignmentTime = new Date(y, m - 1, d, h, min).getTime();
+
+    const currentMembersCount = personnelData.filter(row => row[1] === teamName).length;
+
+    let addedCount = 0;
+    let removedCount = 0;
+
+    activityLog.forEach(log => {
+      let logTime;
+      if (log.date && log.time) {
+        const [lm, ld, ly] = log.date.split('-').map(Number);
+        const [lh, lmin] = log.time.split(':').map(Number);
+        logTime = new Date(ly, lm - 1, ld, lh, lmin).getTime();
+      } else {
+        logTime = log.timestamp;
+      }
+      if (!logTime) return;
+
+      if (logTime > assignmentTime) {
+         const action = log.action || '';
+         const reassignMatch = action.match(/reassigned from (.*?) to (.*)$/i);
+         const moveMatch = action.match(/moved from team (.*?) to (.*)$/i);
+         
+         let fromTeam = null;
+         let toTeam = null;
+
+         if (reassignMatch) {
+             fromTeam = reassignMatch[1].trim();
+             toTeam = reassignMatch[2].trim();
+         } else if (moveMatch) {
+             fromTeam = moveMatch[1].trim();
+             toTeam = moveMatch[2].trim();
+         }
+         
+         if (toTeam === teamName) {
+             addedCount++;
+         }
+         if (fromTeam === teamName) {
+             removedCount++;
+         }
+      }
+    });
+
+    const countAtAssignment = currentMembersCount - addedCount + removedCount;
+    const finalCount = Math.max(0, countAtAssignment);
+
+    const newTeamCell = `${teamName} (${finalCount})`;
+    if (entry[7] !== newTeamCell) {
+       entry[7] = newTeamCell;
+       changed = true;
+    }
+  });
+
+  if (changed) {
+    bundle.pages.page4 = logData;
+    saveBundle(bundle);
+    buildSearchLogTable();
+    showToast('Team member counts updated based on assignment times.');
+  } else {
+    showToast('All search log member counts are up to date.');
+  }
+}
+
 function buildSearchLogTable() {
   const tableHead = document.getElementById('table-head');
   const tableBody = document.getElementById('table-body');
@@ -5988,6 +5981,21 @@ function buildSearchLogTable() {
     const th = document.createElement('th');
     th.textContent = h;
     th.className = 'fixed-header';
+    if (h === 'Team') {
+      const recountBtn = document.createElement('button');
+      recountBtn.className = 'mini-pill';
+      recountBtn.style.marginTop = '4px';
+      recountBtn.style.display = 'block';
+      recountBtn.style.cursor = 'pointer';
+      recountBtn.style.fontSize = '0.7em';
+      recountBtn.style.padding = '2px 6px';
+      recountBtn.textContent = 'Recount';
+      recountBtn.onclick = (e) => {
+         e.stopPropagation();
+         recountTeamMembersForSearchLog();
+      };
+      th.appendChild(recountBtn);
+    }
     headerRow.appendChild(th);
   });
   tableHead.appendChild(headerRow);
@@ -9670,7 +9678,7 @@ function checkParChecksAndNotify(skipTableRefresh = false) {
   const baseTeamNames = ['Base Support', 'Off Duty', 'Command'];
   
   data.forEach(row => {
-    if (row[1] && row[6] === 'true' && !baseTeamNames.includes(row[1])) {
+    if (row[1] && isActiveMemberStatus(row[6]) && !baseTeamNames.includes(row[1])) {
       teamsMap.set(row[1], true);
     }
   });
@@ -9943,7 +9951,7 @@ function updateNotifications() {
   const data = bundle.pages.page3 || [];
   const baseTeamNames = ['Base Support', 'Off Duty', 'Command'];
   data.forEach(row => {
-    if (row[1] && row[6] === 'true' && !baseTeamNames.includes(row[1])) {
+    if (row[1] && isActiveMemberStatus(row[6]) && !baseTeamNames.includes(row[1])) {
        if (!teamsMap.has(row[1])) teamsMap.set(row[1], true);
     }
   });

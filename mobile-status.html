@@ -74,23 +74,6 @@
       padding: 4px;
       cursor: pointer;
     }
-
-    .update-status-btn-container {
-      position: sticky;
-      bottom: 20px;
-      margin-top: 20px;
-    }
-    .big-update-btn {
-      width: 100%;
-      padding: 16px;
-      border-radius: 12px;
-      background: var(--accent);
-      color: white;
-      font-weight: 600;
-      font-size: 1.1rem;
-      border: none;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    }
   </style>
 </head>
 <body data-page="mobile-status">
@@ -134,10 +117,6 @@
             <div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view history</div>
           </div>
         </div>
-
-        <div class="update-status-btn-container" id="update-btn-wrapper" style="display: none;">
-          <button class="big-update-btn" id="trigger-status-update">Update Status</button>
-        </div>
       </div>
     </main>
   </div>
@@ -148,8 +127,6 @@
     document.addEventListener('DOMContentLoaded', () => {
       const dropdown = document.getElementById('member-dropdown');
       const statusList = document.getElementById('status-list');
-      const updateBtnWrapper = document.getElementById('update-btn-wrapper');
-      const triggerBtn = document.getElementById('trigger-status-update');
 
       // 1. Populate dropdown
       const bundle = loadBundle();
@@ -163,16 +140,26 @@
         dropdown.appendChild(opt);
       });
 
-      // Select current user by default if they are in the list
-      const currentUser = getCurrentUser();
-      if (currentUser) {
-        const fullName = (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim();
-        let match = memberNames.find(n => n === fullName || n === currentUser.handle);
+      // Select preselected member or current user by default if they are in the list
+      const preselected = sessionStorage.getItem('mobile-status-member');
+      if (preselected) {
+        let match = memberNames.find(n => n === preselected);
         if (match) {
           dropdown.value = match;
-          updateBtnWrapper.style.display = 'block';
+          sessionStorage.removeItem('mobile-status-member');
           renderIncidentTimes(match);
           renderHistory(match);
+        }
+      } else {
+        const currentUser = getCurrentUser();
+        if (currentUser) {
+          const fullName = (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim();
+          let match = memberNames.find(n => n === fullName || n === currentUser.handle);
+          if (match) {
+            dropdown.value = match;
+            renderIncidentTimes(match);
+            renderHistory(match);
+          }
         }
       }
 
@@ -180,11 +167,9 @@
       dropdown.onchange = () => {
         const selectedMember = dropdown.value;
         if (selectedMember) {
-          updateBtnWrapper.style.display = 'block';
           renderIncidentTimes(selectedMember);
           renderHistory(selectedMember);
         } else {
-          updateBtnWrapper.style.display = 'none';
           document.getElementById('incident-times-container').innerHTML = '<div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view incident times</div>';
           statusList.innerHTML = '<div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view history</div>';
         }
@@ -287,27 +272,6 @@
         };
         btnContainer.appendChild(saveBtn);
       }
-
-      triggerBtn.onclick = () => {
-        const memberName = dropdown.value;
-        const b = loadBundle();
-        const pRow = (b.pages.page3 || []).find(r => r[0] === memberName);
-        const currentStatus = pRow ? (pRow[6] === 'true' ? 'On-Scene' : (pRow[6] || 'Off Duty')) : '';
-        
-        showStatusPicker(currentStatus, (newStatus) => {
-          showTimePrompt(`Mark ${newStatus}`, (date, time) => {
-             const b2 = loadBundle();
-             const pRow2 = (b2.pages.page3 || []).find(r => r[0] === memberName);
-             if (pRow2) {
-               pRow2[6] = newStatus;
-               saveBundle(b2);
-             }
-             addActivityLogEntry('Personnel', `${memberName} status changed to ${newStatus} at ${date} ${time}`, null, memberName, date, time);
-             renderIncidentTimes(memberName);
-             renderHistory(memberName);
-          });
-        });
-      };
     });
   </script>
 </body>
