@@ -74,6 +74,7 @@
       padding: 4px;
       cursor: pointer;
     }
+
     .update-status-btn-container {
       position: sticky;
       bottom: 20px;
@@ -121,7 +122,14 @@
         </div>
 
         <div id="status-history-container">
-          <h2 style="font-size: 1rem; margin-bottom: 10px; color: var(--muted);">Status History</h2>
+          <h2 style="font-size: 1rem; margin-bottom: 10px; color: var(--muted); text-transform: uppercase;">Incident Times</h2>
+          <div id="incident-times-container" class="incident-times-container">
+            <div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view incident times</div>
+          </div>
+        </div>
+
+        <div id="activity-history-container" style="margin-top: 20px;">
+          <h2 style="font-size: 1rem; margin-bottom: 10px; color: var(--muted); text-transform: uppercase;">Recent History</h2>
           <div id="status-list" class="status-list">
             <div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view history</div>
           </div>
@@ -159,11 +167,11 @@
       const currentUser = getCurrentUser();
       if (currentUser) {
         const fullName = (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim();
-        // Try to find exact match or handle/name
         let match = memberNames.find(n => n === fullName || n === currentUser.handle);
         if (match) {
           dropdown.value = match;
           updateBtnWrapper.style.display = 'block';
+          renderIncidentTimes(match);
           renderHistory(match);
         }
       }
@@ -173,27 +181,35 @@
         const selectedMember = dropdown.value;
         if (selectedMember) {
           updateBtnWrapper.style.display = 'block';
+          renderIncidentTimes(selectedMember);
           renderHistory(selectedMember);
         } else {
           updateBtnWrapper.style.display = 'none';
+          document.getElementById('incident-times-container').innerHTML = '<div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view incident times</div>';
           statusList.innerHTML = '<div style="text-align: center; opacity: 0.5; padding: 20px;">Select a member to view history</div>';
         }
       };
 
+      function renderIncidentTimes(memberName) {
+        const container = document.getElementById('incident-times-container');
+        if (typeof renderMemberIncidentCards === 'function') {
+            renderMemberIncidentCards(memberName, container);
+        } else {
+            container.innerHTML = '<div style="text-align: center; color: #eb5757;">Error: renderMemberIncidentCards not found in app.js</div>';
+        }
+      }
+
       function renderHistory(memberName) {
         const b = loadBundle();
         const logs = b.activityLog || [];
-        
-        // Define status keywords to filter by
-        const statusKeywords = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'Arrived Home', 'Off Duty', 'on scene', 'enroute', 'home', 'returning home', 'arrived home', 'off duty'];
+        const statusKeywords = ['Enroute', 'On-Scene', 'Hotel', 'Returning Home', 'Arrived Home', 'Off Duty', 'on scene', 'enroute', 'home', 'returning home', 'arrived home', 'off duty', 'status changed', 'time set', 'time updated', 'time cleared'];
         
         const filtered = logs.filter(log => {
           if (!log.members) return false;
           const members = log.members.split(', ').map(m => m.replace('*', '').trim());
           if (!members.includes(memberName)) return false;
-          
-          // Only show entries that contain one of the status keywords in the action text
-          return statusKeywords.some(keyword => log.action.includes(keyword));
+          const actionLower = log.action.toLowerCase();
+          return statusKeywords.some(keyword => actionLower.includes(keyword.toLowerCase()));
         });
 
         statusList.innerHTML = '';
@@ -202,31 +218,25 @@
           return;
         }
 
-        filtered.forEach(entry => {
+        filtered.reverse().forEach(entry => {
           const item = document.createElement('div');
           item.className = 'status-item';
-          
           const header = document.createElement('div');
           header.className = 'status-item-header';
-          
           const timePill = document.createElement('div');
           timePill.className = 'status-time-pill';
           timePill.textContent = `${entry.date} ${entry.time}`;
           header.appendChild(timePill);
-          
           const editBtn = document.createElement('button');
           editBtn.className = 'edit-btn';
           editBtn.textContent = 'Edit';
           editBtn.onclick = () => showFullEditPopup(entry, memberName);
           header.appendChild(editBtn);
-          
           item.appendChild(header);
-          
           const actionText = document.createElement('div');
           actionText.className = 'status-action-text';
           actionText.textContent = entry.action;
           item.appendChild(actionText);
-          
           statusList.appendChild(item);
         });
       }
@@ -235,39 +245,31 @@
         const popup = createPopup('Edit Status Post');
         const content = popup.querySelector('.popup-content');
         const btnContainer = popup.querySelector('.popup-buttons');
-
         const fields = document.createElement('div');
         fields.style.display = 'flex';
         fields.style.flexDirection = 'column';
         fields.style.gap = '15px';
         fields.style.marginBottom = '20px';
-
         const dateRow = document.createElement('div');
         dateRow.style.display = 'flex';
         dateRow.style.gap = '10px';
-        
         const dateInput = document.createElement('input');
         dateInput.className = 'form-input';
         dateInput.value = entry.date;
         setupAutoFormatDate(dateInput);
         dateRow.appendChild(dateInput);
-
         const timeInput = document.createElement('input');
         timeInput.className = 'form-input';
         timeInput.value = entry.time;
         setupAutoFormatTime(timeInput);
         dateRow.appendChild(timeInput);
-        
         fields.appendChild(dateRow);
-
         const actionInput = document.createElement('textarea');
         actionInput.className = 'form-input';
         actionInput.style.height = '80px';
         actionInput.value = entry.action;
         fields.appendChild(actionInput);
-
         content.insertBefore(fields, btnContainer);
-
         const saveBtn = document.createElement('button');
         saveBtn.className = 'popup-btn primary';
         saveBtn.textContent = 'Save Changes';
@@ -288,20 +290,20 @@
 
       triggerBtn.onclick = () => {
         const memberName = dropdown.value;
-        showStatusPicker('', (newStatus) => {
+        const b = loadBundle();
+        const pRow = (b.pages.page3 || []).find(r => r[0] === memberName);
+        const currentStatus = pRow ? (pRow[6] === 'true' ? 'On-Scene' : (pRow[6] || 'Off Duty')) : '';
+        
+        showStatusPicker(currentStatus, (newStatus) => {
           showTimePrompt(`Mark ${newStatus}`, (date, time) => {
-             // Find current status from personnel table if possible
-             const b = loadBundle();
-             const pRow = (b.pages.page3 || []).find(r => r[0] === memberName);
-             const oldStatus = pRow ? (pRow[6] === 'true' ? 'On-Scene' : (pRow[6] || 'Off Duty')) : 'Unknown';
-             
-             // Update personnel status in bundle
-             if (pRow) {
-               pRow[6] = newStatus;
-               saveBundle(b);
+             const b2 = loadBundle();
+             const pRow2 = (b2.pages.page3 || []).find(r => r[0] === memberName);
+             if (pRow2) {
+               pRow2[6] = newStatus;
+               saveBundle(b2);
              }
-
              addActivityLogEntry('Personnel', `${memberName} status changed to ${newStatus} at ${date} ${time}`, null, memberName, date, time);
+             renderIncidentTimes(memberName);
              renderHistory(memberName);
           });
         });

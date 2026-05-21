@@ -57,7 +57,7 @@
         <div class="table-tools">
             <div class="task-assignment-summary"
                  style="display: flex; flex-direction: column; gap: 10px; width: 100%; min-width: 0;">
-            <h2>Task Assignment Form</h2>
+            <h2 id="task-view-title">Task Assignment Form</h2>
                 <div class="task-pills-row" id="task-pills-container"
                      style="display: flex; flex-wrap: wrap; gap: 10px; width: 100%; min-width: 0;">
               <!-- Pill buttons for tasks will be injected here -->
@@ -70,23 +70,7 @@
         </div>
       </section>
 
-      <section class="table-card" id="incident-times-view" style="display: none;">
-        <div class="table-tools">
-          <h2>Incident Times Report</h2>
-        </div>
-        <table class="grid-table" aria-label="Incident Times table">
-          <thead id="incident-times-head">
-            <tr>
-              <th>Member</th>
-              <th>Enroute</th>
-              <th>On-Scene</th>
-              <th>Leave-Scene</th>
-              <th>Home/Hotel</th>
-            </tr>
-          </thead>
-          <tbody id="incident-times-body"></tbody>
-        </table>
-      </section>
+      <!-- Removed separate incident-times-view section to avoid duplication -->
 
       <section class="table-card" id="manage-forms-view" style="display: none;">
         <div class="table-tools">

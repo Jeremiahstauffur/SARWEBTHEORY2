@@ -46,6 +46,7 @@
           <div>Click a cell to edit. Enter moves down. Tab moves right. Voter headers are editable. Consensus updates and saves automatically.</div>
           <div class="tool-actions">
             <button id="add-column" class="clear-btn" type="button">Add voter column</button>
+            <button id="remove-voter-columns" class="clear-btn" type="button">Remove voter columns</button>
           </div>
         </div>
 
@@ -83,6 +84,20 @@
     </nav>
   </div>
   <script src="app.js"></script>
+
+  <div id="remove-voter-columns-modal" class="popup-overlay" style="display: none;">
+    <div class="popup-content">
+      <div class="popup-title">Remove Voter Columns</div>
+      <div id="voter-columns-list" style="max-height: 300px; overflow-y: auto; margin-bottom: 20px;">
+        <!-- Voter columns will be injected here -->
+      </div>
+      <div class="popup-buttons">
+        <button id="confirm-remove-columns" class="popup-btn primary">Delete Selected</button>
+        <button id="close-remove-modal" class="popup-btn">Cancel</button>
+      </div>
+    </div>
+  </div>
+
     <div class="notification-sidebar" id="notif-sidebar">
       <div class="notification-header">
         <h2 style="margin:0;">Notifications</h2>

@@ -983,7 +983,7 @@ function showStatusPicker(currentStatus, onSelect) {
     content.insertBefore(list, btnContainer);
 }
 
-function showTimePrompt(title, onConfirm, onCancel) {
+function showTimePrompt(title, onConfirm, onCancel, initialTime = null, onPopupCreated = null) {
     const popup = createPopup(title, null, onCancel);
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
@@ -993,7 +993,7 @@ function showTimePrompt(title, onConfirm, onCancel) {
 
     const now = new Date();
     const defaultDate = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}-${now.getFullYear()}`;
-    const defaultTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const defaultTime = initialTime || `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
     const dateInput = document.createElement('input');
     dateInput.className = 'pill-input';
@@ -1010,6 +1010,8 @@ function showTimePrompt(title, onConfirm, onCancel) {
     inputs.appendChild(timeInput);
 
     content.insertBefore(inputs, btnContainer);
+
+    if (onPopupCreated) onPopupCreated(popup);
 
     const updateBtn = document.createElement('button');
     updateBtn.className = 'popup-btn primary';
@@ -1071,7 +1073,7 @@ function defaultSearchLogData() {
 
 function defaultPersonnelData() {
   return Array.from({ length: ROWS }, () =>
-    Array.from({ length: 7 }, () => '')
+    Array.from({ length: 14 }, () => '')
   );
 }
 
@@ -1200,9 +1202,8 @@ function sanitizeSegmentsData(parsed) {
 function sanitizePersonnelData(parsed) {
   if (!Array.isArray(parsed) || parsed.length === 0) return defaultPersonnelData();
   return parsed.map(row => {
-    // Keep at least 9 columns to preserve PIN link at index 8
-    const r = Array.from({ length: Math.max(7, row?.length || 0) }, (_, c) => (row?.[c] ?? '').toString());
-    // Removed clearing of team/lead if off-scene to allow team assignment for off-duty members
+    // Ensure we have at least 14 columns to include incident times (9, 10, 11, 12) and JSON history (13)
+    const r = Array.from({ length: Math.max(14, row?.length || 0) }, (_, c) => (row?.[c] ?? '').toString());
     return r;
   });
 }
@@ -1549,37 +1550,36 @@ function syncPersonnelData(fileData) {
     processedNames.add(name);
     
     if (global[name]) {
-      merged.push([
-        name,
-        row[1] || '',
-        row[2] || '',
-        global[name].gps || row[3] || '',
-        global[name].radio || row[4] || '',
-        global[name].medic || row[5] || '',
-        row[6] || 'false'
-      ]);
+      const mergedRow = [...row];
+      // Ensure it has enough columns if it came from an older file
+      while (mergedRow.length < 14) mergedRow.push('');
+      
+      mergedRow[3] = global[name].gps || row[3] || '';
+      mergedRow[4] = global[name].radio || row[4] || '';
+      mergedRow[5] = global[name].medic || row[5] || '';
+      merged.push(mergedRow);
     } else {
       global[name] = {
         gps: row[3] || '',
         radio: row[4] || '',
         medic: row[5] || ''
       };
-      merged.push([...row]);
+      const mergedRow = [...row];
+      while (mergedRow.length < 14) mergedRow.push('');
+      merged.push(mergedRow);
     }
   });
 
   // 2. Add members from global that were NOT in the file
   for (const name in global) {
     if (!processedNames.has(name)) {
-      merged.push([
-        name,
-        '', 
-        '', 
-        global[name].gps || '',
-        global[name].radio || '',
-        global[name].medic || '',
-        'false'
-      ]);
+      const newRow = Array.from({ length: 14 }, () => '');
+      newRow[0] = name;
+      newRow[3] = global[name].gps || '';
+      newRow[4] = global[name].radio || '';
+      newRow[5] = global[name].medic || '';
+      newRow[6] = 'false';
+      merged.push(newRow);
     }
   }
 
@@ -1604,15 +1604,11 @@ function splitPersonnelData(mergedData) {
       medic: row[5] || ''
     };
 
-    filePart.push([
-      name,
-      row[1] || '',
-      row[2] || '',
-      '', 
-      '', 
-      '', 
-      row[6] || 'false'
-    ]);
+    const rowForFile = [...row];
+    rowForFile[3] = ''; // GPS is stored globally
+    rowForFile[4] = ''; // Radio is stored globally
+    rowForFile[5] = ''; // Medic is stored globally
+    filePart.push(rowForFile);
   });
 
   setPermanentPersonnel(global);
@@ -2008,10 +2004,25 @@ function recalculateEverything() {
 function buildRegionsTable() {
   const tableHead = document.getElementById('table-head');
   const tableBody = document.getElementById('table-body');
+  const tableContainer = document.querySelector('.table-card');
   const clearBtn = document.getElementById('clear-table');
   const addBtn = document.getElementById('add-column');
   const data = loadData();
   const dynamicCount = data.headers.length - 2;
+
+  if (tableContainer) {
+    if (data.headers.length > 5) {
+      tableContainer.classList.add('force-mobile-layout');
+    } else {
+      tableContainer.classList.remove('force-mobile-layout');
+    }
+    // Also remove horizontal overflow from table-card when in card layout
+    if (data.headers.length > 5) {
+      tableContainer.style.overflowX = 'hidden';
+    } else {
+      tableContainer.style.overflowX = '';
+    }
+  }
 
   tableHead.innerHTML = '';
   tableBody.innerHTML = '';
@@ -2146,6 +2157,7 @@ function buildRegionsTable() {
     for (let c = 0; c < data.headers.length; c++) {
       const td = document.createElement('td');
       td.dataset.label = data.headers[c];
+      td.className = 'regions-td';
 
       if (c === data.headers.length - 1) {
         const consensus = document.createElement('div');
@@ -2209,6 +2221,7 @@ function buildRegionsTable() {
     // New Delete Column
     const deleteTd = document.createElement('td');
     deleteTd.dataset.label = 'Delete';
+    deleteTd.className = 'regions-td';
     const deleteContainer = document.createElement('div');
     deleteContainer.className = 'pill-cell-container';
     const delBtn = document.createElement('button');
@@ -2271,6 +2284,83 @@ function buildRegionsTable() {
     saveCurrentPageData(data);
     buildRegionsTable();
   };
+
+  const removeBtn = document.getElementById('remove-voter-columns');
+  const removeModal = document.getElementById('remove-voter-columns-modal');
+  const closeRemoveModal = document.getElementById('close-remove-modal');
+  const confirmRemoveBtn = document.getElementById('confirm-remove-columns');
+  const voterListContainer = document.getElementById('voter-columns-list');
+
+  if (removeBtn) {
+    removeBtn.onclick = () => {
+      voterListContainer.innerHTML = '';
+      for (let c = 1; c < data.headers.length - 1; c++) {
+        const item = document.createElement('div');
+        item.className = 'voter-remove-item';
+        
+        const label = document.createElement('span');
+        label.textContent = data.headers[c];
+        
+        const toggleContainer = document.createElement('label');
+        toggleContainer.className = 'toggle-switch';
+        
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.dataset.colIndex = String(c);
+        
+        const slider = document.createElement('span');
+        slider.className = 'slider round';
+        
+        toggleContainer.appendChild(checkbox);
+        toggleContainer.appendChild(slider);
+        
+        item.appendChild(label);
+        item.appendChild(toggleContainer);
+        
+        item.onclick = (e) => {
+          if (e.target !== checkbox && !toggleContainer.contains(e.target)) {
+            checkbox.checked = !checkbox.checked;
+          }
+        };
+        
+        voterListContainer.appendChild(item);
+      }
+      removeModal.style.display = 'flex';
+    };
+  }
+
+  if (closeRemoveModal) {
+    closeRemoveModal.onclick = () => {
+      removeModal.style.display = 'none';
+    };
+  }
+
+  if (confirmRemoveBtn) {
+    confirmRemoveBtn.onclick = () => {
+      const selectedCheckboxes = voterListContainer.querySelectorAll('input[type="checkbox"]:checked');
+      if (selectedCheckboxes.length === 0) {
+        removeModal.style.display = 'none';
+        return;
+      }
+
+      const indicesToDelete = Array.from(selectedCheckboxes)
+        .map(cb => parseInt(cb.dataset.colIndex))
+        .sort((a, b) => b - a);
+
+      indicesToDelete.forEach(idx => {
+        data.headers.splice(idx, 1);
+        data.rows.forEach(row => row.splice(idx, 1));
+        if (data.voterVisibility) {
+          data.voterVisibility.splice(idx - 1, 1);
+        }
+      });
+
+      logDeletion('Voter Columns', `${selectedCheckboxes.length} columns`);
+      saveCurrentPageData(data);
+      buildRegionsTable();
+      removeModal.style.display = 'none';
+    };
+  }
 
   if (clearBtn) {
     clearBtn.remove();
@@ -2629,13 +2719,16 @@ function buildSegmentsTable() {
     const caltopoBtn = document.createElement('button');
     caltopoBtn.className = 'mini-pill';
     const caltopoId = sortedData[r][9];
-    caltopoBtn.textContent = caltopoId ? `Linked: ${caltopoId}` : 'Link CalTopo';
+    caltopoBtn.textContent = caltopoId ? 'Linked.' : 'Link CalTopo';
     caltopoBtn.style.cursor = 'pointer';
     caltopoBtn.style.width = '100%';
     caltopoBtn.style.textAlign = 'center';
     if (caltopoId) {
-        caltopoBtn.style.background = 'rgba(64, 192, 87, 0.1)';
-        caltopoBtn.style.borderColor = 'rgba(64, 192, 87, 0.3)';
+        caltopoBtn.style.background = 'rgba(64, 192, 87, 0.2)';
+        caltopoBtn.style.borderColor = 'rgba(64, 192, 87, 0.4)';
+        caltopoBtn.style.color = '#2b8a3e';
+        caltopoBtn.style.fontWeight = '600';
+        caltopoBtn.title = `Linked to CalTopo ID: ${caltopoId}`;
     }
     
     caltopoBtn.onclick = () => {
@@ -2964,7 +3057,7 @@ function buildPersonnelAllMembersTable() {
   tableHead.innerHTML = '';
   tableBody.innerHTML = '';
 
-  const headers = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Delete'];
+  const headers = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Enroute', 'On Scene', 'Returning', 'Arrived', 'Delete'];
   const headerRow = document.createElement('tr');
   headers.forEach(h => {
     const th = document.createElement('th');
@@ -3008,11 +3101,13 @@ function buildPersonnelAllMembersTable() {
     animateNewRow(tr, r);
     const originalRowIndex = data.indexOf(filteredData[r]);
     
-    const rowHeaders = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Delete'];
-    for (let c = 0; c < 7; c++) {
-      if (c === 2) continue; 
+    const rowHeaders = ['Name', 'Team', 'GPS', 'Radio', 'Medic', 'Status', 'Enroute', 'On Scene', 'Returning', 'Arrived', 'Delete'];
+    const cellIndices = [0, 1, 3, 4, 5, 6, 9, 10, 11, 12, -1]; // -1 for delete
+    
+    for (let i = 0; i < rowHeaders.length; i++) {
+      const c = cellIndices[i];
       const td = document.createElement('td');
-      td.dataset.label = rowHeaders[c < 2 ? c : c - 1];
+      td.dataset.label = rowHeaders[i];
       const cellContainer = document.createElement('div');
       cellContainer.className = 'pill-cell-container';
 
@@ -3024,6 +3119,24 @@ function buildPersonnelAllMembersTable() {
         cell.contentEditable = 'true';
         cell.spellcheck = false;
         cell.textContent = filteredData[r][c] || '';
+        
+        const nameClick = document.createElement('div');
+        nameClick.style.position = 'absolute';
+        nameClick.style.right = '8px';
+        nameClick.style.top = '50%';
+        nameClick.style.transform = 'translateY(-50%)';
+        nameClick.style.opacity = '0.5';
+        nameClick.style.cursor = 'pointer';
+        nameClick.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>';
+        nameClick.title = 'View Incident Times';
+        nameClick.onclick = (e) => {
+            e.stopPropagation();
+            currentMemberReportSelection = filteredData[r][c];
+            currentPersonnelSubpage = 'member-reports';
+            buildPersonnelTable();
+        };
+        cellContainer.appendChild(nameClick);
+
         cell.addEventListener('blur', () => {
           const newName = cell.textContent.trim();
           if (data[originalRowIndex][c] !== newName) {
@@ -3136,6 +3249,39 @@ function buildPersonnelAllMembersTable() {
             });
           };
           cellContainer.appendChild(statusBtn);
+        } else if (c >= 9 && c <= 12) { // Incident Time columns
+          const cell = document.createElement('div');
+          cell.className = 'mini-pill';
+          cell.style.width = '100%';
+          cell.style.cursor = 'pointer';
+          cell.textContent = filteredData[r][c] || '';
+          cell.onclick = () => {
+              const label = rowHeaders[i];
+              const currentVal = filteredData[r][c];
+              showTimePrompt(`Edit ${label}`, (d, t) => {
+                  data[originalRowIndex][c] = t;
+                  saveCurrentPageData(data);
+                  addActivityLogEntry('Personnel', `${data[originalRowIndex][0]} ${label} time set to ${t}`, null, data[originalRowIndex][0]);
+                  buildPersonnelTable();
+              }, null, currentVal.includes(':') ? currentVal : null, (popup) => {
+                  // Add "Clear Info" button to the popup
+                  const btnContainer = popup.querySelector('.popup-buttons');
+                  const clearBtn = document.createElement('button');
+                  clearBtn.className = 'popup-btn';
+                  clearBtn.style.marginRight = 'auto';
+                  clearBtn.style.color = '#eb5757';
+                  clearBtn.textContent = 'Clear Info';
+                  clearBtn.onclick = () => {
+                      data[originalRowIndex][c] = '';
+                      saveCurrentPageData(data);
+                      addActivityLogEntry('Personnel', `${data[originalRowIndex][0]} ${label} time cleared`, null, data[originalRowIndex][0]);
+                      buildPersonnelTable();
+                      popup.remove();
+                  };
+                  btnContainer.insertBefore(clearBtn, btnContainer.firstChild);
+              });
+          };
+          cellContainer.appendChild(cell);
         } else { // GPS, Radio, Medic columns
           const checkbox = document.createElement('input');
           checkbox.type = 'checkbox';
@@ -3173,7 +3319,7 @@ function buildPersonnelAllMembersTable() {
 
         data.splice(originalRowIndex, 1);
         logDeletion('Personnel', memberName);
-        if (data.length === 0) data.push(Array.from({ length: 7 }, () => ''));
+        if (data.length === 0) data.push(Array.from({ length: 14 }, () => ''));
         saveCurrentPageData(data);
         buildPersonnelTable();
       });
@@ -3189,7 +3335,7 @@ function buildPersonnelAllMembersTable() {
   addRowBtn.className = 'add-row-btn';
   addRowBtn.textContent = '+ Add new person';
   addRowBtn.onclick = () => {
-    const newRow = Array.from({ length: 7 }, () => '');
+    const newRow = Array.from({ length: 14 }, () => '');
     newRow[1] = 'Off Duty';
     newRow[6] = 'Enroute'; // Default to Enroute
     
@@ -3815,6 +3961,10 @@ function buildPersonnelActivityTable() {
     updateParContainer.appendChild(parPill);
     tdUpdatePar.appendChild(updateParContainer);
     tr.appendChild(tdUpdatePar);
+
+    if (idx < sortedTeams.length - 1) {
+      tr.classList.add('team-divider-row');
+    }
 
     tableBody.appendChild(tr);
   });
@@ -5181,10 +5331,15 @@ function showEditLogTimePopup(entry) {
   dateInput.placeholder = 'MM-DD-YYYY';
   dateInput.value = entry.date;
   dateInput.oninput = () => {
+    let cursor = dateInput.selectionStart;
+    let oldVal = dateInput.value;
     let val = dateInput.value.replace(/\D/g, '');
-    if (val.length > 2) val = val.substring(0, 2) + '-' + val.substring(2);
-    if (val.length > 5) val = val.substring(0, 5) + '-' + val.substring(5, 9);
-    dateInput.value = val;
+    let newVal = '';
+    if (val.length > 0) newVal += val.substring(0, 2);
+    if (val.length > 2) newVal += '-' + val.substring(2, 4);
+    if (val.length > 4) newVal += '-' + val.substring(4, 8);
+    dateInput.value = newVal;
+    if (cursor === oldVal.length) dateInput.setSelectionRange(newVal.length, newVal.length);
   };
 
   const timeInput = document.createElement('input');
@@ -5195,9 +5350,14 @@ function showEditLogTimePopup(entry) {
   timeInput.placeholder = 'HH:MM';
   timeInput.value = entry.time;
   timeInput.oninput = () => {
+    let cursor = timeInput.selectionStart;
+    let oldVal = timeInput.value;
     let val = timeInput.value.replace(/\D/g, '');
-    if (val.length > 2) val = val.substring(0, 2) + ':' + val.substring(2, 4);
-    timeInput.value = val;
+    let newVal = '';
+    if (val.length > 0) newVal += val.substring(0, 2);
+    if (val.length > 2) newVal += ':' + val.substring(2, 4);
+    timeInput.value = newVal;
+    if (cursor === oldVal.length) timeInput.setSelectionRange(newVal.length, newVal.length);
   };
 
   container.appendChild(dateInput);
@@ -5481,6 +5641,155 @@ function buildTeamReports() {
   });
 }
 
+function renderMemberIncidentCards(memberName, container) {
+    if (!container) return;
+    container.innerHTML = '';
+    
+    const bundle = loadBundle();
+    const pRow = (bundle.pages.page3 || []).find(r => r[0] === memberName);
+    if (!pRow) return;
+
+    let sets = [];
+    try {
+        if (pRow[13]) {
+            sets = JSON.parse(pRow[13]);
+        }
+    } catch(e) { console.error("Error parsing sets", e); }
+
+    if (sets.length === 0) {
+        sets.push({
+            enroute: pRow[9] || '',
+            onScene: pRow[10] || '',
+            returning: pRow[11] || '',
+            arrived: pRow[12] || ''
+        });
+    }
+
+    const cardsWrapper = document.createElement('div');
+    cardsWrapper.className = 'incident-times-container';
+
+    sets.forEach((set, index) => {
+        const card = document.createElement('div');
+        card.className = 'incident-card';
+        
+        const header = document.createElement('div');
+        header.className = 'incident-card-header';
+        
+        const title = document.createElement('div');
+        title.className = 'incident-card-title';
+        title.textContent = `Incident Set ${index + 1}`;
+        header.appendChild(title);
+        
+        const delBtn = document.createElement('div');
+        delBtn.className = 'delete-card-btn';
+        delBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+        delBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (confirm('Delete this incident row?')) {
+                sets.splice(index, 1);
+                pRow[13] = JSON.stringify(sets);
+                // Sync latest to legacy
+                const lastSet = sets[sets.length - 1] || {enroute:'', onScene:'', returning:'', arrived:''};
+                pRow[9] = lastSet.enroute || '';
+                pRow[10] = lastSet.onScene || '';
+                pRow[11] = lastSet.returning || '';
+                pRow[12] = lastSet.arrived || '';
+                saveBundle(bundle);
+                renderMemberIncidentCards(memberName, container);
+            }
+        };
+        header.appendChild(delBtn);
+        card.appendChild(header);
+        
+        const grid = document.createElement('div');
+        grid.className = 'incident-times-grid';
+        
+        const fields = [
+            { key: 'enroute', label: 'Enroute' },
+            { key: 'onScene', label: 'On Scene' },
+            { key: 'returning', label: 'Returning' },
+            { key: 'arrived', label: 'Arrived Home' }
+        ];
+        
+        fields.forEach(f => {
+            const slot = document.createElement('div');
+            slot.className = 'time-slot';
+            slot.onclick = () => {
+                showTimePrompt(`Set ${f.label}`, (d, t) => {
+                    set[f.key] = t;
+                    pRow[13] = JSON.stringify(sets);
+                    if (index === sets.length - 1) {
+                        const map = { enroute: 9, onScene: 10, returning: 11, arrived: 12 };
+                        pRow[map[f.key]] = t;
+                    }
+                    saveBundle(bundle);
+                    renderMemberIncidentCards(memberName, container);
+                }, null, set[f.key] || null, (popup) => {
+                    const btnContainer = popup.querySelector('.popup-buttons');
+                    const clearBtn = document.createElement('button');
+                    clearBtn.className = 'popup-btn';
+                    clearBtn.style.marginRight = 'auto';
+                    clearBtn.style.color = '#eb5757';
+                    clearBtn.textContent = 'Clear Info';
+                    clearBtn.onclick = () => {
+                        set[f.key] = '';
+                        pRow[13] = JSON.stringify(sets);
+                        if (index === sets.length - 1) {
+                            const map = { enroute: 9, onScene: 10, returning: 11, arrived: 12 };
+                            pRow[map[f.key]] = '';
+                        }
+                        saveBundle(bundle);
+                        renderMemberIncidentCards(memberName, container);
+                        popup.remove();
+                    };
+                    btnContainer.insertBefore(clearBtn, btnContainer.firstChild);
+                });
+            };
+            
+            const lbl = document.createElement('div');
+            lbl.className = 'time-slot-label';
+            lbl.textContent = f.label;
+            slot.appendChild(lbl);
+            
+            const val = document.createElement('div');
+            val.className = 'time-slot-value';
+            if (set[f.key]) {
+                val.textContent = set[f.key];
+            } else {
+                val.className += ' add-time-btn-small';
+                val.textContent = '+';
+            }
+            slot.appendChild(val);
+            grid.appendChild(slot);
+        });
+        card.appendChild(grid);
+        cardsWrapper.appendChild(card);
+    });
+
+    // Add Placeholder
+    const placeholder = document.createElement('div');
+    placeholder.className = 'add-card-placeholder';
+    placeholder.onclick = () => {
+        sets.push({ enroute: '', onScene: '', returning: '', arrived: '' });
+        pRow[13] = JSON.stringify(sets);
+        saveBundle(bundle);
+        renderMemberIncidentCards(memberName, container);
+    };
+    
+    const icon = document.createElement('div');
+    icon.className = 'add-card-icon';
+    icon.textContent = '+';
+    placeholder.appendChild(icon);
+    
+    const txt = document.createElement('div');
+    txt.className = 'add-card-text';
+    txt.textContent = 'Add Incident Row';
+    placeholder.appendChild(txt);
+    
+    cardsWrapper.appendChild(placeholder);
+    container.appendChild(cardsWrapper);
+}
+
 let currentMemberReportSelection = '';
 
 function buildMemberReports() {
@@ -5491,7 +5800,7 @@ function buildMemberReports() {
   const bundle = loadBundle();
   const logs = bundle.activityLog || [];
   
-  const onSceneMembers = (bundle.pages.page3 || []).filter(row => row[6] === 'true' && row[0]);
+  const allMembers = bundle.pages.page3 || [];
 
   btn.textContent = currentMemberReportSelection ? `Member: ${currentMemberReportSelection}` : 'Select Member...';
   btn.onclick = () => {
@@ -5504,8 +5813,10 @@ function buildMemberReports() {
     list.style.flexWrap = 'wrap';
     list.style.gap = '10px';
     list.style.marginBottom = '20px';
+    list.style.maxHeight = '400px';
+    list.style.overflowY = 'auto';
     
-    onSceneMembers.forEach(mRow => {
+    allMembers.filter(m => m[0]).forEach(mRow => {
       const mBtn = document.createElement('button');
       mBtn.className = 'mini-pill';
       mBtn.textContent = mRow[0];
@@ -5521,7 +5832,18 @@ function buildMemberReports() {
   };
 
   tableBody.innerHTML = '';
+  
+  // Clear any existing incident cards container
+  const existingCards = document.getElementById('member-incident-cards');
+  if (existingCards) existingCards.remove();
+
   if (!currentMemberReportSelection) return;
+
+  // Add Incident Cards
+  const cardsContainer = document.createElement('div');
+  cardsContainer.id = 'member-incident-cards';
+  tableBody.parentElement.before(cardsContainer);
+  renderMemberIncidentCards(currentMemberReportSelection, cardsContainer);
 
   const filteredLogs = logs.filter(log => {
     if (!log.members) return false;
@@ -5945,13 +6267,19 @@ function buildSearchLogTable() {
   initCharts();
 }
 
-let selectedChartDate = (new Date()).toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
-let selectedChartDuration = 24;
+function getLocalISOString(date) {
+    const tzoffset = date.getTimezoneOffset() * 60000;
+    return (new Date(date - tzoffset)).toISOString().slice(0, 16);
+}
+
+let selectedChartStart = getLocalISOString(new Date());
+let selectedChartEnd = getLocalISOString(new Date(Date.now() + 24 * 3600000));
 
 // Helper to format hour offset
-function formatHourOffset(offset) {
-    const h = Math.floor(offset);
-    return `${h.toString().padStart(2, '0')}`;
+function formatHourOffset(ts) {
+    const date = new Date(ts);
+    if (isNaN(date.getTime())) return '00:00';
+    return `${(date.getMonth() + 1)}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
 }
 
 // Helper to get timestamp
@@ -5962,20 +6290,18 @@ function getTs(dateStr, timeStr) {
     return new Date(y, m - 1, d, hh, mm).getTime();
 }
 
-function calculateHourlyMetrics(targetDateStr, durationHours = 24) {
+function calculateHourlyMetrics(startTimeTs, endTimeTs) {
     const bundle = loadBundle();
     const searchLog = bundle.pages.page4 || [];
     const segments = bundle.pages.page2 || [];
     const regions = bundle.pages.index.rows || [];
     
     const results = [];
-    const increment = durationHours / 24;
+    const totalDuration = endTimeTs - startTimeTs;
+    const increment = totalDuration / 10;
 
-    for (let i = 0; i < 24; i++) {
-        const hourOffset = i * increment;
-        const [m, d, y] = targetDateStr.split('-').map(Number);
-        const baseDate = new Date(y, m - 1, d, 0, 0);
-        const currentTs = baseDate.getTime() + (hourOffset * 3600000);
+    for (let i = 0; i <= 10; i++) {
+        const currentTs = startTimeTs + (i * increment);
         
         let totalPOS = 0;
         let totalPSRc = 0;
@@ -6070,7 +6396,7 @@ function calculateHourlyMetrics(targetDateStr, durationHours = 24) {
         });
 
         results.push({
-            hour: hourOffset,
+            hour: currentTs,
             totalPOS,
             totalPSRc,
             segments: hourMetrics
@@ -6085,10 +6411,13 @@ function buildMetricsTable() {
     const dateTitle = document.getElementById('metrics-date-title');
     if (!tableBody || !dateTitle) return;
 
-    dateTitle.textContent = selectedChartDate;
+    const startTs = new Date(selectedChartStart).getTime();
+    const endTs = new Date(selectedChartEnd).getTime();
+
+    dateTitle.textContent = `${selectedChartStart.replace('T', ' ')} to ${selectedChartEnd.replace('T', ' ')}`;
     tableBody.innerHTML = '';
     
-    const metricsData = calculateHourlyMetrics(selectedChartDate, selectedChartDuration);
+    const metricsData = calculateHourlyMetrics(startTs, endTs);
     
     metricsData.forEach(m => {
         const tr = document.createElement('tr');
@@ -6132,43 +6461,50 @@ function buildMetricsTable() {
 }
 
 function initCharts() {
-    renderCharts();
-    document.querySelectorAll('.chart-duration-btn').forEach(btn => {
-        btn.onclick = () => {
-            selectedChartDuration = parseInt(btn.dataset.duration);
-            document.querySelectorAll('.chart-duration-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
+    const startInput = document.getElementById('chart-start-datetime');
+    const endInput = document.getElementById('chart-end-datetime');
+    
+    if (startInput && endInput) {
+        startInput.value = selectedChartStart;
+        endInput.value = selectedChartEnd;
+        
+        startInput.onchange = () => {
+            selectedChartStart = startInput.value;
             renderCharts();
         };
-    });
+        endInput.onchange = () => {
+            selectedChartEnd = endInput.value;
+            renderCharts();
+        };
+    }
+    renderCharts();
 }
 
 function renderCharts() {
-    const targetDateStr = selectedChartDate; // MM-DD-YYYY
-    const metrics = calculateHourlyMetrics(targetDateStr, selectedChartDuration);
+    const startTs = new Date(selectedChartStart).getTime();
+    const endTs = new Date(selectedChartEnd).getTime();
+    
+    if (isNaN(startTs) || isNaN(endTs)) return;
+    
+    const metrics = calculateHourlyMetrics(startTs, endTs);
     
     const psrcData = metrics.map(m => m.totalPSRc);
     const posData = metrics.map(m => m.totalPOS);
 
-    drawLineChart('psrc-chart-container', psrcData, '#7dc6ff', selectedChartDuration);
-    drawLineChart('activity-chart-container', posData, '#ff8c00', selectedChartDuration);
-    
-    const dateBtn = document.getElementById('chart-date-btn');
-    if (dateBtn) {
-        dateBtn.textContent = targetDateStr;
-        dateBtn.onclick = showCalendarPopup;
-    }
+    drawLineChart('psrc-chart-container', psrcData, '#7dc6ff', startTs, endTs);
+    drawLineChart('activity-chart-container', posData, '#ff8c00', startTs, endTs);
 }
 
-function drawLineChart(containerId, data, color, durationHours = 24) {
+function drawLineChart(containerId, data, color, startTimeTs, endTimeTs) {
     const container = document.getElementById(containerId);
     if (!container) return;
-    const padding = { top: 20, right: 20, bottom: 30, left: 60 };
+    const padding = { top: 20, right: 20, bottom: 40, left: 60 }; // More bottom padding for date/time
     const width = container.clientWidth || 300;
     const height = container.clientHeight || 150;
     const chartWidth = width - padding.left - padding.right;
     const chartHeight = height - padding.top - padding.bottom;
     const max = Math.max(...data, 1);
+    const durationMs = endTimeTs - startTimeTs;
 
     container.innerHTML = '';
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -6218,9 +6554,9 @@ function drawLineChart(containerId, data, color, durationHours = 24) {
     }
 
     // X Axis Ticks
-    const numXTicks = 8;
+    const numXTicks = 10;
     for (let i = 0; i <= numXTicks; i++) {
-        const offset = (durationHours / numXTicks) * i;
+        const tickTs = startTimeTs + (i / numXTicks) * durationMs;
         const x = padding.left + (i / numXTicks) * chartWidth;
         
         const tick = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -6235,9 +6571,9 @@ function drawLineChart(containerId, data, color, durationHours = 24) {
         text.setAttribute("x", x);
         text.setAttribute("y", height - padding.bottom + 20);
         text.setAttribute("fill", "var(--muted)");
-        text.setAttribute("font-size", "9");
+        text.setAttribute("font-size", "7.5"); // Smaller to fit date/time
         text.setAttribute("text-anchor", "middle");
-        text.textContent = formatHourOffset(offset);
+        text.textContent = formatHourOffset(tickTs);
         svg.appendChild(text);
     }
 
@@ -6299,104 +6635,6 @@ function drawBarChart(containerId, data, color) {
     });
 }
 
-function showCalendarPopup() {
-    const popup = createPopup('Select Report Date');
-    const content = popup.querySelector('.popup-content');
-    const btnContainer = popup.querySelector('.popup-buttons');
-
-    const [m, , y] = selectedChartDate.split('-').map(Number);
-    let viewMonth = m - 1;
-    let viewYear = y;
-
-    const calendarWrap = document.createElement('div');
-    
-    const renderMonth = () => {
-        calendarWrap.innerHTML = '';
-        const header = document.createElement('div');
-        header.className = 'calendar-header';
-        
-        const prevBtn = document.createElement('button');
-        prevBtn.className = 'mini-pill';
-        prevBtn.textContent = '<';
-        prevBtn.onclick = () => { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear--; } renderMonth(); };
-        
-        const title = document.createElement('div');
-        title.style.fontWeight = '700';
-        title.textContent = new Date(viewYear, viewMonth).toLocaleString('en-US', { month: 'long', year: 'numeric' });
-        
-        const nextBtn = document.createElement('button');
-        nextBtn.className = 'mini-pill';
-        nextBtn.textContent = '>';
-        nextBtn.onclick = () => { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++; } renderMonth(); };
-        
-        header.appendChild(prevBtn);
-        header.appendChild(title);
-        header.appendChild(nextBtn);
-        calendarWrap.appendChild(header);
-        
-        const grid = document.createElement('div');
-        grid.className = 'calendar-grid';
-        
-        ['S','M','T','W','T','F','S'].forEach(day => {
-            const dDiv = document.createElement('div');
-            dDiv.style.fontWeight = '700';
-            dDiv.style.textAlign = 'center';
-            dDiv.style.fontSize = '0.8rem';
-            dDiv.textContent = day;
-            grid.appendChild(dDiv);
-        });
-        
-        const firstDay = new Date(viewYear, viewMonth, 1).getDay();
-        const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-        
-        for (let i = 0; i < firstDay; i++) {
-            grid.appendChild(document.createElement('div'));
-        }
-        
-        const today = new Date();
-        const todayStr = `${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}-${today.getFullYear()}`;
-
-        for (let i = 1; i <= daysInMonth; i++) {
-            const dayDiv = document.createElement('div');
-            dayDiv.className = 'calendar-day';
-            dayDiv.textContent = i;
-            
-            const dateStr = `${(viewMonth + 1).toString().padStart(2, '0')}-${i.toString().padStart(2, '0')}-${viewYear}`;
-            if (dateStr === todayStr) dayDiv.classList.add('today');
-            if (dateStr === selectedChartDate) dayDiv.classList.add('selected');
-            
-            dayDiv.onclick = () => {
-                calendarWrap.querySelectorAll('.calendar-day').forEach(d => d.classList.remove('selected'));
-                dayDiv.classList.add('selected');
-                tempSelectedDate = dateStr;
-            };
-            grid.appendChild(dayDiv);
-        }
-        calendarWrap.appendChild(grid);
-    };
-
-    let tempSelectedDate = selectedChartDate;
-    renderMonth();
-    content.insertBefore(calendarWrap, btnContainer);
-
-    const actionRow = document.createElement('div');
-    actionRow.style.display = 'flex';
-    actionRow.style.gap = '10px';
-    actionRow.style.marginTop = '20px';
-
-    const applyBtn = document.createElement('button');
-    applyBtn.className = 'popup-btn primary';
-    applyBtn.style.flex = '1';
-    applyBtn.textContent = 'Apply';
-    applyBtn.onclick = () => {
-        selectedChartDate = tempSelectedDate;
-        closePopup(popup);
-        renderCharts();
-    };
-    
-    actionRow.appendChild(applyBtn);
-    btnContainer.appendChild(actionRow);
-}
 
 function buildSavedFilesTable() {
     const tbody = document.getElementById('saved-files-body');
@@ -7138,6 +7376,7 @@ function buildFormsPage() {
   if (btnIncidentTimes) {
     btnIncidentTimes.onclick = () => {
       currentFormsSubpage = 'incident-times';
+      currentTaskNumber = null; // Clear task selection when going to report
       buildFormsPage();
     };
   }
@@ -7154,21 +7393,23 @@ function buildFormsPage() {
     if (btnIncidentTimes) btnIncidentTimes.classList.remove('active');
     if (btnManage) btnManage.classList.remove('active');
     if (taskView) taskView.style.display = 'block';
-    if (incidentTimesView) incidentTimesView.style.display = 'none';
     if (manageView) manageView.style.display = 'none';
+
+    const taskPills = document.getElementById('task-pills-container');
+    if (taskPills) taskPills.style.display = 'flex';
+    const taskTitle = document.getElementById('task-view-title');
+    if (taskTitle) taskTitle.textContent = 'Task Assignment Form';
   } else if (currentFormsSubpage === 'incident-times') {
     if (btnIncidentTimes) btnIncidentTimes.classList.add('active');
     if (btnTask) btnTask.classList.remove('active');
     if (btnManage) btnManage.classList.remove('active');
-    if (taskView) taskView.style.display = 'none';
-    if (incidentTimesView) incidentTimesView.style.display = 'block';
+    if (taskView) taskView.style.display = 'block'; // Keep taskView visible because it contains the interactive-form-container
     if (manageView) manageView.style.display = 'none';
   } else {
     if (btnManage) btnManage.classList.add('active');
     if (btnTask) btnTask.classList.remove('active');
     if (btnIncidentTimes) btnIncidentTimes.classList.remove('active');
     if (taskView) taskView.style.display = 'none';
-    if (incidentTimesView) incidentTimesView.style.display = 'none';
     if (manageView) manageView.style.display = 'block';
   }
 
@@ -7199,13 +7440,108 @@ function buildFormsPage() {
     }
     buildTaskAssignmentForm();
   } else if (currentFormsSubpage === 'incident-times') {
+    if (printContainer) {
+      const addRowBtn = document.createElement('button');
+      addRowBtn.className = 'sub-nav-btn active';
+      addRowBtn.style.marginRight = '8px';
+      addRowBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>Add Row';
+      addRowBtn.onclick = () => addIncidentRow();
+      printContainer.appendChild(addRowBtn);
+
+      const printBtn = document.createElement('button');
+      printBtn.className = 'sub-nav-btn active';
+      printBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px; vertical-align: middle;"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>Print Report';
+      printBtn.onclick = () => printIncidentTimesReport();
+      printContainer.appendChild(printBtn);
+    }
+    const taskPills = document.getElementById('task-pills-container');
+    if (taskPills) taskPills.style.display = 'none';
+    const taskTitle = document.getElementById('task-view-title');
+    if (taskTitle) taskTitle.textContent = 'Incident Times Report';
+
     buildIncidentTimesReport();
   } else {
+    const taskPills = document.getElementById('task-pills-container');
+    if (taskPills) taskPills.style.display = 'none';
     buildManageFormsTable();
   }
 }
 
+function printIncidentTimesReport() {
+    const container = document.getElementById('interactive-form-container');
+    if (!container) return;
+    const tableHTML = container.innerHTML;
+
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+        alert("Please allow popups to view the printout.");
+        return;
+    }
+
+    const bundle = loadBundle();
+    const fileName = (bundle.fileName || "Search_File").replace('.json', '');
+
+    printWindow.document.write(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Incident Times Report - ${fileName}</title>
+    <style>
+        ${TASK_FORM_PRINT_STYLES}
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #000; padding: 8px; text-align: left; font-size: 10pt; }
+        th { background: #eee !important; -webkit-print-color-adjust: exact; }
+        .mini-pill { border: 1px solid #ccc; padding: 2px 4px; border-radius: 4px; font-size: 8pt; display: block; margin: 2px 0; background: none !important; color: #000 !important; }
+        button.mini-pill { border: none; }
+        .pill-cell { background: none !important; padding: 0 !important; min-height: 0 !important; }
+        .readonly-pill { border: none !important; }
+        @media print {
+            button { display: none !important; }
+            .mini-pill { border: none !important; }
+        }
+    </style>
+</head>
+<body>
+    <div class="no-print">
+        <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 999px;">Print PDF</button>
+    </div>
+    <div class="print-container">
+        <h1>Incident Times Report</h1>
+        <p><strong>File:</strong> ${fileName}</p>
+        <div class="report-content">
+            ${tableHTML}
+        </div>
+    </div>
+    <script>
+        setTimeout(() => { window.print(); }, 500);
+    </script>
+</body>
+</html>
+    `);
+    printWindow.document.close();
+}
+
 function buildIncidentTimesReport() {
+  const container = document.getElementById('interactive-form-container');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const table = document.createElement('table');
+  table.className = 'form-grid-table';
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>Member</th>
+        <th>Enroute</th>
+        <th>On-Scene</th>
+        <th>Leave-Scene</th>
+        <th>Home/Hotel</th>
+      </tr>
+    </thead>
+    <tbody id="incident-times-body"></tbody>
+  `;
+  container.appendChild(table);
+
   const tableBody = document.getElementById('incident-times-body');
   if (!tableBody) return;
   tableBody.innerHTML = '';
@@ -7283,6 +7619,18 @@ function buildIncidentTimesReport() {
            }
            delete activeSession[memberName];
         }
+      } else {
+        // No active session, but maybe it's a home/hotel entry for the last closed session?
+        if (['Hotel', 'Arrived Home', 'Arrived home', 'hotel'].some(s => newStatus.toLowerCase().includes(s.toLowerCase()))) {
+          const sessions = memberSessions[memberName];
+          if (sessions && sessions.length > 0) {
+            const lastSession = sessions[sessions.length - 1];
+            if (!lastSession.homeHotel) {
+              lastSession.homeHotel = dateTimeStr;
+              lastSession.homeHotelLogId = log.id;
+            }
+          }
+        }
       }
     }
   });
@@ -7318,27 +7666,39 @@ function buildIncidentTimesReport() {
     const tr = document.createElement('tr');
     
     const tdMember = document.createElement('td');
-    tdMember.innerHTML = `<strong>${row.name}</strong>`;
+    tdMember.dataset.label = 'Member';
+    tdMember.className = 'regions-td';
+    
+    const namePill = document.createElement('div');
+    namePill.className = 'pill-cell readonly-pill';
+    namePill.style.display = 'flex';
+    namePill.style.flexDirection = 'column';
+    namePill.style.justifyContent = 'center';
+    namePill.style.minHeight = '46px';
+    namePill.innerHTML = `<strong>${row.name}</strong>`;
     
     if (row.onSceneTS && row.leaveSceneTS) {
       const diffMs = row.leaveSceneTS - row.onSceneTS;
       const diffHrs = Math.floor(diffMs / 3600000);
       const diffMins = Math.round((diffMs % 3600000) / 60000);
       const durationStr = `${diffHrs}h ${diffMins}m`;
-      tdMember.innerHTML += `<div style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Time On Scene: ${durationStr}</div>`;
+      namePill.innerHTML += `<div style="font-size: 0.8rem; color: var(--muted); margin-top: 4px;">Time On Scene: ${durationStr}</div>`;
     }
     
+    tdMember.appendChild(namePill);
     tr.appendChild(tdMember);
     
     const columns = [
-      { key: 'enroute', logIdKey: 'enrouteLogId' },
-      { key: 'onScene', logIdKey: 'onSceneLogId' },
-      { key: 'leaveScene', logIdKey: 'leaveSceneLogId' },
-      { key: 'homeHotel', logIdKey: 'homeHotelLogId' }
+      { key: 'enroute', logIdKey: 'enrouteLogId', label: 'Enroute' },
+      { key: 'onScene', logIdKey: 'onSceneLogId', label: 'On-Scene' },
+      { key: 'leaveScene', logIdKey: 'leaveSceneLogId', label: 'Leave-Scene' },
+      { key: 'homeHotel', logIdKey: 'homeHotelLogId', label: 'Home/Hotel' }
     ];
 
     columns.forEach(col => {
       const td = document.createElement('td');
+      td.dataset.label = col.label;
+      td.className = 'regions-td';
       td.style.textAlign = 'center';
       td.style.verticalAlign = 'middle';
       
@@ -7350,16 +7710,22 @@ function buildIncidentTimesReport() {
         const datePart = parts[0];
         const timePart = parts[1];
         
-        const container = document.createElement('div');
-        container.style.display = 'flex';
-        container.style.flexDirection = 'column';
-        container.style.alignItems = 'center';
-        container.style.gap = '4px';
+        const cellContainer = document.createElement('div');
+        cellContainer.className = 'pill-cell readonly-pill';
+        cellContainer.style.display = 'flex';
+        cellContainer.style.flexDirection = 'column';
+        cellContainer.style.alignItems = 'center';
+        cellContainer.style.justifyContent = 'center';
+        cellContainer.style.gap = '2px';
+        cellContainer.style.minHeight = '46px';
+        cellContainer.style.padding = '4px 8px';
         
         const datePill = document.createElement('button');
         datePill.className = 'mini-pill';
-        datePill.style.fontSize = '0.7rem';
-        datePill.style.padding = '2px 8px';
+        datePill.style.fontSize = '0.65rem';
+        datePill.style.padding = '0px 6px';
+        datePill.style.border = 'none';
+        datePill.style.background = 'rgba(255,255,255,0.05)';
         datePill.textContent = datePart;
         datePill.onclick = () => editIncidentTimestamp(logId);
         
@@ -7371,9 +7737,26 @@ function buildIncidentTimesReport() {
         timePill.textContent = timePart;
         timePill.onclick = () => editIncidentTimestamp(logId);
         
-        container.appendChild(datePill);
-        container.appendChild(timePill);
-        td.appendChild(container);
+        cellContainer.appendChild(datePill);
+        cellContainer.appendChild(timePill);
+        td.appendChild(cellContainer);
+      } else {
+        const cellContainer = document.createElement('div');
+        cellContainer.className = 'pill-cell readonly-pill';
+        cellContainer.style.display = 'flex';
+        cellContainer.style.alignItems = 'center';
+        cellContainer.style.justifyContent = 'center';
+        cellContainer.style.minHeight = '46px';
+
+        const plusBtn = document.createElement('button');
+        plusBtn.className = 'mini-pill';
+        plusBtn.style.fontSize = '0.75rem';
+        plusBtn.style.padding = '2px 10px';
+        plusBtn.textContent = '+';
+        plusBtn.style.opacity = '0.6';
+        plusBtn.onclick = () => addIncidentTimestamp(row.name, col.key);
+        cellContainer.appendChild(plusBtn);
+        td.appendChild(cellContainer);
       }
       
       tr.appendChild(td);
@@ -7381,6 +7764,333 @@ function buildIncidentTimesReport() {
     
     tableBody.appendChild(tr);
   });
+}
+
+function editIncidentTimestamp(logId) {
+  if (!logId) return;
+  const bundle = loadBundle();
+  const logIndex = bundle.activityLog.findIndex(l => l.id === logId);
+  if (logIndex === -1) {
+    alert("Log entry not found.");
+    return;
+  }
+  const log = bundle.activityLog[logIndex];
+
+  const popup = createPopup('Edit Timestamp');
+  const content = popup.querySelector('.popup-content');
+  const btnContainer = popup.querySelector('.popup-buttons');
+
+  const container = document.createElement('div');
+  container.className = 'popup-input-container';
+  container.style.flexDirection = 'column';
+  container.style.gap = '15px';
+  container.style.marginBottom = '20px';
+
+  const dateGroup = document.createElement('div');
+  dateGroup.style.width = '100%';
+  const dateLabel = document.createElement('label');
+  dateLabel.textContent = 'Date (MM-DD-YYYY)';
+  dateLabel.style.display = 'block';
+  dateLabel.style.marginBottom = '5px';
+  const dateInput = document.createElement('input');
+  dateInput.type = 'text';
+  dateInput.className = 'pill-input';
+  dateInput.style.width = '100%';
+  dateInput.value = log.date;
+  dateInput.oninput = () => {
+    let cursor = dateInput.selectionStart;
+    let oldVal = dateInput.value;
+    let val = dateInput.value.replace(/\D/g, '');
+    let newVal = '';
+    if (val.length > 0) newVal += val.substring(0, 2);
+    if (val.length > 2) newVal += '-' + val.substring(2, 4);
+    if (val.length > 4) newVal += '-' + val.substring(4, 8);
+    dateInput.value = newVal;
+    if (cursor === oldVal.length) dateInput.setSelectionRange(newVal.length, newVal.length);
+  };
+  dateGroup.appendChild(dateLabel);
+  dateGroup.appendChild(dateInput);
+
+  const timeGroup = document.createElement('div');
+  timeGroup.style.width = '100%';
+  const timeLabel = document.createElement('label');
+  timeLabel.textContent = 'Time (HH:MM)';
+  timeLabel.style.display = 'block';
+  timeLabel.style.marginBottom = '5px';
+  const timeInput = document.createElement('input');
+  timeInput.type = 'text';
+  timeInput.className = 'pill-input';
+  timeInput.style.width = '100%';
+  timeInput.value = log.time;
+  timeInput.oninput = () => {
+    let cursor = timeInput.selectionStart;
+    let oldVal = timeInput.value;
+    let val = timeInput.value.replace(/\D/g, '');
+    let newVal = '';
+    if (val.length > 0) newVal += val.substring(0, 2);
+    if (val.length > 2) newVal += ':' + val.substring(2, 4);
+    timeInput.value = newVal;
+    if (cursor === oldVal.length) timeInput.setSelectionRange(newVal.length, newVal.length);
+  };
+  timeGroup.appendChild(timeLabel);
+  timeGroup.appendChild(timeInput);
+
+  container.appendChild(dateGroup);
+  container.appendChild(timeGroup);
+  content.insertBefore(container, btnContainer);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'popup-btn primary';
+  saveBtn.textContent = 'Save';
+  saveBtn.onclick = async () => {
+    await withSaveButtonFeedback(saveBtn, async () => {
+      const newDate = dateInput.value.trim();
+      const newTime = timeInput.value.trim();
+
+      if (!/^\d{2}-\d{2}-\d{4}$/.test(newDate)) {
+        alert("Invalid date format. Please use MM-DD-YYYY.");
+        return;
+      }
+      if (!/^\d{2}:\d{2}$/.test(newTime)) {
+        alert("Invalid time format. Please use HH:MM.");
+        return;
+      }
+
+      // Update log
+      log.date = newDate;
+      log.time = newTime;
+
+      // Recalculate timestamp for sorting
+      const dateParts = newDate.split('-');
+      const tsDateStr = `${dateParts[2]}-${dateParts[0]}-${dateParts[1]}T${newTime}:00`;
+      log.timestamp = new Date(tsDateStr).getTime();
+
+      // Load fresh bundle to ensure we don't overwrite other changes
+      const currentBundle = loadBundle();
+      const idx = currentBundle.activityLog.findIndex(l => l.id === logId);
+      if (idx !== -1) {
+        currentBundle.activityLog[idx] = log;
+        // Re-sort the activity log by timestamp (descending)
+        currentBundle.activityLog.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        saveBundle(currentBundle);
+      }
+
+      closePopup(popup);
+      buildIncidentTimesReport();
+    });
+  };
+  btnContainer.appendChild(saveBtn);
+
+  const clearBtn = document.createElement('button');
+  clearBtn.className = 'popup-btn';
+  clearBtn.style.color = 'var(--error)';
+  clearBtn.textContent = 'Clear';
+  clearBtn.onclick = () => {
+    if (confirm("Are you sure you want to clear this timestamp? This will remove the status change entry from the activity log.")) {
+      const currentBundle = loadBundle();
+      const idx = currentBundle.activityLog.findIndex(l => l.id === logId);
+      if (idx !== -1) {
+        currentBundle.activityLog.splice(idx, 1);
+        saveBundle(currentBundle);
+      }
+      closePopup(popup);
+      buildIncidentTimesReport();
+    }
+  };
+  btnContainer.appendChild(clearBtn);
+}
+
+function addIncidentRow() {
+  const bundle = loadBundle();
+  const roster = bundle.pages.page3 || [];
+  const memberNames = roster.map(m => m[0]).filter(Boolean).sort();
+
+  if (memberNames.length === 0) {
+    alert("No members found in the roster (Page 3).");
+    return;
+  }
+
+  const popup = createPopup('Add Member to Report');
+  const content = popup.querySelector('.popup-content');
+  const btnContainer = popup.querySelector('.popup-buttons');
+
+  const container = document.createElement('div');
+  container.className = 'popup-input-container';
+  container.style.flexDirection = 'column';
+  container.style.gap = '15px';
+  container.style.marginBottom = '20px';
+
+  const label = document.createElement('label');
+  label.textContent = 'Select Member';
+  label.style.display = 'block';
+  label.style.marginBottom = '5px';
+
+  const select = document.createElement('select');
+  select.className = 'pill-input';
+  select.style.width = '100%';
+  memberNames.forEach(name => {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    select.appendChild(opt);
+  });
+
+  container.appendChild(label);
+  container.appendChild(select);
+  content.insertBefore(container, btnContainer);
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'popup-btn primary';
+  addBtn.textContent = 'Add Row';
+  addBtn.onclick = async () => {
+    const memberName = select.value;
+    if (!memberName) return;
+
+    // To create a row, we need a status change log. 
+    // We'll add an "Enroute" entry with current time to start a session.
+    let memberTeam = 'Unassigned';
+    for (const row of roster) {
+      if (row[0] === memberName) {
+        memberTeam = row[1] || 'Unassigned';
+        break;
+      }
+    }
+
+    const now = new Date();
+    const dateStr = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}-${now.getFullYear()}`;
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const ts = now.getTime();
+
+    addActivityLogEntry(memberTeam, `${memberName} status changed to Enroute at ${timeStr}`, null, null, dateStr, timeStr, ts);
+    
+    closePopup(popup);
+    buildIncidentTimesReport();
+  };
+  btnContainer.appendChild(addBtn);
+}
+
+function addIncidentTimestamp(memberName, columnKey) {
+  let status = '';
+  if (columnKey === 'enroute') status = 'Enroute';
+  else if (columnKey === 'onScene') status = 'On-Scene';
+  else if (columnKey === 'leaveScene') status = 'Off Duty';
+  else if (columnKey === 'homeHotel') status = 'Arrived Home';
+  
+  if (!status) return;
+
+  const now = new Date();
+  const defaultDate = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}-${now.getFullYear()}`;
+  const defaultTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+  const popup = createPopup(`Add ${status} Time`);
+  const content = popup.querySelector('.popup-content');
+  const btnContainer = popup.querySelector('.popup-buttons');
+
+  const container = document.createElement('div');
+  container.className = 'popup-input-container';
+  container.style.flexDirection = 'column';
+  container.style.gap = '15px';
+  container.style.marginBottom = '20px';
+
+  const dateGroup = document.createElement('div');
+  dateGroup.style.width = '100%';
+  const dateLabel = document.createElement('label');
+  dateLabel.textContent = 'Date (MM-DD-YYYY)';
+  dateLabel.style.display = 'block';
+  dateLabel.style.marginBottom = '5px';
+  const dateInput = document.createElement('input');
+  dateInput.type = 'text';
+  dateInput.className = 'pill-input';
+  dateInput.style.width = '100%';
+  dateInput.value = defaultDate;
+  dateInput.oninput = () => {
+    let cursor = dateInput.selectionStart;
+    let oldVal = dateInput.value;
+    let val = dateInput.value.replace(/\D/g, '');
+    let newVal = '';
+    if (val.length > 0) newVal += val.substring(0, 2);
+    if (val.length > 2) newVal += '-' + val.substring(2, 4);
+    if (val.length > 4) newVal += '-' + val.substring(4, 8);
+    dateInput.value = newVal;
+    if (cursor === oldVal.length) dateInput.setSelectionRange(newVal.length, newVal.length);
+  };
+  dateGroup.appendChild(dateLabel);
+  dateGroup.appendChild(dateInput);
+
+  const timeGroup = document.createElement('div');
+  timeGroup.style.width = '100%';
+  const timeLabel = document.createElement('label');
+  timeLabel.textContent = 'Time (HH:MM)';
+  timeLabel.style.display = 'block';
+  timeLabel.style.marginBottom = '5px';
+  const timeInput = document.createElement('input');
+  timeInput.type = 'text';
+  timeInput.className = 'pill-input';
+  timeInput.style.width = '100%';
+  timeInput.value = defaultTime;
+  timeInput.oninput = () => {
+    let cursor = timeInput.selectionStart;
+    let oldVal = timeInput.value;
+    let val = timeInput.value.replace(/\D/g, '');
+    let newVal = '';
+    if (val.length > 0) newVal += val.substring(0, 2);
+    if (val.length > 2) newVal += ':' + val.substring(2, 4);
+    timeInput.value = newVal;
+    if (cursor === oldVal.length) timeInput.setSelectionRange(newVal.length, newVal.length);
+  };
+  timeGroup.appendChild(timeLabel);
+  timeGroup.appendChild(timeInput);
+
+  container.appendChild(dateGroup);
+  container.appendChild(timeGroup);
+  content.insertBefore(container, btnContainer);
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'popup-btn primary';
+  saveBtn.textContent = 'Save';
+  saveBtn.onclick = async () => {
+    await withSaveButtonFeedback(saveBtn, async () => {
+      const newDate = dateInput.value.trim();
+      const newTime = timeInput.value.trim();
+
+      if (!/^\d{2}-\d{2}-\d{4}$/.test(newDate)) {
+        alert("Invalid date format. Please use MM-DD-YYYY.");
+        return;
+      }
+      if (!/^\d{2}:\d{2}$/.test(newTime)) {
+        alert("Invalid time format. Please use HH:MM.");
+        return;
+      }
+
+      // Add log entry
+      let action = `${memberName} status changed to ${status} at ${newTime}`;
+      
+      // Determine team for the member if possible, otherwise use 'System'
+      const bundle = loadBundle();
+      let memberTeam = 'System';
+      for (const team in bundle.teamMembers) {
+        if (bundle.teamMembers[team].some(m => m[0] === memberName)) {
+          memberTeam = team;
+          break;
+        }
+      }
+
+      const dateParts = newDate.split('-');
+      const tsDateStr = `${dateParts[2]}-${dateParts[0]}-${dateParts[1]}T${newTime}:00`;
+      const ts = new Date(tsDateStr).getTime();
+
+      if (status === 'Enroute') action = `${memberName} status changed to Enroute at ${newTime}`;
+      else if (status === 'On-Scene') action = `${memberName} status changed to On-Scene at ${newTime}`;
+      else if (status === 'Off Duty') action = `${memberName} status changed from On-Scene to Off Duty at ${newTime}`;
+      else if (status === 'Arrived Home') action = `${memberName} status changed to Arrived Home at ${newTime}`;
+
+      addActivityLogEntry(memberTeam, action, null, null, newDate, newTime, ts);
+
+      closePopup(popup);
+      buildIncidentTimesReport();
+    });
+  };
+  btnContainer.appendChild(saveBtn);
 }
 
 function buildTaskAssignmentForm() {
@@ -8356,10 +9066,11 @@ function printSearchFile() {
     const bundle = loadBundle();
     const fileName = (bundle.fileName || "Search_File").replace('.json', '');
     
+    const startTs = new Date(selectedChartStart).getTime();
+    const endTs = new Date(selectedChartEnd).getTime();
+
     // Calculate metrics for charts using current chart settings
-    const targetDateStr = selectedChartDate;
-    const durationHours = selectedChartDuration;
-    const metrics = calculateHourlyMetrics(targetDateStr, durationHours);
+    const metrics = calculateHourlyMetrics(startTs, endTs);
     const psrcData = metrics.map(m => m.totalPSRc);
     const posData = metrics.map(m => m.totalPOS);
 
@@ -8439,11 +9150,11 @@ function printSearchFile() {
             
             <div class="charts-container">
                 <div class="chart-item">
-                    <div class="chart-label">PSRc Sum Chart (${targetDateStr})</div>
+                    <div class="chart-label">PSRc Sum Chart</div>
                     <div id="psrc-chart" class="chart-svg-wrap"></div>
                 </div>
                 <div class="chart-item">
-                    <div class="chart-label">POS Sum Chart (${targetDateStr})</div>
+                    <div class="chart-label">POS Sum Chart</div>
                     <div id="pos-chart" class="chart-svg-wrap"></div>
                 </div>
             </div>
@@ -8476,7 +9187,8 @@ function printSearchFile() {
         const bundle = ${JSON.stringify(bundle)};
         const psrcData = ${JSON.stringify(psrcData)};
         const posData = ${JSON.stringify(posData)};
-        const durationHours = ${durationHours};
+        const startTimeTs = ${startTs};
+        const endTimeTs = ${endTs};
 
         // Render Search Log
         const slBody = document.getElementById('sl-body');
@@ -8503,9 +9215,10 @@ function printSearchFile() {
         });
 
         // Charts
-        function formatHourOffset(offset) {
-            const hrs = Math.floor(offset);
-            return hrs.toString().padStart(2, '0');
+        function formatHourOffset(ts) {
+            const date = new Date(ts);
+            if (isNaN(date.getTime())) return '00:00';
+            return (date.getMonth() + 1) + '/' + date.getDate() + ' ' + date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
         }
 
         function drawLineChart(containerId, data, color, isPOS) {
@@ -8543,16 +9256,18 @@ function printSearchFile() {
             }
 
             // X-axis ticks
-            const numXTicks = 8;
+            const numXTicks = 10;
+            const durationMs = endTimeTs - startTimeTs;
             for (let i = 0; i <= numXTicks; i++) {
+                const tickTs = startTimeTs + (i / numXTicks) * durationMs;
                 const x = padding.left + (i / numXTicks) * chartWidth;
                 const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
                 text.setAttribute("x", x);
                 text.setAttribute("y", height - 10);
                 text.setAttribute("text-anchor", "middle");
-                text.setAttribute("font-size", "8");
+                text.setAttribute("font-size", "7");
                 text.setAttribute("fill", "#666");
-                text.textContent = formatHourOffset((durationHours / numXTicks) * i);
+                text.textContent = formatHourOffset(tickTs);
                 svg.appendChild(text);
             }
 

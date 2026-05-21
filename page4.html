@@ -45,13 +45,14 @@
           <div class="hero-col-right">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <h2 style="margin:0; font-size: 1.05rem;">Operational Charts</h2>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    <button id="chart-date-btn" class="mini-pill" style="font-size: 0.8rem; padding: 4px 10px;"></button>
-                    <div style="display: flex; gap: 4px;">
-                        <button class="chart-duration-btn mini-pill" data-duration="12">12 hr</button>
-                        <button class="chart-duration-btn mini-pill active" data-duration="24">24 hr</button>
-                        <button class="chart-duration-btn mini-pill" data-duration="36">36 hr</button>
-                        <button class="chart-duration-btn mini-pill" data-duration="48">48 hr</button>
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <label style="font-size: 0.75rem; color: var(--muted);">Start:</label>
+                        <input type="datetime-local" id="chart-start-datetime" class="mini-pill" style="padding: 2px 8px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <label style="font-size: 0.75rem; color: var(--muted);">End:</label>
+                        <input type="datetime-local" id="chart-end-datetime" class="mini-pill" style="padding: 2px 8px;">
                     </div>
                 </div>
             </div>
