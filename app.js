@@ -1437,30 +1437,13 @@ function loadBundle() {
 function saveBundle(bundle) {
   bundle.lastModified = new Date().toISOString();
   const sanitized = sanitizeBundle(bundle);
-  const oldBundle = loadBundle();
-  const oldName = oldBundle.fileName;
-  const newName = sanitized.fileName;
 
   localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
   pushBundleToServer(sanitized);
   
-  // Also update in the list if it's there
-  const files = getSavedFiles();
-  if (oldName && files[oldName] && oldName !== newName) {
-      // Rename case
-      files[newName] = files[oldName];
-      files[newName].bundle = sanitized;
-      files[newName].lastModified = new Date().toISOString();
-      delete files[oldName];
-      localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
-      pushFileListToServer(files);
-  } else if (files[newName]) {
-      // Update case
-      files[newName].bundle = sanitized;
-      files[newName].lastModified = new Date().toISOString();
-      localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
-      pushFileListToServer(files);
-  }
+  // Ensure the current file is always in the saved files list
+  saveFileToList(sanitized.fileName, sanitized);
+  
   updateFileNameDisplay();
 }
 
@@ -3087,7 +3070,7 @@ function buildPersonnelAllMembersTable() {
   });
   tableHead.appendChild(headerRow);
 
-  const teamOptions = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Command', 'Off Duty', 'Base Support'];
+  const teamOptions = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett', 'Kilo', 'Lima', 'Mike', 'November', 'Oscar', 'Papa', 'Quebec', 'Romeo', 'Sierra', 'Tango', 'Uniform', 'Victor', 'Whiskey', 'X-ray', 'Yankee', 'Zulu', 'Command', 'Off Duty', 'Base Support'];
   
   let filteredData = [...data];
   filteredData.sort((a, b) => {
@@ -3961,7 +3944,7 @@ function buildPersonnelActivityTable() {
 }
 
 function showReassignPopup(member, currentTeam) {
-  const teamOptions = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Command', 'Off Duty', 'Base Support'];
+  const teamOptions = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett', 'Kilo', 'Lima', 'Mike', 'November', 'Oscar', 'Papa', 'Quebec', 'Romeo', 'Sierra', 'Tango', 'Uniform', 'Victor', 'Whiskey', 'X-ray', 'Yankee', 'Zulu', 'Command', 'Off Duty', 'Base Support'];
   const popup = createPopup('Reassign ' + member[0]);
   const btnContainer = popup.querySelector('.popup-buttons');
   btnContainer.style.display = 'flex';
@@ -5555,7 +5538,7 @@ function buildTeamReports() {
 
   const bundle = loadBundle();
   const logs = bundle.activityLog || [];
-  const teams = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Command', 'Off Duty', 'Base Support'];
+  const teams = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Foxtrot', 'Golf', 'Hotel', 'India', 'Juliett', 'Kilo', 'Lima', 'Mike', 'November', 'Oscar', 'Papa', 'Quebec', 'Romeo', 'Sierra', 'Tango', 'Uniform', 'Victor', 'Whiskey', 'X-ray', 'Yankee', 'Zulu', 'Command', 'Off Duty', 'Base Support'];
 
   filterContainer.innerHTML = '';
   tableBody.innerHTML = '';
@@ -6968,7 +6951,6 @@ function buildHomePage() {
           }
           logCreation('Imported Search File', importedBundle.fileName, importedBundle);
           saveBundle(importedBundle);
-          saveFileToList(importedBundle.fileName, importedBundle);
           window.location.reload();
         } catch (err) {
           alert('Error importing file: ' + err.message);
@@ -6987,14 +6969,13 @@ function buildHomePage() {
     const files = getSavedFiles();
     const oldName = currentBundle.fileName;
     
+    if (oldName !== nextName && files[oldName]) {
+        deleteFileFromList(oldName);
+    }
+    
     currentBundle.fileName = nextName;
     saveBundle(currentBundle);
 
-    // If not already in the list, add it
-    if (!files[nextName] && !files[oldName]) {
-        saveFileToList(nextName, currentBundle);
-    }
-    
     fileNameInput.value = nextName;
     homeStatus.textContent = `File identifier updated to ${nextName} and saved to list.`;
     updateFileNameDisplay();
@@ -10297,7 +10278,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   setInterval(() => {
     const bundle = loadBundle();
     if (bundle.fileName) {
-      saveFileToList(bundle.fileName, bundle);
       saveBundle(bundle);
       const statusEl = document.getElementById('save-status') || document.getElementById('home-status');
       if (statusEl) {
