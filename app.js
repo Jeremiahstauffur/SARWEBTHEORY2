@@ -1434,15 +1434,17 @@ function loadBundle() {
   }
 }
 
-function saveBundle(bundle) {
+function saveBundle(bundle, skipSync = false) {
   bundle.lastModified = new Date().toISOString();
   const sanitized = sanitizeBundle(bundle);
 
   localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
-  pushBundleToServer(sanitized);
   
-  // Ensure the current file is always in the saved files list
-  saveFileToList(sanitized.fileName, sanitized);
+  if (!skipSync) {
+      pushBundleToServer(sanitized);
+      // Ensure the current file is always in the saved files list
+      saveFileToList(sanitized.fileName, sanitized);
+  }
   
   updateFileNameDisplay();
 }
@@ -6833,8 +6835,18 @@ function buildHomePage() {
         confirmBtn.className = 'popup-btn primary';
         confirmBtn.textContent = 'Confirm';
         confirmBtn.onclick = () => {
+            let nextName = prompt('Enter a name for the new search:', 'new-search.json');
+            if (nextName === null) {
+                closePopup(popup);
+                return;
+            }
+            nextName = nextName.trim();
+            if (!nextName) nextName = 'new-search.json';
+            if (!nextName.toLowerCase().endsWith('.json')) nextName += '.json';
+
             const currentBundle = loadBundle();
             const newBundle = defaultBundle();
+            newBundle.fileName = nextName;
             
             // Preserve personnel but set to off-scene
             const oldPersonnel = currentBundle.pages.page3 || [];
@@ -6968,6 +6980,12 @@ function buildHomePage() {
     // Check if we are renaming an existing file list entry
     const files = getSavedFiles();
     const oldName = currentBundle.fileName;
+    
+    if (oldName !== nextName && files[nextName]) {
+        if (!confirm(`A file named "${nextName}" already exists. Overwrite it?`)) {
+            return;
+        }
+    }
     
     if (oldName !== nextName && files[oldName]) {
         deleteFileFromList(oldName);
@@ -12667,43 +12685,7 @@ async function syncWithServer() {
         // 1. Check active user status
         // (Restriction removed)
         
-        // 2. Sync active bundle
-        const endpoint = isNewDevice ? 'latest' : 'bundle';
-        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`);
-        if (resp.ok) {
-            const serverBundle = await resp.json();
-            if (serverBundle) {
-                const localBundle = loadBundle();
-                const sMod = new Date(serverBundle.lastModified || 0);
-                const lMod = new Date(localBundle.lastModified || 0);
-
-                if (sMod > lMod) {
-                    const merged = mergeBundles(localBundle, serverBundle);
-                    if (areBundlesEqual(merged, serverBundle)) {
-                        localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
-                    } else {
-                        // Local has some unique data, push the merged result
-                        saveBundle(merged);
-                    }
-                    
-                    const files = getSavedFiles();
-                    if (serverBundle.fileName) {
-                        files[serverBundle.fileName] = {
-                            bundle: loadBundle(), // Use potentially merged bundle
-                            lastModified: loadBundle().lastModified
-                        };
-                        localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
-                    }
-                    refreshSyncUI();
-                } else if (lMod > sMod && !isNewDevice) {
-                    pushBundleToServer(localBundle);
-                }
-            }
-        } else if (resp.status === 404 && !isNewDevice) {
-            pushBundleToServer(loadBundle());
-        }
-
-        // 3. Sync entire file list
+        // 1. Sync entire file list
         const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`);
         if (listResp.ok) {
             const serverFiles = await listResp.json();
@@ -12739,6 +12721,42 @@ async function syncWithServer() {
             if (Object.keys(localFiles).length > 0) {
                 pushFileListToServer(localFiles);
             }
+        }
+
+        // 2. Sync active bundle
+        const endpoint = isNewDevice ? 'latest' : 'bundle';
+        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`);
+        if (resp.ok) {
+            const serverBundle = await resp.json();
+            if (serverBundle) {
+                const localBundle = loadBundle();
+                const sMod = new Date(serverBundle.lastModified || 0);
+                const lMod = new Date(localBundle.lastModified || 0);
+
+                if (sMod > lMod) {
+                    const merged = mergeBundles(localBundle, serverBundle);
+                    if (areBundlesEqual(merged, serverBundle)) {
+                        localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                    } else {
+                        // Local has some unique data, push the merged result
+                        saveBundle(merged, true);
+                    }
+                    
+                    const files = getSavedFiles();
+                    if (serverBundle.fileName) {
+                        files[serverBundle.fileName] = {
+                            bundle: loadBundle(), // Use potentially merged bundle
+                            lastModified: loadBundle().lastModified
+                        };
+                        localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+                    }
+                    refreshSyncUI();
+                } else if (lMod > sMod && !isNewDevice) {
+                    pushBundleToServer(localBundle);
+                }
+            }
+        } else if (resp.status === 404 && !isNewDevice) {
+            pushBundleToServer(loadBundle());
         }
 
         // 4. Discover any files on server not in the list
@@ -12789,11 +12807,24 @@ async function pushBundleToServer(bundle) {
     };
     
     try {
-        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/bundle`, {
+        const baseUrl = serverUrl.replace(/\/$/, '');
+        // 1. Push to the general active bundle endpoint
+        const resp = await fetch(`${baseUrl}/api/v1/${bucket}/bundle`, {
             method: 'PUT',
             headers: headers,
             body: JSON.stringify(bundle)
         });
+
+        // 2. Also push to a file-specific endpoint to aid discovery and prevent truncation
+        if (bundle.fileName) {
+            const fileKey = bundle.fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+            await fetch(`${baseUrl}/api/v1/${bucket}/${fileKey}`, {
+                method: 'PUT',
+                headers: headers,
+                body: JSON.stringify(bundle)
+            });
+        }
+
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
             if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
