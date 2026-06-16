@@ -416,6 +416,10 @@ function showBucketPromptPopup() {
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
 
+    // Override the default flex-direction: column for popup-buttons to make them side-by-side if we want,
+    // but the issue said "very short and wide", and standard popup-buttons are column.
+    // Given they are "popup-btn", they will have good padding now.
+    
     const inputs = document.createElement('div');
     inputs.className = 'popup-input-container';
     inputs.style.flexDirection = 'column';
@@ -433,12 +437,16 @@ function showBucketPromptPopup() {
     bucketInput.className = 'pill-input';
     bucketInput.style.textAlign = 'center';
     bucketInput.style.width = '100%';
+    bucketInput.style.padding = '16px';
+    bucketInput.style.fontSize = '1.1rem';
+    bucketInput.style.marginTop = '10px';
     inputs.appendChild(bucketInput);
 
     content.insertBefore(inputs, btnContainer);
 
     const setBtn = document.createElement('button');
-    setBtn.className = 'pill-btn';
+    setBtn.className = 'popup-btn primary';
+    setBtn.style.padding = '16px'; // Extra padding for emphasis
     setBtn.textContent = 'Set Bucket ID & Reload';
     setBtn.onclick = () => {
         const val = bucketInput.value.trim();
@@ -451,6 +459,15 @@ function showBucketPromptPopup() {
         }
     };
     btnContainer.appendChild(setBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'popup-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => {
+        onCancel();
+        closePopup(popup);
+    };
+    btnContainer.appendChild(cancelBtn);
 
     bucketInput.onkeydown = (e) => {
         if (e.key === 'Enter') {
@@ -7583,6 +7600,19 @@ function printIncidentTimesReport() {
     printWindow.document.close();
 }
 
+function findTaskTagForMember(memberName, logs) {
+  const sortedLogs = [...logs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  const log = sortedLogs.find(l => 
+    l.tag && l.tag.startsWith('#') && 
+    l.members && l.members.toLowerCase().includes(memberName.toLowerCase())
+  );
+  if (log) {
+    const match = log.tag.match(/^#\d+/);
+    return match ? match[0] : null;
+  }
+  return null;
+}
+
 function buildIncidentTimesReport() {
   const container = document.getElementById('interactive-form-container');
   if (!container) return;
@@ -7745,7 +7775,24 @@ function buildIncidentTimesReport() {
     textWrap.innerHTML = `<strong>${row.name}</strong>`;
     
     if (row.onSceneTS && row.leaveSceneTS) {
-      const diffMs = row.leaveSceneTS - row.onSceneTS;
+      // Check for overrides that might change duration calculation
+      let startStr = row.onScene;
+      let endStr = row.leaveScene;
+      
+      const taskTag = findTaskTagForMember(row.name, logs);
+      if (taskTag) {
+          const taskNum = taskTag.substring(1);
+          const taskForm = bundle.forms?.[taskNum];
+          if (taskForm && taskForm.overrides) {
+              if (taskForm.overrides.beginSearch) startStr = `${row.onScene.split(' ')[0]} ${taskForm.overrides.beginSearch}`;
+              if (taskForm.overrides.completeSearch) endStr = `${row.leaveScene.split(' ')[0]} ${taskForm.overrides.completeSearch}`;
+          }
+      }
+
+      const startTS = new Date(`${startStr.split(' ')[0].split('-')[2]}-${startStr.split(' ')[0].split('-')[0]}-${startStr.split(' ')[0].split('-')[1]}T${startStr.split(' ')[1]}:00`).getTime();
+      const endTS = new Date(`${endStr.split(' ')[0].split('-')[2]}-${endStr.split(' ')[0].split('-')[0]}-${endStr.split(' ')[0].split('-')[1]}T${endStr.split(' ')[1]}:00`).getTime();
+
+      const diffMs = endTS - startTS;
       const diffHrs = Math.floor(diffMs / 3600000);
       const diffMins = Math.round((diffMs % 3600000) / 60000);
       const durationStr = `${diffHrs}h ${diffMins}m`;
@@ -7789,11 +7836,38 @@ function buildIncidentTimesReport() {
       td.style.textAlign = 'center';
       td.style.verticalAlign = 'middle';
       
-      const val = row[col.key];
-      const logId = row[col.logIdKey];
-      
+      const log = bundle.activityLog[logId ? bundle.activityLog.findIndex(l => l.id === logId) : -1];
+      const dateTimeStr = log ? `${log.date} ${log.time}` : `${row.date || ''} ${row.time || ''}`.trim();
+
+      // Check for manual overrides from task form
+      let displayTime = dateTimeStr;
+      if (log && log.tag && log.tag.startsWith('#')) {
+          const taskNumMatch = log.tag.match(/^#(\d+)/);
+          if (taskNumMatch) {
+              const taskNum = taskNumMatch[1];
+              const taskForm = bundle.forms?.[taskNum];
+              if (taskForm && taskForm.overrides) {
+                  let overrideVal = null;
+                  const actionLower = log.action.toLowerCase();
+                  if (actionLower.includes('leaving base') || actionLower.includes('leave base')) {
+                      overrideVal = taskForm.overrides.leaveBase;
+                  } else if (actionLower.includes('beginning search') || actionLower.includes('begin search') || actionLower.includes('beginning assignment') || actionLower.includes('begin assignment') || actionLower.includes('started search')) {
+                      overrideVal = taskForm.overrides.beginSearch;
+                  } else if (actionLower.includes('finished search') || actionLower.includes('finish search') || actionLower.includes('finished assignment') || actionLower.includes('finish assignment')) {
+                      overrideVal = taskForm.overrides.completeSearch;
+                  } else if (actionLower.includes('arrived at base')) {
+                      overrideVal = taskForm.overrides.returnBase;
+                  }
+                  
+                  if (overrideVal) {
+                      displayTime = `${log.date} ${overrideVal}`;
+                  }
+              }
+          }
+      }
+
       if (val) {
-        const parts = val.split(' ');
+        const parts = displayTime.split(' ');
         const datePart = parts[0];
         const timePart = parts[1];
         
@@ -8339,6 +8413,8 @@ function renderTaskForm(container, taskNum, formData) {
   if (!formData.lostPersonPhysical && profile.lostPersonPhysical) { formData.lostPersonPhysical = profile.lostPersonPhysical; changed = true; }
 
   // 2. Auto-fill Timestamps from logs
+  if (!formData.overrides) formData.overrides = {};
+
   const findLog = (actionPart) => {
     return bundle.activityLog.find(l => 
       (l.tag === taskTag || l.tag.startsWith(taskTag + ' - ')) && 
@@ -8349,27 +8425,45 @@ function renderTaskForm(container, taskNum, formData) {
   const lLeave = findLog('leaving base') || findLog('leave base');
   if (lLeave) {
     const lTime = lLeave.time;
-    if (formData.leaveBase !== lTime) {
-      formData.leaveBase = lTime; 
+    const val = formData.overrides.leaveBase !== undefined ? formData.overrides.leaveBase : lTime;
+    if (formData.leaveBase !== val) {
+      formData.leaveBase = val; 
       changed = true; 
+    }
+  } else if (formData.overrides.leaveBase !== undefined) {
+    if (formData.leaveBase !== formData.overrides.leaveBase) {
+      formData.leaveBase = formData.overrides.leaveBase;
+      changed = true;
     }
   }
 
   const lBegin = findLog('beginning search') || findLog('begin search') || findLog('beginning assignment') || findLog('begin assignment') || findLog('started search'); 
   if (lBegin) {
     const lTime = lBegin.time;
-    if (formData.beginSearch !== lTime) {
-      formData.beginSearch = lTime; 
+    const val = formData.overrides.beginSearch !== undefined ? formData.overrides.beginSearch : lTime;
+    if (formData.beginSearch !== val) {
+      formData.beginSearch = val; 
       changed = true; 
+    }
+  } else if (formData.overrides.beginSearch !== undefined) {
+    if (formData.beginSearch !== formData.overrides.beginSearch) {
+      formData.beginSearch = formData.overrides.beginSearch;
+      changed = true;
     }
   }
 
   const lComplete = findLog('finished search') || findLog('finish search') || findLog('finished assignment') || findLog('finish assignment'); 
   if (lComplete) {
     const lTime = lComplete.time;
-    if (formData.completeSearch !== lTime) {
-      formData.completeSearch = lTime; 
+    const val = formData.overrides.completeSearch !== undefined ? formData.overrides.completeSearch : lTime;
+    if (formData.completeSearch !== val) {
+      formData.completeSearch = val; 
       changed = true; 
+    }
+  } else if (formData.overrides.completeSearch !== undefined) {
+    if (formData.completeSearch !== formData.overrides.completeSearch) {
+      formData.completeSearch = formData.overrides.completeSearch;
+      changed = true;
     }
   }
 
@@ -8397,10 +8491,16 @@ function renderTaskForm(container, taskNum, formData) {
   }
   if (arriveLog) {
      const lTime = arriveLog.time;
-     if (formData.returnBase !== lTime) {
-       formData.returnBase = lTime;
+     const val = formData.overrides.returnBase !== undefined ? formData.overrides.returnBase : lTime;
+     if (formData.returnBase !== val) {
+       formData.returnBase = val;
        changed = true;
      }
+  } else if (formData.overrides.returnBase !== undefined) {
+    if (formData.returnBase !== formData.overrides.returnBase) {
+      formData.returnBase = formData.overrides.returnBase;
+      changed = true;
+    }
   }
 
   // 3. 20 Minute Status (Par Checks)
@@ -8427,8 +8527,34 @@ function renderTaskForm(container, taskNum, formData) {
     const grp = document.createElement('div');
     grp.className = 'form-group';
     grp.dataset.key = key;
+    
+    const labelContainer = document.createElement('div');
+    labelContainer.style.display = 'flex';
+    labelContainer.style.justifyContent = 'space-between';
+    labelContainer.style.alignItems = 'center';
+    labelContainer.style.width = '100%';
+
     const lbl = document.createElement('label');
     lbl.textContent = label;
+    labelContainer.appendChild(lbl);
+
+    const isOverridden = ['leaveBase', 'beginSearch', 'completeSearch', 'returnBase'].includes(key) && formData.overrides?.[key] !== undefined;
+    if (isOverridden) {
+        const resetBtn = document.createElement('button');
+        resetBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>';
+        resetBtn.className = 'clear-btn';
+        resetBtn.style.padding = '2px';
+        resetBtn.style.marginLeft = '8px';
+        resetBtn.title = 'Reset to activity log value';
+        resetBtn.onclick = (e) => {
+            e.preventDefault();
+            delete formData.overrides[key];
+            save();
+            buildTaskAssignmentForm();
+        };
+        labelContainer.appendChild(resetBtn);
+    }
+
     let inp;
     if (type === 'textarea') {
       inp = document.createElement('textarea');
@@ -8442,9 +8568,13 @@ function renderTaskForm(container, taskNum, formData) {
     if (readonly) inp.readOnly = true;
     inp.oninput = () => {
       formData[key] = inp.value;
+      if (['leaveBase', 'beginSearch', 'completeSearch', 'returnBase'].includes(key)) {
+          if (!formData.overrides) formData.overrides = {};
+          formData.overrides[key] = inp.value;
+      }
       save();
     };
-    grp.appendChild(lbl);
+    grp.appendChild(labelContainer);
     grp.appendChild(inp);
     (currentCard || form).appendChild(grp);
   };
