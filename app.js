@@ -1469,7 +1469,8 @@ function saveFileToList(fileName, bundle) {
         lastModified: new Date().toISOString()
     };
     localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
-    pushFileListToServer(files);
+    // No longer push to server immediately to prevent race conditions during sync.
+    // Background sync loop will handle pushing merged updates.
 }
 
 function deleteFileFromList(fileName) {
@@ -1477,7 +1478,7 @@ function deleteFileFromList(fileName) {
     logDeletion('File', fileName);
     delete files[fileName];
     localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
-    pushFileListToServer(files);
+    // No longer push to server immediately to prevent race conditions during sync.
 }
 
 function confirmDeleteRow(rowElement, onConfirm) {
@@ -6883,6 +6884,44 @@ function buildHomePage() {
   const printBtn = document.getElementById('print-search-file-btn');
   if (printBtn) {
     printBtn.onclick = () => printSearchFile();
+  }
+
+  const backupZipBtn = document.getElementById('backup-all-zip-btn');
+  if (backupZipBtn) {
+    backupZipBtn.onclick = async () => {
+      // Ensure current file is saved to list before backing up
+      const currentBundle = loadBundle();
+      saveFileToList(currentBundle.fileName, currentBundle);
+
+      const files = getSavedFiles();
+      const fileNames = Object.keys(files);
+      if (fileNames.length === 0) {
+        alert("No saved search files to backup.");
+        return;
+      }
+
+      try {
+        const zip = new JSZip();
+        fileNames.forEach(name => {
+          const fileInfo = files[name];
+          const content = JSON.stringify(fileInfo.bundle, null, 2);
+          zip.file(name, content);
+        });
+
+        const blob = await zip.generateAsync({ type: "blob" });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `sar-search-files-backup-${new Date().toISOString().split('T')[0]}.zip`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 500);
+      } catch (err) {
+        console.error("Failed to create ZIP:", err);
+        alert("An error occurred while creating the ZIP backup.");
+      }
+    };
   }
 
   // Populate stats
@@ -12767,17 +12806,26 @@ async function syncWithServer() {
             let discovered = false;
             for (const key of keys) {
                 if (key === 'all-files' || key === 'bundle' || key.startsWith('user-')) continue;
-                if (!localFiles[key]) {
+                
+                // Check if any local file matches this sanitized key or if the name matches directly
+                const alreadyHave = Object.keys(localFiles).some(name => 
+                    name === key ||
+                    name.replace(/[^a-zA-Z0-9.\-_]/g, '_') === key ||
+                    name.replace(/[^a-z0-9_-]/gi, '_') === key
+                );
+                
+                if (!alreadyHave) {
                     // Fetch the missing file
                     const fileResp = await fetch(`${apiBase}/${key}?_=${Date.now()}`);
                     if (fileResp.ok) {
                         const bundle = await fileResp.json();
-                        localFiles[key] = {
+                        const actualName = bundle.fileName || key;
+                        localFiles[actualName] = {
                             bundle: sanitizeBundle(bundle),
                             lastModified: bundle.lastModified || new Date().toISOString()
                         };
                         discovered = true;
-                        console.log(`Discovered missing file from bucket: ${key}`);
+                        console.log(`Discovered missing file from bucket: ${key} as ${actualName}`);
                     }
                 }
             }

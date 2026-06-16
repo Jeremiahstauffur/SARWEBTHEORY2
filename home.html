@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Home | Search & Rescue Theory Software</title>
   <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body data-page="home">
   <div class="site-shell">
@@ -153,9 +154,11 @@
             </div>
           </div>
 
-          <!-- Row 5: Full Width Saved Files -->
           <div class="home-panel full-width">
-            <h2>Saved Search Files</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <h2>Saved Search Files</h2>
+              <button id="backup-all-zip-btn" class="clear-btn" type="button" style="font-size: 0.8rem; padding: 5px 10px;">Backup All (ZIP)</button>
+            </div>
             <div style="overflow-x: auto; margin-top: 15px;">
               <table class="grid-table" style="width: 100%;">
                 <thead>
