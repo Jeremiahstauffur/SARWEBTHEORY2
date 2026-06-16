@@ -386,7 +386,7 @@ app.get('/api/v1/:bucket', (req, res) => {
     try {
         const files = fs.readdirSync(bucketDir);
         const keys = files
-            .filter(f => f.endsWith('.json'))
+            .filter(f => f.endsWith('.json') && !f.endsWith('.meta'))
             .map(f => f.replace('.json', ''));
         res.json(keys);
     } catch (err) {
