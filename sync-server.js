@@ -492,6 +492,30 @@ app.get('/api/v1/:bucket/:key', (req, res) => {
 });
 
 // Set a value
+// Delete a value
+app.delete('/api/v1/:bucket/:key', (req, res) => {
+    const {bucket, key} = req.params;
+    const userPin = req.headers['x-user-pin'] || '';
+    const isSuperAdmin = userPin === '1976';
+
+    db.get("SELECT userPin FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err, row) => {
+        if (err) return res.status(500).json({error: 'Failed to query db'});
+        if (!row) return res.json({success: true}); // already gone
+        
+        if (row.userPin === '1976' && !isSuperAdmin) {
+            return res.status(403).json({
+                error: 'Conflict',
+                message: 'Cannot delete Super-Admin created files.'
+            });
+        }
+        
+        db.run("DELETE FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err) => {
+            if (err) return res.status(500).json({error: 'Failed to delete data'});
+            res.json({success: true});
+        });
+    });
+});
+
 app.put('/api/v1/:bucket/:key', (req, res) => {
     const {bucket, key} = req.params;
     const filePath = getFilePath(bucket, key);
