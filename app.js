@@ -392,8 +392,16 @@ async function withSaveButtonFeedback(button, saveAction, options = {}) {
 }
 
 function getSyncServerUrl() {
-    let url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
-    return url || 'https://sarwebtheory2-production.up.railway.app';
+    const url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
+    if (url) return url;
+    // Automatic detection of data.php or Node.js server
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        return `${window.location.protocol}//${window.location.hostname}:3000`;
+    }
+    // Default to the current directory's data.php if no URL is set
+    const currentPath = window.location.pathname;
+    const currentDir = currentPath.substring(0, currentPath.lastIndexOf('/'));
+    return `${window.location.protocol}//${window.location.hostname}${currentDir}/data.php`;
 }
 
 function getSyncBucket() {
@@ -1530,12 +1538,14 @@ function confirmDeleteRow(rowElement, onConfirm) {
 const PERMANENT_PERSONNEL_KEY = 'permanent_personnel_global';
 
 function getPermanentPersonnel() {
-  const stored = localStorage.getItem(PERMANENT_PERSONNEL_KEY);
-  return stored ? JSON.parse(stored) : {};
+    const bundle = loadBundle();
+    return bundle.permanentPersonnel || {};
 }
 
 function setPermanentPersonnel(data) {
-  localStorage.setItem(PERMANENT_PERSONNEL_KEY, JSON.stringify(data));
+    const bundle = loadBundle();
+    bundle.permanentPersonnel = data;
+    saveBundle(bundle);
 }
 
 function syncPersonnelData(fileData) {
@@ -10270,10 +10280,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return; // Stop initialization until bucket is set
     }
     
-    // For new devices, attempt an immediate sync to get the latest file from the server
-    if (!localStorage.getItem(BUNDLE_STORAGE_KEY)) {
-        await syncWithServer();
-    }
+    // Always attempt an immediate sync to get the latest data from the server on startup
+    await syncWithServer();
     
     const bundle = loadBundle();
     applyTheme(bundle);
@@ -10390,15 +10398,18 @@ function initBaseTeamsAccordion() {
   const accordionContainer = document.getElementById('base-teams-container-header');
   if (!accordionHeader || !accordionContainer) return;
 
-  // Restore state from localStorage
-  const isCollapsed = localStorage.getItem('baseTeamsCollapsed') === 'true';
+  const bundle = loadBundle();
+  // Restore state from bundle
+  const isCollapsed = bundle.baseTeamsCollapsed === true;
   if (isCollapsed) {
     accordionContainer.classList.add('collapsed');
   }
 
   accordionHeader.onclick = () => {
     accordionContainer.classList.toggle('collapsed');
-    localStorage.setItem('baseTeamsCollapsed', accordionContainer.classList.contains('collapsed'));
+    const nextBundle = loadBundle();
+    nextBundle.baseTeamsCollapsed = accordionContainer.classList.contains('collapsed');
+    saveBundle(nextBundle);
   };
 }
 
@@ -10407,15 +10418,18 @@ function initSearchTeamsAccordion() {
   const accordionContainer = document.getElementById('search-teams-container');
   if (!accordionHeader || !accordionContainer) return;
 
-  // Restore state from localStorage
-  const isCollapsed = localStorage.getItem('searchTeamsCollapsed') === 'true';
+  const bundle = loadBundle();
+  // Restore state from bundle
+  const isCollapsed = bundle.searchTeamsCollapsed === true;
   if (isCollapsed) {
     accordionContainer.classList.add('collapsed');
   }
 
   accordionHeader.onclick = () => {
     accordionContainer.classList.toggle('collapsed');
-    localStorage.setItem('searchTeamsCollapsed', accordionContainer.classList.contains('collapsed'));
+    const nextBundle = loadBundle();
+    nextBundle.searchTeamsCollapsed = accordionContainer.classList.contains('collapsed');
+    saveBundle(nextBundle);
   };
 }
 
