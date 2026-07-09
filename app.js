@@ -439,6 +439,7 @@ async function fetchUserHistory() {
 }
 
 function showLoginPopup() {
+    if (document.querySelector('.popup-overlay.login-popup')) return;
     const onCancel = () => {
         if (!getUserCredentials()) {
             setTimeout(() => {
@@ -450,6 +451,7 @@ function showLoginPopup() {
         }
     };
     const popup = createPopup('Login / Register', null, onCancel);
+    popup.classList.add('login-popup');
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
 
@@ -4768,14 +4770,16 @@ function logCreation(type, name, bundle = null) {
   addActivityLogEntry('System', `Created ${type}: ${name || 'unknown'}`, bundle);
 }
 
-function showLoginPopup() {
+function showUserSelectionPopup() {
+  if (document.querySelector('.popup-overlay.user-selection-popup')) return;
   const onCancel = () => {
     if (!getCurrentUser()) {
         alert('You must select a team member to continue');
-        showLoginPopup();
+        setTimeout(showUserSelectionPopup, 300);
     }
   };
   const popup = createPopup('Select Team Member', null, onCancel);
+  popup.classList.add('user-selection-popup');
   const content = popup.querySelector('.popup-content');
   const btnContainer = popup.querySelector('.popup-buttons');
   
@@ -5133,7 +5137,11 @@ function updateHeaderProfile() {
         btn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
         btn.onclick = (e) => {
             e.preventDefault();
-            showLoginPopup();
+            if (!getUserCredentials()) {
+                showLoginPopup();
+            } else {
+                showUserSelectionPopup();
+            }
         };
     }
 
@@ -10429,7 +10437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             setCurrentUser(superAdmin);
             checkAccess();
         } else {
-            showLoginPopup();
+            showUserSelectionPopup();
         }
     } else {
         checkAccess();
