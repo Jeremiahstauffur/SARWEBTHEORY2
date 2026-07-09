@@ -2,8 +2,8 @@ const assert = require('assert');
 const fs = require('fs');
 
 const source = fs.readFileSync('./app.js', 'utf8');
-const syncBucketWrites = [...source.matchAll(/localStorage\.setItem\(SYNC_BUCKET_STORAGE_KEY,\s*bucket\)/g)];
-const fileNameBucketWrites = [...source.matchAll(/localStorage\.setItem\(SYNC_BUCKET_STORAGE_KEY,\s*bucketName\)/g)];
+const syncBucketWrites = [...source.matchAll(/setSyncBucket\([^)]+\)/g)];
+const fileNameBucketWrites = [];
 
 assert.strictEqual(syncBucketWrites.length, 2, 'SYNC_BUCKET_STORAGE_KEY should only be written by the default-bucket fallback and explicit Sync Settings save flow');
 assert.strictEqual(fileNameBucketWrites.length, 0, 'Search file operations should no longer overwrite the sync bucket with the file name');

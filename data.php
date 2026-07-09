@@ -28,6 +28,23 @@ try {
         updatedAt TEXT,
         PRIMARY KEY (bucket, key)
     )");
+
+    $db->exec("CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password TEXT
+    )");
+    
+    $db->exec("CREATE TABLE IF NOT EXISTS user_settings (
+        username TEXT PRIMARY KEY,
+        settings TEXT DEFAULT '{}'
+    )");
+    
+    $db->exec("CREATE TABLE IF NOT EXISTS bucket_history (
+        username TEXT,
+        bucket TEXT,
+        lastAccessed TEXT,
+        PRIMARY KEY (username, bucket)
+    )");
 } catch (PDOException $e) {
     http_response_code(500);
     echo json_encode(["error" => "Database connection failed: " . $e->getMessage()]);
@@ -38,17 +55,116 @@ $method = $_SERVER['REQUEST_METHOD'];
 $path_info = isset($_SERVER['PATH_INFO']) ? $_SERVER['PATH_INFO'] : (isset($_SERVER['ORIG_PATH_INFO']) ? $_SERVER['ORIG_PATH_INFO'] : '');
 $parts = explode('/', trim($path_info, '/'));
 
-// Expected path: /api/v1/:bucket/:key
-if (count($parts) < 3 || $parts[0] !== 'api' || $parts[1] !== 'v1') {
+if (count($parts) < 2 || $parts[0] !== 'api') {
     http_response_code(400);
-    echo json_encode(["error" => "Invalid endpoint. Use /data.php/api/v1/:bucket/:key"]);
+    echo json_encode(["error" => "Invalid endpoint."]);
+    exit;
+}
+
+if ($parts[1] === 'health' && $method === 'GET') {
+    echo json_encode(["status" => "ok"]);
+    exit;
+}
+
+if ($parts[1] === 'auth') {
+    $action = isset($parts[2]) ? $parts[2] : '';
+    
+    $body = file_get_contents('php://input');
+    $data = json_decode($body, true) ?: [];
+    
+    if ($action === 'register' && $method === 'POST') {
+        $username = isset($data['username']) ? trim($data['username']) : '';
+        $password = isset($data['password']) ? trim($data['password']) : '';
+        if (!$username || !$password) {
+            http_response_code(400); echo json_encode(["error" => "Username and password required"]); exit;
+        }
+        $hashed = hash('sha256', $password);
+        $stmt = $db->prepare("SELECT username FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        if ($stmt->fetch()) {
+            http_response_code(400); echo json_encode(["error" => "Username already exists"]); exit;
+        }
+        $stmt = $db->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
+        $stmt->execute([$username, $hashed]);
+        echo json_encode(["success" => true]);
+        exit;
+    }
+    
+    if ($action === 'login' && $method === 'POST') {
+        $username = isset($data['username']) ? trim($data['username']) : '';
+        $password = isset($data['password']) ? trim($data['password']) : '';
+        $hashed = hash('sha256', $password);
+        $stmt = $db->prepare("SELECT * FROM users WHERE username = ? AND password = ?");
+        $stmt->execute([$username, $hashed]);
+        if ($stmt->fetch()) {
+            echo json_encode(["success" => true]);
+        } else {
+            http_response_code(401); echo json_encode(["error" => "Invalid credentials"]);
+        }
+        exit;
+    }
+    
+    $username = isset($_SERVER['HTTP_X_USER_NAME']) ? $_SERVER['HTTP_X_USER_NAME'] : '';
+    $password = isset($_SERVER['HTTP_X_USER_PASSWORD']) ? $_SERVER['HTTP_X_USER_PASSWORD'] : '';
+    
+    if (!$username || !$password) {
+        http_response_code(401); echo json_encode(["error" => "Not authenticated"]); exit;
+    }
+    $hashed = hash('sha256', $password);
+    $stmt = $db->prepare("SELECT * FROM users WHERE username = ? AND password = ?");
+    $stmt->execute([$username, $hashed]);
+    if (!$stmt->fetch()) {
+        http_response_code(401); echo json_encode(["error" => "Invalid credentials"]); exit;
+    }
+    
+    if ($action === 'settings') {
+        if ($method === 'GET') {
+            $stmt = $db->prepare("SELECT settings FROM user_settings WHERE username = ?");
+            $stmt->execute([$username]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            echo $row ? $row['settings'] : '{}';
+            exit;
+        } elseif ($method === 'PUT') {
+            $settings = json_encode($data);
+            $stmt = $db->prepare("INSERT OR REPLACE INTO user_settings (username, settings) VALUES (?, ?)");
+            $stmt->execute([$username, $settings]);
+            echo json_encode(["success" => true]);
+            exit;
+        }
+    }
+    
+    if ($action === 'history' && $method === 'GET') {
+        $stmt = $db->prepare("SELECT bucket, lastAccessed FROM bucket_history WHERE username = ? ORDER BY lastAccessed DESC LIMIT 5");
+        $stmt->execute([$username]);
+        echo json_encode($stmt->fetchAll(PDO::FETCH_ASSOC));
+        exit;
+    }
+    
+    http_response_code(404);
+    echo json_encode(["error" => "Not found"]);
+    exit;
+}
+
+// Expected path: /api/v1/:bucket/:key
+if ($parts[1] !== 'v1' || count($parts) < 3) {
+    http_response_code(400);
+    echo json_encode(["error" => "Invalid endpoint. Use /api/v1/:bucket/:key"]);
     exit;
 }
 
 $bucket = $parts[2];
 $key = isset($parts[3]) ? $parts[3] : null;
 
+function trackBucketAccess($db, $bucket) {
+    $username = isset($_SERVER['HTTP_X_USER_NAME']) ? $_SERVER['HTTP_X_USER_NAME'] : '';
+    if ($username && $bucket) {
+        $stmt = $db->prepare("INSERT OR REPLACE INTO bucket_history (username, bucket, lastAccessed) VALUES (?, ?, ?)");
+        $stmt->execute([$username, $bucket, date('c')]);
+    }
+}
+
 if ($method === 'GET') {
+    trackBucketAccess($db, $bucket);
     if ($key === 'latest') {
         $stmt = $db->prepare("SELECT value FROM store WHERE bucket = ? ORDER BY updatedAt DESC LIMIT 1");
         $stmt->execute([$bucket]);
@@ -84,6 +200,7 @@ if ($method === 'GET') {
         echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
     }
 } elseif ($method === 'PUT') {
+    trackBucketAccess($db, $bucket);
     if (!$key) {
         http_response_code(400);
         echo json_encode(["error" => "Key required for PUT"]);
@@ -132,9 +249,10 @@ if ($method === 'GET') {
     
     $stmt = $db->prepare("INSERT OR REPLACE INTO store (bucket, key, value, userName, userPin, updatedAt) VALUES (?, ?, ?, ?, ?, ?)");
     $stmt->execute([$bucket, $key, $body, $userName, $userPin, $saveTime]);
-    
+
     echo json_encode(["success" => true]);
 } elseif ($method === 'DELETE') {
+    trackBucketAccess($db, $bucket);
     if (!$key) {
         http_response_code(400);
         echo json_encode(["error" => "Key required for DELETE"]);

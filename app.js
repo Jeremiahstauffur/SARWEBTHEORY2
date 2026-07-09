@@ -188,19 +188,25 @@ function buildSegmentNameSet(rows) {
 }
 
 function isMapPsrcOverlayEnabled() {
-    return localStorage.getItem(MAP_PSRC_OVERLAY_STORAGE_KEY) === 'true';
+    return _serverSettings && _serverSettings[MAP_PSRC_OVERLAY_STORAGE_KEY] === 'true';
 }
 
 function setMapPsrcOverlayEnabled(enabled) {
-    localStorage.setItem(MAP_PSRC_OVERLAY_STORAGE_KEY, enabled ? 'true' : 'false');
+    if (_serverSettings) {
+        _serverSettings[MAP_PSRC_OVERLAY_STORAGE_KEY] = enabled ? 'true' : 'false';
+        saveServerSettings(_serverSettings);
+    }
 }
 
 function isCalTopoAssignmentOverlayEnabled() {
-    return localStorage.getItem(CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY) === 'true';
+    return _serverSettings && _serverSettings[CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY] === 'true';
 }
 
 function setCalTopoAssignmentOverlayEnabled(enabled) {
-    localStorage.setItem(CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY, enabled ? 'true' : 'false');
+    if (_serverSettings) {
+        _serverSettings[CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY] = enabled ? 'true' : 'false';
+        saveServerSettings(_serverSettings);
+    }
 }
 
 function captureCalTopoFeatureStyle(attributes = {}) {
@@ -394,25 +400,120 @@ async function withSaveButtonFeedback(button, saveAction, options = {}) {
 }
 
 function getSyncServerUrl() {
-    const url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
-    if (url) return url;
-    // Automatic detection of local or production server
+    if (_serverSettings && _serverSettings[SYNC_URL_STORAGE_KEY]) {
+        return _serverSettings[SYNC_URL_STORAGE_KEY];
+    }
+    // Automatically detect sync-server.js or default to data.php
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         return `${window.location.protocol}//${window.location.hostname}:3000`;
     }
-    // Default to the Railway production sync server
-    return 'https://sarwebtheory2-production.up.railway.app';
+    return 'data.php';
 }
 
 function getSyncBucket() {
-    return localStorage.getItem(SYNC_BUCKET_STORAGE_KEY) || '';
+    return _serverSettings && _serverSettings[SYNC_BUCKET_STORAGE_KEY] ? _serverSettings[SYNC_BUCKET_STORAGE_KEY] : '';
+}
+
+function setSyncBucket(bucket) {
+    if (_serverSettings) {
+        _serverSettings[SYNC_BUCKET_STORAGE_KEY] = bucket;
+        saveServerSettings(_serverSettings);
+    }
+}
+
+function setCookie(name, value, days = 365) {
+    let expires = "";
+    if (days) {
+        const date = new Date();
+        date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+        expires = "; expires=" + date.toUTCString();
+    }
+    document.cookie = name + "=" + (value || "")  + expires + "; path=/";
+}
+
+function getCookie(name) {
+    const nameEQ = name + "=";
+    const ca = document.cookie.split(';');
+    for(let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+    }
+    return null;
+}
+
+function eraseCookie(name) {
+    document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
 }
 
 function getUserCredentials() {
-    const name = localStorage.getItem(USER_NAME_STORAGE_KEY);
-    const password = localStorage.getItem(USER_PASSWORD_STORAGE_KEY);
+    const name = getCookie(USER_NAME_STORAGE_KEY);
+    const password = getCookie(USER_PASSWORD_STORAGE_KEY);
     if (!name || !password) return null;
     return { name, password };
+}
+
+// Server-side settings cache (in-memory only, loaded from server on login)
+let _serverSettings = null;
+let _serverSettingsLoading = false;
+
+async function loadServerSettings() {
+    const creds = getUserCredentials();
+    if (!creds) return {};
+    if (_serverSettings !== null) return _serverSettings;
+    if (_serverSettingsLoading) return {};
+    _serverSettingsLoading = true;
+    try {
+        const serverUrl = getSyncServerUrl();
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/settings`, {
+            headers: {
+                'X-User-Name': creds.name,
+                'X-User-Password': creds.password
+            }
+        });
+        if (resp.ok) {
+            _serverSettings = await resp.json();
+        } else {
+            _serverSettings = {};
+        }
+    } catch (e) {
+        console.warn('Failed to load server settings:', e);
+        _serverSettings = {};
+    } finally {
+        _serverSettingsLoading = false;
+    }
+    return _serverSettings;
+}
+
+async function saveServerSettings(settings) {
+    const creds = getUserCredentials();
+    if (!creds) return;
+    _serverSettings = settings;
+    try {
+        const serverUrl = getSyncServerUrl();
+        await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/settings`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-User-Name': creds.name,
+                'X-User-Password': creds.password
+            },
+            body: JSON.stringify(settings)
+        });
+    } catch (e) {
+        console.warn('Failed to save server settings:', e);
+    }
+}
+
+async function getServerSetting(key) {
+    const settings = await loadServerSettings();
+    return settings[key] !== undefined ? settings[key] : null;
+}
+
+async function setServerSetting(key, value) {
+    const settings = await loadServerSettings();
+    settings[key] = value;
+    await saveServerSettings(settings);
 }
 
 async function fetchUserHistory() {
@@ -498,8 +599,8 @@ function showLoginPopup() {
                 body: JSON.stringify({ username, password })
             });
             if (resp.ok) {
-                localStorage.setItem(USER_NAME_STORAGE_KEY, username);
-                localStorage.setItem(USER_PASSWORD_STORAGE_KEY, password);
+                setCookie(USER_NAME_STORAGE_KEY, username);
+                setCookie(USER_PASSWORD_STORAGE_KEY, password);
                 closePopup(popup);
                 window.location.reload();
             } else {
@@ -530,8 +631,8 @@ function showLoginPopup() {
             });
             if (resp.ok) {
                 // Auto-login after successful registration
-                localStorage.setItem(USER_NAME_STORAGE_KEY, username);
-                localStorage.setItem(USER_PASSWORD_STORAGE_KEY, password);
+                setCookie(USER_NAME_STORAGE_KEY, username);
+                setCookie(USER_PASSWORD_STORAGE_KEY, password);
                 closePopup(popup);
                 window.location.reload();
             } else {
@@ -601,20 +702,26 @@ function getCalTopoProxyHealthUrl(url) {
 }
 
 function getCalTopoProxy() {
-    let proxy = localStorage.getItem(CALTOPO_PROXY_STORAGE_KEY);
+    let proxy = _serverSettings && _serverSettings[CALTOPO_PROXY_STORAGE_KEY] ? _serverSettings[CALTOPO_PROXY_STORAGE_KEY] : null;
     // Migration: Migrate from old SARTopo key if needed
     if (!proxy) {
-        const oldProxy = localStorage.getItem('sar-sartopo-proxy-v1');
+        const oldProxy = _serverSettings && _serverSettings['sar-sartopo-proxy-v1'] ? _serverSettings['sar-sartopo-proxy-v1'] : null;
         if (oldProxy) {
             proxy = oldProxy;
-            localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
-            localStorage.removeItem('sar-sartopo-proxy-v1');
+            if (_serverSettings) {
+                _serverSettings[CALTOPO_PROXY_STORAGE_KEY] = proxy;
+                delete _serverSettings['sar-sartopo-proxy-v1'];
+                saveServerSettings(_serverSettings);
+            }
         }
     }
     const normalizedProxy = normalizeCalTopoProxyUrl(proxy);
     if (proxy && normalizedProxy && proxy !== normalizedProxy) {
         proxy = normalizedProxy;
-        localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
+        if (_serverSettings) {
+            _serverSettings[CALTOPO_PROXY_STORAGE_KEY] = proxy;
+            saveServerSettings(_serverSettings);
+        }
     }
     return proxy || 'https://sarwebtheory2-production.up.railway.app/api/proxy';
 }
@@ -693,23 +800,38 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
 };
 
 function setCalTopoProxy(url) {
-    if (url) localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, url);
-    else localStorage.removeItem(CALTOPO_PROXY_STORAGE_KEY);
+    if (url) {
+        if (_serverSettings) {
+            _serverSettings[CALTOPO_PROXY_STORAGE_KEY] = url;
+            saveServerSettings(_serverSettings);
+        }
+    } else {
+        if (_serverSettings) {
+            delete _serverSettings[CALTOPO_PROXY_STORAGE_KEY];
+            saveServerSettings(_serverSettings);
+        }
+    }
 }
 
 function getCalTopoCredentials() {
-    return JSON.parse(localStorage.getItem(CALTOPO_CREDS_STORAGE_KEY) || '{}');
+    return _serverSettings && _serverSettings[CALTOPO_CREDS_STORAGE_KEY] ? JSON.parse(_serverSettings[CALTOPO_CREDS_STORAGE_KEY]) : {};
 }
 
 function setCalTopoCredentials(creds) {
-    localStorage.setItem(CALTOPO_CREDS_STORAGE_KEY, JSON.stringify(creds));
+    if (_serverSettings) {
+        _serverSettings[CALTOPO_CREDS_STORAGE_KEY] = JSON.stringify(creds);
+        saveServerSettings(_serverSettings);
+    }
 }
 
 function getDeviceId() {
-    let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    let id = _serverSettings && _serverSettings[DEVICE_ID_STORAGE_KEY] ? _serverSettings[DEVICE_ID_STORAGE_KEY] : null;
     if (!id) {
         id = 'device-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now();
-        localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+        if (_serverSettings) {
+            _serverSettings[DEVICE_ID_STORAGE_KEY] = id;
+            saveServerSettings(_serverSettings);
+        }
     }
     return id;
 }
@@ -1129,9 +1251,9 @@ function setCurrentUser(user) {
     notifyActiveUser(user);
   } else {
     sessionStorage.removeItem('sar-current-user');
-    localStorage.removeItem(USER_NAME_STORAGE_KEY);
-    localStorage.removeItem(USER_PASSWORD_STORAGE_KEY);
-    localStorage.removeItem(SYNC_BUCKET_STORAGE_KEY);
+    eraseCookie(USER_NAME_STORAGE_KEY);
+    eraseCookie(USER_PASSWORD_STORAGE_KEY);
+    eraseCookie(SYNC_BUCKET_STORAGE_KEY);
   }
     syncMobileBottomNav();
 }
@@ -1510,9 +1632,11 @@ function sanitizeBundle(bundle) {
   };
 }
 
+const _memoryStorage = {};
+
 function loadBundle() {
   try {
-    const raw = localStorage.getItem(BUNDLE_STORAGE_KEY);
+    const raw = _memoryStorage[BUNDLE_STORAGE_KEY];
     if (!raw) return defaultBundle();
     return sanitizeBundle(JSON.parse(raw));
   } catch {
@@ -1524,7 +1648,7 @@ function saveBundle(bundle, skipSync = false) {
   bundle.lastModified = new Date().toISOString();
   const sanitized = sanitizeBundle(bundle);
 
-  localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
+  _memoryStorage[BUNDLE_STORAGE_KEY] = JSON.stringify(sanitized);
   
   if (!skipSync) {
       pushBundleToServer(sanitized);
@@ -1536,7 +1660,7 @@ function saveBundle(bundle, skipSync = false) {
 }
 
 function getSavedFiles() {
-    const raw = localStorage.getItem(FILE_LIST_STORAGE_KEY);
+    const raw = _memoryStorage[FILE_LIST_STORAGE_KEY];
     if (!raw) return {};
     try {
         return JSON.parse(raw);
@@ -1554,7 +1678,7 @@ function saveFileToList(fileName, bundle) {
         bundle: sanitizeBundle(bundle),
         lastModified: new Date().toISOString()
     };
-    localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+    _memoryStorage[FILE_LIST_STORAGE_KEY] = JSON.stringify(files);
     // No longer push to server immediately to prevent race conditions during sync.
     // Background sync loop will handle pushing merged updates.
 }
@@ -1563,7 +1687,7 @@ function deleteFileFromList(fileName) {
     const files = getSavedFiles();
     logDeletion('File', fileName);
     delete files[fileName];
-    localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+    _memoryStorage[FILE_LIST_STORAGE_KEY] = JSON.stringify(files);
     // No longer push to server immediately to prevent race conditions during sync.
 }
 
@@ -3066,7 +3190,7 @@ function buildPersonnelTable() {
         }
 
         // 3. Clear data
-        localStorage.removeItem(PERMANENT_PERSONNEL_KEY);
+        delete bundle.permanentPersonnel;
         bundle.pages.page3 = [];
         
         saveBundle(bundle);
@@ -6931,7 +7055,7 @@ async function populateSearchHistory() {
             btn.appendChild(dateSpan);
 
             btn.onclick = () => {
-                localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, item.bucket);
+                setSyncBucket(item.bucket);
                 alert(`Switched to search: ${item.bucket}`);
                 window.location.reload();
             };
@@ -7006,7 +7130,7 @@ function buildHomePage() {
             
             // Set bucket ID for the new search
             const newBucket = nextName.replace('.json', '').replace(/[^a-zA-Z0-9_-]/g, '_');
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, newBucket);
+            setSyncBucket(newBucket);
 
             saveBundle(newBundle);
             window.location.reload();
@@ -7145,7 +7269,7 @@ function buildHomePage() {
           
           // Set bucket ID for the imported search
           const newBucket = importedBundle.fileName.replace('.json', '').replace(/[^a-zA-Z0-9_-]/g, '_');
-          localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, newBucket);
+          setSyncBucket(newBucket);
 
           saveBundle(importedBundle);
           window.location.reload();
@@ -7494,7 +7618,10 @@ function buildSettingsPage() {
             const serverUrl = syncUrlInput.value.trim();
 
             if (serverUrl) {
-                localStorage.setItem(SYNC_URL_STORAGE_KEY, serverUrl);
+                if (_serverSettings) {
+                    _serverSettings[SYNC_URL_STORAGE_KEY] = serverUrl;
+                    saveServerSettings(_serverSettings);
+                }
                 syncStatusMsg.textContent = 'Sync settings saved! Testing connection...';
 
                 try {
@@ -10446,6 +10573,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    await loadServerSettings();
+
     if (!getSyncBucket() && !isHomePage()) {
         window.location.href = 'home.html';
         return;
@@ -12921,7 +13050,7 @@ async function syncWithServer() {
     
     isSyncing = true;
     try {
-        const isNewDevice = !localStorage.getItem(BUNDLE_STORAGE_KEY);
+        const isNewDevice = !_memoryStorage[BUNDLE_STORAGE_KEY];
         
         // 1. Sync entire file list
         const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`, {
@@ -12950,7 +13079,7 @@ async function syncWithServer() {
             }
 
             if (localChanged) {
-                localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(localFiles));
+                _memoryStorage[FILE_LIST_STORAGE_KEY] = JSON.stringify(localFiles);
                 refreshSyncUI();
             }
             if (serverNeedsUpdate) {
@@ -12978,7 +13107,7 @@ async function syncWithServer() {
                 if (sMod > lMod) {
                     const merged = mergeBundles(localBundle, serverBundle);
                     if (areBundlesEqual(merged, serverBundle)) {
-                        localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                        _memoryStorage[BUNDLE_STORAGE_KEY] = JSON.stringify(serverBundle);
                     } else {
                         // Local has some unique data, push the merged result
                         saveBundle(merged, true);
@@ -12990,7 +13119,7 @@ async function syncWithServer() {
                             bundle: loadBundle(), // Use potentially merged bundle
                             lastModified: loadBundle().lastModified
                         };
-                        localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+                        _memoryStorage[FILE_LIST_STORAGE_KEY] = JSON.stringify(files);
                     }
                     refreshSyncUI();
                 } else if (lMod > sMod && !isNewDevice) {

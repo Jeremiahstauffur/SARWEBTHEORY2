@@ -239,12 +239,17 @@ db.serialize(() => {
         lastAccessed TEXT,
         PRIMARY KEY (username, bucket)
     )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS user_settings (
+        username TEXT PRIMARY KEY,
+        settings TEXT DEFAULT '{}'
+    )`);
 });
 
 app.use(cors({
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Name', 'X-User-Pin']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Name', 'X-User-Pin', 'X-User-Password', 'X-Last-Modified']
 }));
 app.use(express.json({limit: '50mb'}));
 
@@ -299,6 +304,50 @@ app.get('/api/auth/history', (req, res) => {
             return res.status(500).json({error: err.message});
         }
         res.json(rows);
+    });
+});
+
+// User Settings Endpoints
+app.get('/api/auth/settings', (req, res) => {
+    const username = req.headers['x-user-name'];
+    const password = req.headers['x-user-password'];
+    if (!username || !password) {
+        return res.status(401).json({error: 'Not authenticated'});
+    }
+
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, user) => {
+        if (err) return res.status(500).json({error: err.message});
+        if (!user) return res.status(401).json({error: 'Invalid credentials'});
+
+        db.get("SELECT settings FROM user_settings WHERE username = ?", [username], (err, row) => {
+            if (err) return res.status(500).json({error: err.message});
+            try {
+                res.json(row ? JSON.parse(row.settings) : {});
+            } catch (e) {
+                res.json({});
+            }
+        });
+    });
+});
+
+app.put('/api/auth/settings', (req, res) => {
+    const username = req.headers['x-user-name'];
+    const password = req.headers['x-user-password'];
+    if (!username || !password) {
+        return res.status(401).json({error: 'Not authenticated'});
+    }
+
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, user) => {
+        if (err) return res.status(500).json({error: err.message});
+        if (!user) return res.status(401).json({error: 'Invalid credentials'});
+
+        const settings = JSON.stringify(req.body || {});
+        db.run("INSERT OR REPLACE INTO user_settings (username, settings) VALUES (?, ?)", [username, settings], (err) => {
+            if (err) return res.status(500).json({error: err.message});
+            res.json({success: true});
+        });
     });
 });
 
