@@ -531,7 +531,11 @@ function showLoginPopup() {
                 body: JSON.stringify({ username, password })
             });
             if (resp.ok) {
-                alert('Registered successfully! You can now login.');
+                // Auto-login after successful registration
+                localStorage.setItem(USER_NAME_STORAGE_KEY, username);
+                localStorage.setItem(USER_PASSWORD_STORAGE_KEY, password);
+                closePopup(popup);
+                window.location.reload();
             } else {
                 const data = await resp.json();
                 alert(data.error || 'Registration failed');
@@ -7485,41 +7489,31 @@ function buildSettingsPage() {
     }
 
   if (syncUrlInput && saveSyncBtn) {
-    const syncBucketInput = document.getElementById('sync-bucket-input');
       syncUrlInput.value = getSyncServerUrl();
-    if (syncBucketInput) syncBucketInput.value = getSyncBucket();
 
     saveSyncBtn.onclick = async () => {
         await withSaveButtonFeedback(saveSyncBtn, async () => {
             const serverUrl = syncUrlInput.value.trim();
-            const bucket = syncBucketInput ? syncBucketInput.value.trim() : getSyncBucket();
 
-            if (serverUrl && bucket) {
+            if (serverUrl) {
                 localStorage.setItem(SYNC_URL_STORAGE_KEY, serverUrl);
-                localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
                 syncStatusMsg.textContent = 'Sync settings saved! Testing connection...';
 
                 try {
-                    const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
-                    const [resp, listResp] = await Promise.all([
-                        fetch(`${apiBase}/bundle?_=${Date.now()}`),
-                        fetch(`${apiBase}/all-files?_=${Date.now()}`)
-                    ]);
+                    const healthUrl = `${serverUrl.replace(/\/$/, '')}/api/health?_=${Date.now()}`;
+                    const resp = await fetch(healthUrl);
 
-                    if (resp.ok || listResp.ok) {
-                        syncStatusMsg.textContent = 'Sync connection successful! Data found.';
-                    } else if (resp.status === 404 && listResp.status === 404) {
-                        syncStatusMsg.textContent = 'Connected! New bucket created on server.';
+                    if (resp.ok) {
+                        syncStatusMsg.textContent = 'Sync connection successful! Server is reachable.';
                     } else {
-                        syncStatusMsg.textContent = `Server returned status ${resp.status}/${listResp.status}.`;
+                        syncStatusMsg.textContent = `Server returned status ${resp.status}.`;
                     }
-                    await Promise.resolve(syncWithServer());
                 } catch (err) {
                     console.error("Sync connection error:", err);
                     syncStatusMsg.textContent = `Could not reach sync server: ${err.message}. Check the URL and your connection.`;
                 }
             } else {
-                syncStatusMsg.textContent = 'Please enter both Server URL and Bucket ID.';
+                syncStatusMsg.textContent = 'Please enter a Server URL.';
             }
         });
     };
