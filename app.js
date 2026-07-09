@@ -509,7 +509,8 @@ function showLoginPopup() {
                 alert(data.error || 'Login failed');
             }
         } catch (e) {
-            alert('Failed to connect to server');
+            console.error("Login connection error:", e);
+            alert(`Failed to connect to server: ${e.message || 'Unknown error'}. Check console for details.`);
         }
     };
     btnContainer.appendChild(loginBtn);
@@ -536,7 +537,8 @@ function showLoginPopup() {
                 alert(data.error || 'Registration failed');
             }
         } catch (e) {
-            alert('Failed to connect to server');
+            console.error("Registration connection error:", e);
+            alert(`Failed to connect to server: ${e.message || 'Unknown error'}. Check console for details.`);
         }
     };
     btnContainer.appendChild(registerBtn);
@@ -7513,13 +7515,53 @@ function buildSettingsPage() {
                     }
                     await Promise.resolve(syncWithServer());
                 } catch (err) {
-                    syncStatusMsg.textContent = 'Could not reach sync server. Check the URL and your connection.';
+                    console.error("Sync connection error:", err);
+                    syncStatusMsg.textContent = `Could not reach sync server: ${err.message}. Check the URL and your connection.`;
                 }
             } else {
                 syncStatusMsg.textContent = 'Please enter both Server URL and Bucket ID.';
             }
         });
     };
+
+    const testSyncBtn = document.getElementById('test-sync-btn');
+    if (testSyncBtn) {
+        testSyncBtn.onclick = async () => {
+            const serverUrl = syncUrlInput.value.trim();
+            if (!serverUrl) return alert('Please enter a Sync Server URL first.');
+
+            testSyncBtn.textContent = 'Testing...';
+            testSyncBtn.disabled = true;
+
+            const healthUrl = `${serverUrl.replace(/\/$/, '')}/api/health`;
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                const healthUrlWithBuster = `${healthUrl}?_=${Date.now()}`;
+                const resp = await fetch(healthUrlWithBuster, {signal: controller.signal});
+                const data = await resp.json().catch(() => ({}));
+                clearTimeout(timeoutId);
+
+                if (resp.ok) {
+                    alert(`Success!\n\nSync Server Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nService: ${data.service}\n\nSync server is reachable and active.`);
+                } else {
+                    alert(`Sync Server Error ${resp.status}\n\nThe server is reachable but returned an error. Check server logs.`);
+                }
+            } catch (err) {
+                console.error("Sync server test error:", err);
+                if (err.name === 'AbortError') {
+                    alert(`Connection Timed Out\n\nCould not reach ${healthUrl} within 10 seconds.`);
+                } else {
+                    alert(`Connection Failed\n\nCould not reach ${healthUrl}.\n\nError: ${err.message}\n\nMake sure the URL is correct and the server is running.`);
+                }
+            } finally {
+                testSyncBtn.textContent = 'Test Connection';
+                testSyncBtn.disabled = false;
+            }
+        };
+    }
   }
 }
 
