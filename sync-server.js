@@ -227,6 +227,18 @@ db.serialize(() => {
         updatedAt TEXT,
         PRIMARY KEY (bucket, key)
     )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password TEXT
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS user_buckets (
+        username TEXT,
+        bucket TEXT,
+        lastAccessed TEXT,
+        PRIMARY KEY (username, bucket)
+    )`);
 });
 
 app.use(cors({
@@ -235,6 +247,67 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'X-User-Name', 'X-User-Pin']
 }));
 app.use(express.json({limit: '50mb'}));
+
+// Auth Endpoints
+app.post('/api/auth/register', (req, res) => {
+    const {username, password} = req.body;
+    if (!username || !password) {
+        return res.status(400).json({error: 'Username and password are required'});
+    }
+
+    // Simple hashing for this implementation
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+
+    db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hashedPassword], (err) => {
+        if (err) {
+            if (err.message.includes('UNIQUE constraint failed')) {
+                return res.status(400).json({error: 'Username already exists'});
+            }
+            return res.status(500).json({error: err.message});
+        }
+        res.json({success: true});
+    });
+});
+
+app.post('/api/auth/login', (req, res) => {
+    const {username, password} = req.body;
+    if (!username || !password) {
+        return res.status(400).json({error: 'Username and password are required'});
+    }
+
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+
+    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, row) => {
+        if (err) {
+            return res.status(500).json({error: err.message});
+        }
+        if (!row) {
+            return res.status(401).json({error: 'Invalid username or password'});
+        }
+        res.json({success: true, username: row.username});
+    });
+});
+
+app.get('/api/auth/history', (req, res) => {
+    const username = req.headers['x-user-name'];
+    if (!username) {
+        return res.status(401).json({error: 'Not authenticated'});
+    }
+
+    db.all("SELECT bucket, lastAccessed FROM user_buckets WHERE username = ? ORDER BY lastAccessed DESC", [username], (err, rows) => {
+        if (err) {
+            return res.status(500).json({error: err.message});
+        }
+        res.json(rows);
+    });
+});
+
+// Helper to track bucket access
+const trackBucketAccess = (username, bucket) => {
+    if (!username || !bucket) return;
+    const now = new Date().toISOString();
+    db.run("INSERT OR REPLACE INTO user_buckets (username, bucket, lastAccessed) VALUES (?, ?, ?)", [username, bucket, now]);
+};
 
 const ensureHttpsDomain = (domain) => {
     const normalized = (domain || CALTOPO_DEFAULT_DOMAIN).trim().toLowerCase();
@@ -392,6 +465,8 @@ const getFilePath = (bucket, key) => {
 // Get all files for a bucket
 app.get('/api/v1/:bucket/all-files', (req, res) => {
     const {bucket} = req.params;
+    const userName = req.headers['x-user-name'];
+    trackBucketAccess(userName, bucket);
     db.all("SELECT key, updatedAt FROM store WHERE bucket = ?", [bucket], (err, rows) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
         const files = {};
@@ -458,6 +533,7 @@ app.delete('/api/v1/:bucket/:key', (req, res) => {
 app.put('/api/v1/:bucket/:key', (req, res) => {
     const {bucket, key} = req.params;
     const userName = req.headers['x-user-name'] || 'Unknown';
+    trackBucketAccess(req.headers['x-user-name'], bucket);
     const userPin = req.headers['x-user-pin'] || '';
     const isSuperAdmin = userPin === '1976';
 

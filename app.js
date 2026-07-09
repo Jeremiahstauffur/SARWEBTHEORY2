@@ -6,6 +6,8 @@ const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
 const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
+const USER_NAME_STORAGE_KEY = 'sar-user-name-v1';
+const USER_PASSWORD_STORAGE_KEY = 'sar-user-password-v1';
 const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
@@ -408,65 +410,134 @@ function getSyncBucket() {
     return localStorage.getItem(SYNC_BUCKET_STORAGE_KEY) || '';
 }
 
-function showBucketPromptPopup() {
+function getUserCredentials() {
+    const name = localStorage.getItem(USER_NAME_STORAGE_KEY);
+    const password = localStorage.getItem(USER_PASSWORD_STORAGE_KEY);
+    if (!name || !password) return null;
+    return { name, password };
+}
+
+async function fetchUserHistory() {
+    const creds = getUserCredentials();
+    if (!creds) return [];
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl) return [];
+
+    try {
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/history`, {
+            headers: {
+                'X-User-Name': creds.name
+            }
+        });
+        if (resp.ok) {
+            return await resp.json();
+        }
+    } catch (e) {
+        console.warn("Failed to fetch history:", e);
+    }
+    return [];
+}
+
+function showLoginPopup() {
     const onCancel = () => {
-        if (!getSyncBucket()) {
-            // We need a slight delay because createPopup handles its own close which might conflict with immediate reshhow
+        if (!getUserCredentials()) {
             setTimeout(() => {
-                if (!getSyncBucket()) {
-                    alert('A Bucket ID is required to synchronize data.');
-                    showBucketPromptPopup();
+                if (!getUserCredentials()) {
+                    alert('Login is required to synchronize data.');
+                    showLoginPopup();
                 }
             }, 300);
         }
     };
-    const popup = createPopup('Set Bucket ID', null, onCancel);
+    const popup = createPopup('Login / Register', null, onCancel);
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
 
-    // Override the default flex-direction: column for popup-buttons to make them side-by-side if we want,
-    // but the issue said "very short and wide", and standard popup-buttons are column.
-    // Given they are "popup-btn", they will have good padding now.
-    
     const inputs = document.createElement('div');
     inputs.className = 'popup-input-container';
+    inputs.style.display = 'flex';
     inputs.style.flexDirection = 'column';
     inputs.style.gap = '15px';
 
-    const promptText = document.createElement('p');
-    promptText.textContent = 'Please enter a unique Bucket ID to synchronize your data across devices.';
-    promptText.style.textAlign = 'center';
-    promptText.style.marginBottom = '10px';
-    inputs.appendChild(promptText);
+    const usernameInput = document.createElement('input');
+    usernameInput.type = 'text';
+    usernameInput.placeholder = 'Username';
+    usernameInput.className = 'pill-input';
+    usernameInput.style.textAlign = 'center';
+    usernameInput.style.width = '100%';
+    usernameInput.style.padding = '16px';
+    usernameInput.style.fontSize = '1.1rem';
+    inputs.appendChild(usernameInput);
 
-    const bucketInput = document.createElement('input');
-    bucketInput.type = 'text';
-    bucketInput.placeholder = 'e.g., my-team-bucket';
-    bucketInput.className = 'pill-input';
-    bucketInput.style.textAlign = 'center';
-    bucketInput.style.width = '100%';
-    bucketInput.style.padding = '16px';
-    bucketInput.style.fontSize = '1.1rem';
-    bucketInput.style.marginTop = '10px';
-    inputs.appendChild(bucketInput);
+    const passwordInput = document.createElement('input');
+    passwordInput.type = 'password';
+    passwordInput.placeholder = 'Password';
+    passwordInput.className = 'pill-input';
+    passwordInput.style.textAlign = 'center';
+    passwordInput.style.width = '100%';
+    passwordInput.style.padding = '16px';
+    passwordInput.style.fontSize = '1.1rem';
+    inputs.appendChild(passwordInput);
 
     content.insertBefore(inputs, btnContainer);
 
-    const setBtn = document.createElement('button');
-    setBtn.className = 'popup-btn primary';
-    setBtn.style.padding = '16px'; // Extra padding for emphasis
-    setBtn.textContent = 'Set Bucket ID & Reload';
-    setBtn.onclick = () => {
-        const val = bucketInput.value.trim();
-        if (val) {
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, val);
-            closePopup(popup);
-            window.location.reload();
-        } else {
-            alert('Please enter a valid Bucket ID');
+    const loginBtn = document.createElement('button');
+    loginBtn.className = 'popup-btn primary';
+    loginBtn.style.padding = '16px';
+    loginBtn.textContent = 'Login';
+    loginBtn.onclick = async () => {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+        if (!username || !password) return alert('Username and password required');
+
+        const serverUrl = getSyncServerUrl();
+        try {
+            const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (resp.ok) {
+                localStorage.setItem(USER_NAME_STORAGE_KEY, username);
+                localStorage.setItem(USER_PASSWORD_STORAGE_KEY, password);
+                closePopup(popup);
+                window.location.reload();
+            } else {
+                const data = await resp.json();
+                alert(data.error || 'Login failed');
+            }
+        } catch (e) {
+            alert('Failed to connect to server');
         }
     };
-    btnContainer.appendChild(setBtn);
+    btnContainer.appendChild(loginBtn);
+
+    const registerBtn = document.createElement('button');
+    registerBtn.className = 'popup-btn';
+    registerBtn.textContent = 'Register';
+    registerBtn.onclick = async () => {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+        if (!username || !password) return alert('Username and password required');
+
+        const serverUrl = getSyncServerUrl();
+        try {
+            const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            if (resp.ok) {
+                alert('Registered successfully! You can now login.');
+            } else {
+                const data = await resp.json();
+                alert(data.error || 'Registration failed');
+            }
+        } catch (e) {
+            alert('Failed to connect to server');
+        }
+    };
+    btnContainer.appendChild(registerBtn);
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'popup-btn';
@@ -477,13 +548,11 @@ function showBucketPromptPopup() {
     };
     btnContainer.appendChild(cancelBtn);
 
-    bucketInput.onkeydown = (e) => {
-        if (e.key === 'Enter') {
-            setBtn.click();
-        }
-    };
+    setTimeout(() => usernameInput.focus(), 100);
+}
 
-    setTimeout(() => bucketInput.focus(), 100);
+function showBucketPromptPopup() {
+    showLoginPopup();
 }
 
 function normalizeCalTopoProxyUrl(url) {
@@ -1054,6 +1123,9 @@ function setCurrentUser(user) {
     notifyActiveUser(user);
   } else {
     sessionStorage.removeItem('sar-current-user');
+    localStorage.removeItem(USER_NAME_STORAGE_KEY);
+    localStorage.removeItem(USER_PASSWORD_STORAGE_KEY);
+    localStorage.removeItem(SYNC_BUCKET_STORAGE_KEY);
   }
     syncMobileBottomNav();
 }
@@ -6817,8 +6889,50 @@ function buildSavedFilesTable() {
     });
 }
 
+async function populateSearchHistory() {
+    const historyPanel = document.getElementById('search-history-panel');
+    const historyList = document.getElementById('search-history-list');
+    if (!historyPanel || !historyList) return;
+
+    const history = await fetchUserHistory();
+    if (history && history.length > 0) {
+        historyPanel.style.display = 'block';
+        historyList.innerHTML = '';
+        history.forEach(item => {
+            const btn = document.createElement('button');
+            btn.className = 'clear-btn';
+            btn.style.textAlign = 'left';
+            btn.style.padding = '10px 15px';
+            btn.style.display = 'flex';
+            btn.style.flexDirection = 'column';
+            btn.style.gap = '4px';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.style.fontWeight = 'bold';
+            nameSpan.textContent = item.bucket;
+            btn.appendChild(nameSpan);
+
+            const dateSpan = document.createElement('span');
+            dateSpan.style.fontSize = '0.75rem';
+            dateSpan.style.color = 'var(--muted)';
+            dateSpan.textContent = new Date(item.lastAccessed).toLocaleString();
+            btn.appendChild(dateSpan);
+
+            btn.onclick = () => {
+                localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, item.bucket);
+                alert(`Switched to search: ${item.bucket}`);
+                window.location.reload();
+            };
+            historyList.appendChild(btn);
+        });
+    } else {
+        historyPanel.style.display = 'none';
+    }
+}
+
 function buildHomePage() {
   updateFileNameDisplay();
+  populateSearchHistory();
   const fileNameInput = document.getElementById('bundle-file-name');
   const saveNameBtn = document.getElementById('save-file-name');
   const homeStatus = document.getElementById('home-status');
@@ -6877,6 +6991,11 @@ function buildHomePage() {
             newBundle.accounts = currentBundle.accounts;
 
             logCreation('New Search File', newBundle.fileName, newBundle);
+            
+            // Set bucket ID for the new search
+            const newBucket = nextName.replace('.json', '').replace(/[^a-zA-Z0-9_-]/g, '_');
+            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, newBucket);
+
             saveBundle(newBundle);
             window.location.reload();
         };
@@ -7011,6 +7130,11 @@ function buildHomePage() {
               return;
           }
           logCreation('Imported Search File', importedBundle.fileName, importedBundle);
+          
+          // Set bucket ID for the imported search
+          const newBucket = importedBundle.fileName.replace('.json', '').replace(/[^a-zA-Z0-9_-]/g, '_');
+          localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, newBucket);
+
           saveBundle(importedBundle);
           window.location.reload();
         } catch (err) {
@@ -10275,13 +10399,20 @@ function initPageTransitions() {
 document.addEventListener('DOMContentLoaded', async () => {
     initPageTransitions();
     
-    if (!getSyncBucket()) {
-        showBucketPromptPopup();
-        return; // Stop initialization until bucket is set
+    if (!getUserCredentials()) {
+        showLoginPopup();
+        return;
+    }
+
+    if (!getSyncBucket() && !isHomePage()) {
+        window.location.href = 'home.html';
+        return;
     }
     
     // Always attempt an immediate sync to get the latest data from the server on startup
-    await syncWithServer();
+    if (getSyncBucket()) {
+        await syncWithServer();
+    }
     
     const bundle = loadBundle();
     applyTheme(bundle);
@@ -12720,14 +12851,29 @@ function areBundlesEqual(a, b) {
     return JSON.stringify(aCopy) === JSON.stringify(bCopy);
 }
 
+function getAuthHeaders(extra = {}) {
+    const creds = getUserCredentials();
+    const user = getCurrentUser();
+    const headers = {
+        'X-User-Name': creds ? creds.name : getAccountName(user),
+        'X-User-Pin': user ? user.pin : ''
+    };
+    if (!(extra instanceof FormData)) {
+        headers['Content-Type'] = 'application/json';
+    }
+    return { ...headers, ...extra };
+}
+
 async function syncWithServer() {
     if (isSyncing) return;
     const bucket = getSyncBucket();
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
 
-    const currentUser = getCurrentUser();
-    if (!currentUser) return;
+    if (!getUserCredentials()) {
+        showLoginPopup();
+        return;
+    }
 
     const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
     
@@ -12735,11 +12881,10 @@ async function syncWithServer() {
     try {
         const isNewDevice = !localStorage.getItem(BUNDLE_STORAGE_KEY);
         
-        // 1. Check active user status
-        // (Restriction removed)
-        
         // 1. Sync entire file list
-        const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`);
+        const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`, {
+            headers: getAuthHeaders()
+        });
         if (listResp.ok) {
             const serverFiles = await listResp.json();
             const localFiles = getSavedFiles();
@@ -12778,7 +12923,9 @@ async function syncWithServer() {
 
         // 2. Sync active bundle
         const endpoint = isNewDevice ? 'latest' : 'bundle';
-        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`);
+        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`, {
+            headers: getAuthHeaders()
+        });
         if (resp.ok) {
             const serverBundle = await resp.json();
             if (serverBundle) {
@@ -12826,12 +12973,7 @@ async function pushBundleToServer(bundle) {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
     
-    const user = getCurrentUser();
-    const headers = { 
-        'Content-Type': 'application/json',
-        'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : ''
-    };
+    const headers = getAuthHeaders();
     
     try {
         const baseUrl = serverUrl.replace(/\/$/, '');
@@ -12869,13 +13011,9 @@ async function pushFileListToServer(files) {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
     
-    const user = getCurrentUser();
-    const headers = { 
-        'Content-Type': 'application/json',
-        'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : '',
+    const headers = getAuthHeaders({
         'X-Last-Modified': new Date().toISOString()
-    };
+    });
     
     try {
         const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/all-files`, {
@@ -12900,11 +13038,7 @@ async function notifyActiveUser(user) {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl || !user || !user.pin) return;
 
-    const headers = {
-        'Content-Type': 'application/json',
-        'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : ''
-    };
+    const headers = getAuthHeaders();
     
     try {
         const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/user-${user.pin}`, {
