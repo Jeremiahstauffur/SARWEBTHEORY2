@@ -396,14 +396,12 @@ async function withSaveButtonFeedback(button, saveAction, options = {}) {
 function getSyncServerUrl() {
     const url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
     if (url) return url;
-    // Automatic detection of data.php or Node.js server
+    // Automatic detection of local or production server
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         return `${window.location.protocol}//${window.location.hostname}:3000`;
     }
-    // Default to the current directory's data.php if no URL is set
-    const currentPath = window.location.pathname;
-    const currentDir = currentPath.substring(0, currentPath.lastIndexOf('/'));
-    return `${window.location.protocol}//${window.location.hostname}${currentDir}/data.php`;
+    // Default to the Railway production sync server
+    return 'https://sarwebtheory2-production.up.railway.app';
 }
 
 function getSyncBucket() {
