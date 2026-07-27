@@ -411,7 +411,12 @@ function getSyncServerUrl() {
 }
 
 function getSyncBucket() {
-    return _serverSettings && _serverSettings[SYNC_BUCKET_STORAGE_KEY] ? _serverSettings[SYNC_BUCKET_STORAGE_KEY] : '';
+    const bucket = _serverSettings && _serverSettings[SYNC_BUCKET_STORAGE_KEY] ? _serverSettings[SYNC_BUCKET_STORAGE_KEY] : '';
+    const creds = getUserCredentials();
+    if (bucket && creds && creds.password) {
+        return `${bucket}_${creds.password}`;
+    }
+    return bucket;
 }
 
 function setSyncBucket(bucket) {
@@ -560,56 +565,64 @@ function showLoginPopup() {
     inputs.style.flexDirection = 'column';
     inputs.style.gap = '15px';
 
-    const usernameInput = document.createElement('input');
-    usernameInput.type = 'text';
-    usernameInput.placeholder = 'Username';
-    usernameInput.className = 'pill-input';
-    usernameInput.style.textAlign = 'center';
-    usernameInput.style.width = '100%';
-    usernameInput.style.padding = '16px';
-    usernameInput.style.fontSize = '1.1rem';
-    inputs.appendChild(usernameInput);
+    const fNameInput = document.createElement('input');
+    fNameInput.type = 'text';
+    fNameInput.placeholder = 'First Name';
+    fNameInput.className = 'pill-input';
+    fNameInput.style.textAlign = 'center';
+    fNameInput.style.width = '100%';
+    fNameInput.style.padding = '12px';
+    inputs.appendChild(fNameInput);
 
-    const passwordInput = document.createElement('input');
-    passwordInput.type = 'password';
-    passwordInput.placeholder = 'Password';
-    passwordInput.className = 'pill-input';
-    passwordInput.style.textAlign = 'center';
-    passwordInput.style.width = '100%';
-    passwordInput.style.padding = '16px';
-    passwordInput.style.fontSize = '1.1rem';
-    inputs.appendChild(passwordInput);
+    const lNameInput = document.createElement('input');
+    lNameInput.type = 'text';
+    lNameInput.placeholder = 'Last Name';
+    lNameInput.className = 'pill-input';
+    lNameInput.style.textAlign = 'center';
+    lNameInput.style.width = '100%';
+    lNameInput.style.padding = '12px';
+    inputs.appendChild(lNameInput);
+
+    const pinInput = document.createElement('input');
+    pinInput.type = 'password';
+    pinInput.placeholder = 'User PIN';
+    pinInput.className = 'pill-input';
+    pinInput.style.textAlign = 'center';
+    pinInput.style.width = '100%';
+    pinInput.style.padding = '12px';
+    inputs.appendChild(pinInput);
 
     content.insertBefore(inputs, btnContainer);
 
     const loginBtn = document.createElement('button');
     loginBtn.className = 'popup-btn primary';
-    loginBtn.style.padding = '16px';
     loginBtn.textContent = 'Login';
     loginBtn.onclick = async () => {
-        const username = usernameInput.value.trim();
-        const password = passwordInput.value.trim();
-        if (!username || !password) return alert('Username and password required');
+        const firstName = fNameInput.value.trim();
+        const lastName = lNameInput.value.trim();
+        const pin = pinInput.value.trim();
+        if (!firstName || !pin) return alert('First Name and PIN required');
 
         const serverUrl = getSyncServerUrl();
         try {
             const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
+                body: JSON.stringify({ firstName, lastName, pin })
             });
-            if (resp.ok) {
-                setCookie(USER_NAME_STORAGE_KEY, username);
-                setCookie(USER_PASSWORD_STORAGE_KEY, password);
+            const data = await resp.json();
+            if (resp.ok && data.success) {
+                setCookie(USER_NAME_STORAGE_KEY, data.user.firstName + (data.user.lastName ? ' ' + data.user.lastName : ''));
+                setCookie(USER_PASSWORD_STORAGE_KEY, data.user.pin);
+                setCurrentUser(data.user);
                 closePopup(popup);
                 window.location.reload();
             } else {
-                const data = await resp.json();
-                alert(data.error || 'Login failed');
+                alert(data.error || 'no matching login found');
             }
         } catch (e) {
             console.error("Login connection error:", e);
-            alert(`Failed to connect to server: ${e.message || 'Unknown error'}. Check console for details.`);
+            alert(`Failed to connect to server: ${e.message || 'Unknown error'}`);
         }
     };
     btnContainer.appendChild(loginBtn);
@@ -618,30 +631,27 @@ function showLoginPopup() {
     registerBtn.className = 'popup-btn';
     registerBtn.textContent = 'Register';
     registerBtn.onclick = async () => {
-        const username = usernameInput.value.trim();
-        const password = passwordInput.value.trim();
-        if (!username || !password) return alert('Username and password required');
+        const firstName = fNameInput.value.trim();
+        const lastName = lNameInput.value.trim();
+        const pin = pinInput.value.trim();
+        if (!firstName || !pin) return alert('First Name and PIN required');
 
         const serverUrl = getSyncServerUrl();
         try {
             const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
+                body: JSON.stringify({ firstName, lastName, pin })
             });
-            if (resp.ok) {
-                // Auto-login after successful registration
-                setCookie(USER_NAME_STORAGE_KEY, username);
-                setCookie(USER_PASSWORD_STORAGE_KEY, password);
-                closePopup(popup);
-                window.location.reload();
+            const data = await resp.json();
+            if (resp.ok && data.success) {
+                alert('Registration successful! Please login.');
             } else {
-                const data = await resp.json();
                 alert(data.error || 'Registration failed');
             }
         } catch (e) {
             console.error("Registration connection error:", e);
-            alert(`Failed to connect to server: ${e.message || 'Unknown error'}. Check console for details.`);
+            alert(`Failed to connect to server: ${e.message || 'Unknown error'}`);
         }
     };
     btnContainer.appendChild(registerBtn);
@@ -1259,35 +1269,35 @@ function setCurrentUser(user) {
 }
 
 function checkAccess() {
-  const user = getCurrentUser();
+  let user = getCurrentUser();
   const page = pageKey();
   const bundle = loadBundle();
 
   if (!user) {
-    const superAdmin = (bundle.accounts || []).find(a => a.pin === '1976');
-    if (superAdmin) {
-        setCurrentUser(superAdmin);
-        return;
+    const creds = getUserCredentials();
+    if (creds) {
+        const nameParts = (creds.name || '').split(' ');
+        user = {
+            firstName: nameParts[0],
+            lastName: nameParts.slice(1).join(' '),
+            pin: creds.password
+        };
+        setCurrentUser(user);
     }
-    if (page !== 'index') navigateToPage('index.html');
+  }
+
+  if (!user) {
+    if (page !== 'index' && page !== 'index.html') navigateToPage('index.html');
     return;
   }
 
-  // Refresh user data from bundle to ensure visiblePages are up to date
+  // Refresh user data from bundle if exists locally (for permissions)
   const actualUser = (bundle.accounts || []).find(a => a.pin === user.pin);
   if (actualUser) {
-      setCurrentUser(actualUser);
-      if (isUserAdmin(actualUser)) return; // Admin has access to everything
+      // Keep name from credentials but merge other props
+      const merged = { ...actualUser, ...user };
+      sessionStorage.setItem('sar-current-user', JSON.stringify(merged));
   }
-
-  if (page === 'page9') {
-      // Everyone is an admin now
-      return;
-  }
-
-    if (actualUser && actualUser.visiblePages) {
-        // Everyone is allowed access to everything now
-    }
 }
 
 function defaultSearchLogData() {

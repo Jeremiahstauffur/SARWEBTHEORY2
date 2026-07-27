@@ -31,7 +31,10 @@ try {
 
     $db->exec("CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
-        password TEXT
+        password TEXT,
+        firstName TEXT,
+        lastName TEXT,
+        pin TEXT
     )");
     
     $db->exec("CREATE TABLE IF NOT EXISTS user_settings (
@@ -73,49 +76,65 @@ if ($parts[1] === 'auth') {
     $data = json_decode($body, true) ?: [];
     
     if ($action === 'register' && $method === 'POST') {
-        $username = isset($data['username']) ? trim($data['username']) : '';
-        $password = isset($data['password']) ? trim($data['password']) : '';
-        if (!$username || !$password) {
-            http_response_code(400); echo json_encode(["error" => "Username and password required"]); exit;
+        $firstName = isset($data['firstName']) ? trim($data['firstName']) : '';
+        $lastName = isset($data['lastName']) ? trim($data['lastName']) : '';
+        $pin = isset($data['pin']) ? trim($data['pin']) : '';
+        
+        if (!$firstName || !$pin) {
+            http_response_code(400); echo json_encode(["error" => "First name and PIN required"]); exit;
         }
-        $hashed = hash('sha256', $password);
-        $stmt = $db->prepare("SELECT username FROM users WHERE username = ?");
-        $stmt->execute([$username]);
+        
+        $username = trim($firstName . ' ' . $lastName);
+        $hashed = hash('sha256', $pin);
+        
+        $stmt = $db->prepare("SELECT username FROM users WHERE firstName = ? AND lastName = ? AND pin = ?");
+        $stmt->execute([$firstName, $lastName, $pin]);
         if ($stmt->fetch()) {
-            http_response_code(400); echo json_encode(["error" => "Username already exists"]); exit;
+            http_response_code(400); echo json_encode(["error" => "User already exists"]); exit;
         }
-        $stmt = $db->prepare("INSERT INTO users (username, password) VALUES (?, ?)");
-        $stmt->execute([$username, $hashed]);
-        echo json_encode(["success" => true]);
+        
+        $stmt = $db->prepare("INSERT INTO users (username, password, firstName, lastName, pin) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$username, $hashed, $firstName, $lastName, $pin]);
+        echo json_encode(["success" => true, "user" => ["firstName" => $firstName, "lastName" => $lastName, "pin" => $pin]]);
         exit;
     }
     
     if ($action === 'login' && $method === 'POST') {
-        $username = isset($data['username']) ? trim($data['username']) : '';
-        $password = isset($data['password']) ? trim($data['password']) : '';
-        $hashed = hash('sha256', $password);
-        $stmt = $db->prepare("SELECT * FROM users WHERE username = ? AND password = ?");
-        $stmt->execute([$username, $hashed]);
-        if ($stmt->fetch()) {
-            echo json_encode(["success" => true]);
+        $firstName = isset($data['firstName']) ? trim($data['firstName']) : '';
+        $lastName = isset($data['lastName']) ? trim($data['lastName']) : '';
+        $pin = isset($data['pin']) ? trim($data['pin']) : '';
+        
+        $hashed = hash('sha256', $pin);
+        $stmt = $db->prepare("SELECT * FROM users WHERE firstName = ? AND lastName = ? AND pin = ?");
+        $stmt->execute([$firstName, $lastName, $pin]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row) {
+            echo json_encode(["success" => true, "user" => ["firstName" => $row['firstName'], "lastName" => $row['lastName'], "pin" => $row['pin']]]);
         } else {
-            http_response_code(401); echo json_encode(["error" => "Invalid credentials"]);
+            http_response_code(401); echo json_encode(["error" => "no matching login found"]);
         }
         exit;
     }
-    
-    $username = isset($_SERVER['HTTP_X_USER_NAME']) ? $_SERVER['HTTP_X_USER_NAME'] : '';
-    $password = isset($_SERVER['HTTP_X_USER_PASSWORD']) ? $_SERVER['HTTP_X_USER_PASSWORD'] : '';
-    
-    if (!$username || !$password) {
-        http_response_code(401); echo json_encode(["error" => "Not authenticated"]); exit;
-    }
-    $hashed = hash('sha256', $password);
-    $stmt = $db->prepare("SELECT * FROM users WHERE username = ? AND password = ?");
-    $stmt->execute([$username, $hashed]);
-    if (!$stmt->fetch()) {
-        http_response_code(401); echo json_encode(["error" => "Invalid credentials"]); exit;
-    }
+}
+
+// Global Auth Check for all other endpoints
+$username = isset($_SERVER['HTTP_X_USER_NAME']) ? $_SERVER['HTTP_X_USER_NAME'] : '';
+$password = isset($_SERVER['HTTP_X_USER_PASSWORD']) ? $_SERVER['HTTP_X_USER_PASSWORD'] : (isset($_SERVER['HTTP_X_USER_PIN']) ? $_SERVER['HTTP_X_USER_PIN'] : '');
+
+if (!$username || !$password) {
+    http_response_code(401); echo json_encode(["error" => "Not authenticated"]); exit;
+}
+$hashed = hash('sha256', $password);
+$stmt = $db->prepare("SELECT * FROM users WHERE username = ? AND password = ?");
+$stmt->execute([$username, $hashed]);
+if (!$stmt->fetch()) {
+    http_response_code(401); echo json_encode(["error" => "Invalid credentials"]); exit;
+}
+
+if ($parts[1] === 'auth') {
+    $action = isset($parts[2]) ? $parts[2] : '';
+    $body = file_get_contents('php://input');
+    $data = json_decode($body, true) ?: [];
     
     if ($action === 'settings') {
         if ($method === 'GET') {
