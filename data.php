@@ -32,8 +32,6 @@ try {
     $db->exec("CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         password TEXT,
-        firstName TEXT,
-        lastName TEXT,
         pin TEXT
     )");
     
@@ -76,15 +74,13 @@ if ($parts[1] === 'auth') {
     $data = json_decode($body, true) ?: [];
     
     if ($action === 'register' && $method === 'POST') {
-        $firstName = isset($data['firstName']) ? trim($data['firstName']) : '';
-        $lastName = isset($data['lastName']) ? trim($data['lastName']) : '';
+        $username = isset($data['username']) ? trim($data['username']) : '';
         $pin = isset($data['pin']) ? trim($data['pin']) : '';
         
-        if (!$firstName || !$pin) {
-            http_response_code(400); echo json_encode(["error" => "First name and PIN required"]); exit;
+        if (!$username || !$pin) {
+            http_response_code(400); echo json_encode(["error" => "Username and PIN required"]); exit;
         }
         
-        $username = trim($firstName . ' ' . $lastName);
         $hashed = hash('sha256', $pin);
         
         $stmt = $db->prepare("SELECT username FROM users WHERE username = ?");
@@ -93,23 +89,26 @@ if ($parts[1] === 'auth') {
             http_response_code(400); echo json_encode(["error" => "User already exists"]); exit;
         }
         
-        $stmt = $db->prepare("INSERT INTO users (username, password, firstName, lastName, pin) VALUES (?, ?, ?, ?, ?)");
-        $stmt->execute([$username, $hashed, $firstName, $lastName, $pin]);
-        echo json_encode(["success" => true, "user" => ["firstName" => $firstName, "lastName" => $lastName, "pin" => $pin]]);
+        $stmt = $db->prepare("INSERT INTO users (username, password, pin) VALUES (?, ?, ?)");
+        $stmt->execute([$username, $hashed, $pin]);
+        echo json_encode(["success" => true, "user" => ["username" => $username, "pin" => $pin]]);
         exit;
     }
     
     if ($action === 'login' && $method === 'POST') {
-        $firstName = isset($data['firstName']) ? trim($data['firstName']) : '';
-        $lastName = isset($data['lastName']) ? trim($data['lastName']) : '';
+        $username = isset($data['username']) ? trim($data['username']) : '';
         $pin = isset($data['pin']) ? trim($data['pin']) : '';
         
+        if (!$username || !$pin) {
+            http_response_code(400); echo json_encode(["error" => "Username and PIN required"]); exit;
+        }
+
         $hashed = hash('sha256', $pin);
-        $stmt = $db->prepare("SELECT * FROM users WHERE firstName = ? AND lastName = ? AND pin = ?");
-        $stmt->execute([$firstName, $lastName, $pin]);
+        $stmt = $db->prepare("SELECT * FROM users WHERE username = ? AND pin = ?");
+        $stmt->execute([$username, $pin]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($row) {
-            echo json_encode(["success" => true, "user" => ["firstName" => $row['firstName'], "lastName" => $row['lastName'], "pin" => $row['pin']]]);
+            echo json_encode(["success" => true, "user" => ["username" => $row['username'], "pin" => $row['pin']]]);
         } else {
             http_response_code(401); echo json_encode(["error" => "no matching login found"]);
         }

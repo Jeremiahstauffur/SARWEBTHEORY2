@@ -565,23 +565,14 @@ function showLoginPopup() {
     inputs.style.flexDirection = 'column';
     inputs.style.gap = '15px';
 
-    const fNameInput = document.createElement('input');
-    fNameInput.type = 'text';
-    fNameInput.placeholder = 'First Name';
-    fNameInput.className = 'pill-input';
-    fNameInput.style.textAlign = 'center';
-    fNameInput.style.width = '100%';
-    fNameInput.style.padding = '12px';
-    inputs.appendChild(fNameInput);
-
-    const lNameInput = document.createElement('input');
-    lNameInput.type = 'text';
-    lNameInput.placeholder = 'Last Name';
-    lNameInput.className = 'pill-input';
-    lNameInput.style.textAlign = 'center';
-    lNameInput.style.width = '100%';
-    lNameInput.style.padding = '12px';
-    inputs.appendChild(lNameInput);
+    const usernameInput = document.createElement('input');
+    usernameInput.type = 'text';
+    usernameInput.placeholder = 'Username';
+    usernameInput.className = 'pill-input';
+    usernameInput.style.textAlign = 'center';
+    usernameInput.style.width = '100%';
+    usernameInput.style.padding = '12px';
+    inputs.appendChild(usernameInput);
 
     const pinInput = document.createElement('input');
     pinInput.type = 'password';
@@ -598,21 +589,20 @@ function showLoginPopup() {
     loginBtn.className = 'popup-btn primary';
     loginBtn.textContent = 'Login';
     loginBtn.onclick = async () => {
-        const firstName = fNameInput.value.trim();
-        const lastName = lNameInput.value.trim();
+        const username = usernameInput.value.trim();
         const pin = pinInput.value.trim();
-        if (!firstName || !pin) return alert('First Name and PIN required');
+        if (!username || !pin) return alert('Username and PIN required');
 
         const serverUrl = getSyncServerUrl();
         try {
             const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ firstName, lastName, pin })
+                body: JSON.stringify({ username, pin })
             });
             const data = await resp.json();
             if (resp.ok && data.success) {
-                setCookie(USER_NAME_STORAGE_KEY, data.user.firstName + (data.user.lastName ? ' ' + data.user.lastName : ''));
+                setCookie(USER_NAME_STORAGE_KEY, data.user.username);
                 setCookie(USER_PASSWORD_STORAGE_KEY, data.user.pin);
                 setCurrentUser(data.user);
                 closePopup(popup);
@@ -631,17 +621,16 @@ function showLoginPopup() {
     registerBtn.className = 'popup-btn';
     registerBtn.textContent = 'Register';
     registerBtn.onclick = async () => {
-        const firstName = fNameInput.value.trim();
-        const lastName = lNameInput.value.trim();
+        const username = usernameInput.value.trim();
         const pin = pinInput.value.trim();
-        if (!firstName || !pin) return alert('First Name and PIN required');
+        if (!username || !pin) return alert('Username and PIN required');
 
         const serverUrl = getSyncServerUrl();
         try {
             const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ firstName, lastName, pin })
+                body: JSON.stringify({ username, pin })
             });
             const data = await resp.json();
             if (resp.ok && data.success) {
@@ -983,7 +972,7 @@ function isUserAdmin(user) {
 function getAccountName(user) {
     if (!user) return '';
     if (user.pin === '1976') return 'Super-Admin';
-    return (user.firstName + (user.lastName ? ' ' + (user.lastName || '') : '')).trim();
+    return (user.username || '').trim();
 }
 
 function getVisibleMobileNavPages(user = getCurrentUser()) {
@@ -1276,10 +1265,8 @@ function checkAccess() {
   if (!user) {
     const creds = getUserCredentials();
     if (creds) {
-        const nameParts = (creds.name || '').split(' ');
         user = {
-            firstName: nameParts[0],
-            lastName: nameParts.slice(1).join(' '),
+            username: creds.name,
             pin: creds.password
         };
         setCurrentUser(user);
@@ -1359,7 +1346,7 @@ function defaultBundle() {
     uploads: [],
     maps: [],
     accounts: [
-      { firstName: 'Super', lastName: 'Admin', pin: '1976', color: 'none', handle: 'Super-Admin', isFileManager: true, theme: 'dark', visiblePages: ['index', 'page2', 'page3', 'page4', 'page5', 'page6', 'page7', 'settings', 'home', 'page8', 'page9', 'page10'] }
+      { username: 'Super Admin', pin: '1976', color: 'none', handle: 'Super-Admin', isFileManager: true, theme: 'dark', visiblePages: ['index', 'page2', 'page3', 'page4', 'page5', 'page6', 'page7', 'settings', 'home', 'page8', 'page9', 'page10'] }
     ],
     profile: {
       incidentNumber: '',
@@ -1528,8 +1515,7 @@ function sanitizeBundle(bundle) {
 
   // 1. Ensure only one Super Admin exists
   const superAdmin = accounts.find(a => a.pin === '1976') || fallback.accounts[0];
-  superAdmin.firstName = 'Super';
-  superAdmin.lastName = 'Admin';
+  superAdmin.username = 'Super Admin';
   superAdmin.handle = 'Super-Admin';
   superAdmin.pin = '1976';
   
@@ -1569,14 +1555,12 @@ function sanitizeBundle(bundle) {
 
     // Fallback to name match
     if (!existing) {
-        existing = accounts.find(a => a.handle === name || (a.firstName + ' ' + (a.lastName || '')).trim() === name);
+        existing = accounts.find(a => a.handle === name || (a.username || '').trim() === name);
     }
 
     if (existing) {
       // Update account name from Personnel list (Personnel is source of truth for name unless changed via User Account page which also updates Personnel)
-      const parts = name.split(' ');
-      existing.firstName = parts[0];
-      existing.lastName = parts.slice(1).join(' ');
+      existing.username = name;
       existing.handle = name;
       
       // Ensure PIN link is established in Personnel list
@@ -1588,10 +1572,8 @@ function sanitizeBundle(bundle) {
     } else {
       // Create new account
       const newPin = rowPin || getNextPin(syncedAccounts);
-      const parts = name.split(' ');
       const newAcc = {
-        firstName: parts[0],
-        lastName: parts.slice(1).join(' '),
+        username: name,
         pin: newPin,
         color: 'none',
         handle: name,
@@ -4865,7 +4847,7 @@ function addActivityLogEntry(team, action, bundle = null, membersOverride = null
   }
 
   const currentUser = getCurrentUser();
-  const userTag = currentUser ? ` - ${currentUser.handle || (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim()}` : '';
+  const userTag = currentUser ? ` - ${currentUser.handle || (currentUser.username || '').trim()}` : '';
 
   let members = '';
   if (team !== 'System') {
@@ -4956,14 +4938,14 @@ function showUserSelectionPopup() {
     pillsContainer.innerHTML = '';
     const query = userSearchInput.value.toLowerCase();
     const filtered = accounts.filter(acc => 
-      `${acc.firstName} ${acc.lastName}`.toLowerCase().includes(query)
+      (acc.username || '').toLowerCase().includes(query)
     );
 
     filtered.forEach(acc => {
       const pill = document.createElement('button');
       pill.className = 'mini-pill';
-      pill.textContent = `${acc.firstName} ${acc.lastName}`;
-      if (selectedUser && selectedUser.firstName === acc.firstName && selectedUser.lastName === acc.lastName) {
+      pill.textContent = acc.username || '';
+      if (selectedUser && selectedUser.username === acc.username) {
           pill.style.background = 'var(--pill-bg-hover)';
           pill.style.borderColor = 'var(--accent)';
       }
@@ -5014,7 +4996,7 @@ function showAccountManager() {
     row.style.borderBottom = '1px solid var(--line)';
 
     const info = document.createElement('div');
-    info.textContent = `${acc.firstName} ${acc.lastName} (@${acc.handle || 'no-handle'})`;
+    info.textContent = `${acc.username || ''} (@${acc.handle || 'no-handle'})`;
     row.appendChild(info);
 
     const actions = document.createElement('div');
@@ -5045,7 +5027,7 @@ function showAccountManager() {
             };
             if (b.deleteMode) {
                 doDelete();
-            } else if (confirm(`Delete account ${acc.firstName}?`)) {
+            } else if (confirm(`Delete account ${acc.username || ''}?`)) {
                 doDelete();
             }
         };
@@ -5085,17 +5067,11 @@ function showEditAccountPopup(acc, index = -1) {
     const inputs = document.createElement('div');
     inputs.className = 'popup-input-container';
 
-    const fName = document.createElement('input');
-    fName.className = 'pill-input';
-    fName.placeholder = 'First Name';
-    fName.value = acc ? acc.firstName : '';
-    inputs.appendChild(fName);
-
-    const lName = document.createElement('input');
-    lName.className = 'pill-input';
-    lName.placeholder = 'Last Name';
-    lName.value = acc ? acc.lastName : '';
-    inputs.appendChild(lName);
+    const usernameField = document.createElement('input');
+    usernameField.className = 'pill-input';
+    usernameField.placeholder = 'Username';
+    usernameField.value = acc ? acc.username || '' : '';
+    inputs.appendChild(usernameField);
 
     const handle = document.createElement('input');
     handle.className = 'pill-input';
@@ -5188,8 +5164,7 @@ function showEditAccountPopup(acc, index = -1) {
                 finalPin = next.toString();
             }
             const newAcc = {
-                firstName: fName.value,
-                lastName: lName.value,
+                username: usernameField.value,
                 handle: handle.value,
                 pin: finalPin,
                 color: color.value,
@@ -5198,11 +5173,11 @@ function showEditAccountPopup(acc, index = -1) {
 
             // Sync to Personnel list
             if (bundle.pages && bundle.pages.page3) {
-                const newName = newAcc.handle || (newAcc.firstName + ' ' + (newAcc.lastName || '')).trim();
+                const newName = newAcc.handle || (newAcc.username || '').trim();
                 if (acc) {
                     const oldPin = acc.pin;
                     const oldHandle = acc.handle;
-                    const oldFullName = (acc.firstName + ' ' + (acc.lastName || '')).trim();
+                    const oldFullName = (acc.username || '').trim();
                     bundle.pages.page3.forEach(row => {
                         const rowName = (row[0] || '').trim();
                         const rowPin = (row[8] || '').trim();
@@ -5252,9 +5227,9 @@ function updateHeaderProfile() {
     btn.style.borderColor = '';
 
     if (user) {
-        const f = (user.firstName || '').trim().charAt(0).toUpperCase();
-        const l = (user.lastName || '').trim().charAt(0).toUpperCase();
-        btn.innerHTML = (f + l) || '??';
+        const uName = (user.username || '').trim();
+        const initial = uName.charAt(0).toUpperCase();
+        btn.innerHTML = initial || '??';
         
         if (pageKey() === 'page8') {
             btn.classList.add('active');
@@ -5471,7 +5446,7 @@ function createLogTimestampPill(entry) {
       userPill.style.fontSize = '0.7rem';
       userPill.style.background = 'rgba(255,255,255,0.05)';
       userPill.style.borderColor = 'rgba(255,255,255,0.1)';
-      userPill.textContent = currentUser.handle || (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim();
+      userPill.textContent = currentUser.handle || (currentUser.username || '').trim();
       container.appendChild(userPill);
     }
   }
@@ -7346,7 +7321,7 @@ function applyTheme(bundle) {
   if (user) {
     // Look up current user in bundle to get latest theme preference
     const actualUser = (bundle.accounts || []).find(a => 
-      a.firstName === user.firstName && a.lastName === user.lastName && a.pin === user.pin
+      a.username === user.username && a.pin === user.pin
     );
     if (actualUser && actualUser.theme) {
       theme = actualUser.theme;
@@ -12388,12 +12363,8 @@ function buildUserAccountPage() {
     container.innerHTML = `
         <div class="profile-form" style="max-width: 800px; margin: 0 auto; background: rgba(0,0,0,0.2); padding: 30px; border-radius: 32px; border: 1px solid rgba(255,255,255,0.1);">
             <div class="form-group small">
-                <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">First Name</label>
-                <input type="text" id="user-first-name" class="pill-input" value="${userToEdit.firstName || ''}" style="width: 100%; box-sizing: border-box;">
-            </div>
-            <div class="form-group small">
-                <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Last Name</label>
-                <input type="text" id="user-last-name" class="pill-input" value="${userToEdit.lastName || ''}" style="width: 100%; box-sizing: border-box;">
+                <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Username</label>
+                <input type="text" id="user-username" class="pill-input" value="${userToEdit.username || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
             <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">User PIN</label>
@@ -12494,30 +12465,28 @@ function buildUserAccountPage() {
     }
 
     document.getElementById('save-user-btn').onclick = () => {
-        const newFirstName = document.getElementById('user-first-name').value;
-        const newLastName = document.getElementById('user-last-name').value;
+        const newUsername = document.getElementById('user-username').value;
         const newPin = document.getElementById('user-pin').value;
         const newHandle = document.getElementById('user-handle').value;
         
-        if (!newFirstName || !newPin) {
-            alert('First Name and PIN are required.');
+        if (!newUsername || !newPin) {
+            alert('Username and PIN are required.');
             return;
         }
 
         const oldPin = userToEdit.pin;
         const oldHandle = userToEdit.handle;
-        const oldFullName = (userToEdit.firstName + ' ' + (userToEdit.lastName || '')).trim();
+        const oldFullName = (userToEdit.username || '').trim();
 
         const idx = (bundle.accounts || []).findIndex(a => a.pin === oldPin);
 
-        userToEdit.firstName = newFirstName;
-        userToEdit.lastName = newLastName;
+        userToEdit.username = newUsername;
         userToEdit.pin = newPin;
         userToEdit.handle = newHandle;
         
         // Sync name change to Personnel list (page3)
         if (bundle.pages && bundle.pages.page3) {
-            const newName = newHandle || (newFirstName + ' ' + (newLastName || '')).trim();
+            const newName = newHandle || (newUsername || '').trim();
             bundle.pages.page3.forEach(row => {
                 const rowName = (row[0] || '').trim();
                 const rowPin = (row[8] || '').trim();

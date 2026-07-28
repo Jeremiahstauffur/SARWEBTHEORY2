@@ -231,8 +231,6 @@ db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         password TEXT,
-        firstName TEXT,
-        lastName TEXT,
         pin TEXT
     )`);
 
@@ -258,40 +256,39 @@ app.use(express.json({limit: '50mb'}));
 
 // Auth Endpoints
 app.post('/api/auth/register', (req, res) => {
-    const {firstName, lastName, pin} = req.body;
-    if (!firstName || !pin) {
-        return res.status(400).json({error: 'First name and PIN are required'});
+    const {username, pin} = req.body;
+    if (!username || !pin) {
+        return res.status(400).json({error: 'Username and PIN are required'});
     }
 
-    const username = (firstName + ' ' + (lastName || '')).trim();
     const hashedPassword = crypto.createHash('sha256').update(pin).digest('hex');
 
-    db.run("INSERT INTO users (username, password, firstName, lastName, pin) VALUES (?, ?, ?, ?, ?)", 
-        [username, hashedPassword, firstName, lastName || '', pin], (err) => {
+    db.run("INSERT INTO users (username, password, pin) VALUES (?, ?, ?)", 
+        [username, hashedPassword, pin], (err) => {
         if (err) {
             if (err.message.includes('UNIQUE constraint failed')) {
                 return res.status(400).json({error: 'User already exists'});
             }
             return res.status(500).json({error: err.message});
         }
-        res.json({success: true, user: {firstName, lastName, pin}});
+        res.json({success: true, user: {username, pin}});
     });
 });
 
 app.post('/api/auth/login', (req, res) => {
-    const {firstName, lastName, pin} = req.body;
-    if (!firstName || !pin) {
-        return res.status(400).json({error: 'First name and PIN are required'});
+    const {username, pin} = req.body;
+    if (!username || !pin) {
+        return res.status(400).json({error: 'Username and PIN are required'});
     }
 
-    db.get("SELECT * FROM users WHERE firstName = ? AND lastName = ? AND pin = ?", [firstName, lastName || '', pin], (err, row) => {
+    db.get("SELECT * FROM users WHERE username = ? AND pin = ?", [username, pin], (err, row) => {
         if (err) {
             return res.status(500).json({error: err.message});
         }
         if (!row) {
             return res.status(401).json({error: 'no matching login found'});
         }
-        res.json({success: true, user: {firstName: row.firstName, lastName: row.lastName, pin: row.pin}});
+        res.json({success: true, user: {username: row.username, pin: row.pin}});
     });
 });
 
