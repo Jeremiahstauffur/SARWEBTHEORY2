@@ -87,8 +87,8 @@ if ($parts[1] === 'auth') {
         $username = trim($firstName . ' ' . $lastName);
         $hashed = hash('sha256', $pin);
         
-        $stmt = $db->prepare("SELECT username FROM users WHERE firstName = ? AND lastName = ? AND pin = ?");
-        $stmt->execute([$firstName, $lastName, $pin]);
+        $stmt = $db->prepare("SELECT username FROM users WHERE username = ?");
+        $stmt->execute([$username]);
         if ($stmt->fetch()) {
             http_response_code(400); echo json_encode(["error" => "User already exists"]); exit;
         }
@@ -230,7 +230,7 @@ if ($method === 'GET') {
     $data = json_decode($body, true);
     
     $userName = isset($_SERVER['HTTP_X_USER_NAME']) ? $_SERVER['HTTP_X_USER_NAME'] : 'Unknown';
-    $userPin = isset($_SERVER['HTTP_X_USER_PIN']) ? $_SERVER['HTTP_X_USER_PIN'] : '';
+    $userPin = isset($_SERVER['HTTP_X_USER_PIN']) ? $_SERVER['HTTP_X_USER_PIN'] : (isset($_SERVER['HTTP_X_USER_PASSWORD']) ? $_SERVER['HTTP_X_USER_PASSWORD'] : '');
     $isSuperAdmin = ($userPin === '1976');
     
     $incomingLastModified = time() * 1000;
@@ -278,7 +278,7 @@ if ($method === 'GET') {
         exit;
     }
     
-    $userPin = isset($_SERVER['HTTP_X_USER_PIN']) ? $_SERVER['HTTP_X_USER_PIN'] : '';
+    $userPin = isset($_SERVER['HTTP_X_USER_PIN']) ? $_SERVER['HTTP_X_USER_PIN'] : (isset($_SERVER['HTTP_X_USER_PASSWORD']) ? $_SERVER['HTTP_X_USER_PASSWORD'] : '');
     $isSuperAdmin = ($userPin === '1976');
     
     $stmt = $db->prepare("SELECT userPin FROM store WHERE bucket = ? AND key = ?");

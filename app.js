@@ -13034,10 +13034,10 @@ function areBundlesEqual(a, b) {
 
 function getAuthHeaders(extra = {}) {
     const creds = getUserCredentials();
-    const user = getCurrentUser();
     const headers = {
-        'X-User-Name': creds ? creds.name : getAccountName(user),
-        'X-User-Pin': user ? user.pin : ''
+        'X-User-Name': creds ? creds.name : '',
+        'X-User-Pin': creds ? creds.password : '',
+        'X-User-Password': creds ? creds.password : ''
     };
     if (!(extra instanceof FormData)) {
         headers['Content-Type'] = 'application/json';

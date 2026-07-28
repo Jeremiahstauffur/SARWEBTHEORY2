@@ -230,7 +230,10 @@ db.serialize(() => {
 
     db.run(`CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
-        password TEXT
+        password TEXT,
+        firstName TEXT,
+        lastName TEXT,
+        pin TEXT
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS user_buckets (
@@ -255,51 +258,63 @@ app.use(express.json({limit: '50mb'}));
 
 // Auth Endpoints
 app.post('/api/auth/register', (req, res) => {
-    const {username, password} = req.body;
-    if (!username || !password) {
-        return res.status(400).json({error: 'Username and password are required'});
+    const {firstName, lastName, pin} = req.body;
+    if (!firstName || !pin) {
+        return res.status(400).json({error: 'First name and PIN are required'});
     }
 
-    // Simple hashing for this implementation
-    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    const username = (firstName + ' ' + (lastName || '')).trim();
+    const hashedPassword = crypto.createHash('sha256').update(pin).digest('hex');
 
-    db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hashedPassword], (err) => {
+    db.run("INSERT INTO users (username, password, firstName, lastName, pin) VALUES (?, ?, ?, ?, ?)", 
+        [username, hashedPassword, firstName, lastName || '', pin], (err) => {
         if (err) {
             if (err.message.includes('UNIQUE constraint failed')) {
-                return res.status(400).json({error: 'Username already exists'});
+                return res.status(400).json({error: 'User already exists'});
             }
             return res.status(500).json({error: err.message});
         }
-        res.json({success: true});
+        res.json({success: true, user: {firstName, lastName, pin}});
     });
 });
 
 app.post('/api/auth/login', (req, res) => {
-    const {username, password} = req.body;
-    if (!username || !password) {
-        return res.status(400).json({error: 'Username and password are required'});
+    const {firstName, lastName, pin} = req.body;
+    if (!firstName || !pin) {
+        return res.status(400).json({error: 'First name and PIN are required'});
     }
 
-    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
-
-    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, row) => {
+    db.get("SELECT * FROM users WHERE firstName = ? AND lastName = ? AND pin = ?", [firstName, lastName || '', pin], (err, row) => {
         if (err) {
             return res.status(500).json({error: err.message});
         }
         if (!row) {
-            return res.status(401).json({error: 'Invalid username or password'});
+            return res.status(401).json({error: 'no matching login found'});
         }
-        res.json({success: true, username: row.username});
+        res.json({success: true, user: {firstName: row.firstName, lastName: row.lastName, pin: row.pin}});
     });
 });
 
-app.get('/api/auth/history', (req, res) => {
+// Auth Middleware
+const authMiddleware = (req, res, next) => {
     const username = req.headers['x-user-name'];
-    if (!username) {
+    const password = req.headers['x-user-password'] || req.headers['x-user-pin'];
+
+    if (!username || !password) {
         return res.status(401).json({error: 'Not authenticated'});
     }
 
-    db.all("SELECT bucket, lastAccessed FROM user_buckets WHERE username = ? ORDER BY lastAccessed DESC", [username], (err, rows) => {
+    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
+    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, row) => {
+        if (err) return res.status(500).json({error: err.message});
+        if (!row) return res.status(401).json({error: 'Invalid credentials'});
+        req.user = row;
+        next();
+    });
+};
+
+app.get('/api/auth/history', authMiddleware, (req, res) => {
+    db.all("SELECT bucket, lastAccessed FROM user_buckets WHERE username = ? ORDER BY lastAccessed DESC", [req.user.username], (err, rows) => {
         if (err) {
             return res.status(500).json({error: err.message});
         }
@@ -308,46 +323,22 @@ app.get('/api/auth/history', (req, res) => {
 });
 
 // User Settings Endpoints
-app.get('/api/auth/settings', (req, res) => {
-    const username = req.headers['x-user-name'];
-    const password = req.headers['x-user-password'];
-    if (!username || !password) {
-        return res.status(401).json({error: 'Not authenticated'});
-    }
-
-    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
-    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, user) => {
+app.get('/api/auth/settings', authMiddleware, (req, res) => {
+    db.get("SELECT settings FROM user_settings WHERE username = ?", [req.user.username], (err, row) => {
         if (err) return res.status(500).json({error: err.message});
-        if (!user) return res.status(401).json({error: 'Invalid credentials'});
-
-        db.get("SELECT settings FROM user_settings WHERE username = ?", [username], (err, row) => {
-            if (err) return res.status(500).json({error: err.message});
-            try {
-                res.json(row ? JSON.parse(row.settings) : {});
-            } catch (e) {
-                res.json({});
-            }
-        });
+        try {
+            res.json(row ? JSON.parse(row.settings) : {});
+        } catch (e) {
+            res.json({});
+        }
     });
 });
 
-app.put('/api/auth/settings', (req, res) => {
-    const username = req.headers['x-user-name'];
-    const password = req.headers['x-user-password'];
-    if (!username || !password) {
-        return res.status(401).json({error: 'Not authenticated'});
-    }
-
-    const hashedPassword = crypto.createHash('sha256').update(password).digest('hex');
-    db.get("SELECT * FROM users WHERE username = ? AND password = ?", [username, hashedPassword], (err, user) => {
+app.put('/api/auth/settings', authMiddleware, (req, res) => {
+    const settings = JSON.stringify(req.body || {});
+    db.run("INSERT OR REPLACE INTO user_settings (username, settings) VALUES (?, ?)", [req.user.username, settings], (err) => {
         if (err) return res.status(500).json({error: err.message});
-        if (!user) return res.status(401).json({error: 'Invalid credentials'});
-
-        const settings = JSON.stringify(req.body || {});
-        db.run("INSERT OR REPLACE INTO user_settings (username, settings) VALUES (?, ?)", [username, settings], (err) => {
-            if (err) return res.status(500).json({error: err.message});
-            res.json({success: true});
-        });
+        res.json({success: true});
     });
 });
 
@@ -512,10 +503,9 @@ const getFilePath = (bucket, key) => {
 };
 
 // Get all files for a bucket
-app.get('/api/v1/:bucket/all-files', (req, res) => {
+app.get('/api/v1/:bucket/all-files', authMiddleware, (req, res) => {
     const {bucket} = req.params;
-    const userName = req.headers['x-user-name'];
-    trackBucketAccess(userName, bucket);
+    trackBucketAccess(req.user.username, bucket);
     db.all("SELECT key, updatedAt FROM store WHERE bucket = ?", [bucket], (err, rows) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
         const files = {};
@@ -527,7 +517,7 @@ app.get('/api/v1/:bucket/all-files', (req, res) => {
 });
 
 // Get latest bundle for a bucket
-app.get('/api/v1/:bucket/latest', (req, res) => {
+app.get('/api/v1/:bucket/latest', authMiddleware, (req, res) => {
     const {bucket} = req.params;
     db.get("SELECT value FROM store WHERE bucket = ? ORDER BY updatedAt DESC LIMIT 1", [bucket], (err, row) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
@@ -541,7 +531,7 @@ app.get('/api/v1/:bucket/latest', (req, res) => {
 });
 
 // Get a specific key
-app.get('/api/v1/:bucket/:key', (req, res) => {
+app.get('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
     const {bucket, key} = req.params;
     db.get("SELECT value FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err, row) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
@@ -556,9 +546,9 @@ app.get('/api/v1/:bucket/:key', (req, res) => {
 
 // Set a value
 // Delete a value
-app.delete('/api/v1/:bucket/:key', (req, res) => {
+app.delete('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
     const {bucket, key} = req.params;
-    const userPin = req.headers['x-user-pin'] || '';
+    const userPin = req.headers['x-user-pin'] || req.headers['x-user-password'] || '';
     const isSuperAdmin = userPin === '1976';
 
     db.get("SELECT userPin FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err, row) => {
@@ -579,11 +569,11 @@ app.delete('/api/v1/:bucket/:key', (req, res) => {
     });
 });
 
-app.put('/api/v1/:bucket/:key', (req, res) => {
+app.put('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
     const {bucket, key} = req.params;
-    const userName = req.headers['x-user-name'] || 'Unknown';
-    trackBucketAccess(req.headers['x-user-name'], bucket);
-    const userPin = req.headers['x-user-pin'] || '';
+    const userName = req.user.username || 'Unknown';
+    trackBucketAccess(req.user.username, bucket);
+    const userPin = req.headers['x-user-pin'] || req.headers['x-user-password'] || '';
     const isSuperAdmin = userPin === '1976';
 
     let incomingLastModified = Date.now();
