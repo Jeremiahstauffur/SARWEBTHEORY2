@@ -10571,16 +10571,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    await loadServerSettings();
+    // Load server settings in the background. Awaiting a fetch with no timeout here
+    // means an unreachable/slow sync server would stall the rest of init — including
+    // wiring up the home-page Save/New/Import buttons and other page handlers.
+    loadServerSettings();
 
     if (!getSyncBucket() && !isHomePage()) {
         window.location.href = 'home.html';
         return;
     }
     
-    // Always attempt an immediate sync to get the latest data from the server on startup
+    // Kick off the initial sync WITHOUT blocking page setup. Awaiting it would hang
+    // the whole page (leaving buttons/handlers unwired) whenever the server is slow
+    // or down. syncWithServer() calls refreshSyncUI() itself once fresh data lands,
+    // so the UI still updates when the sync completes.
     if (getSyncBucket()) {
-        await syncWithServer();
+        syncWithServer();
     }
     
     const bundle = loadBundle();
@@ -13272,7 +13278,39 @@ function refreshSyncUI() {
     else buildStandardTable();
 }
 
-// Start sync loop
-setInterval(syncWithServer, 2000);
-// Initial sync
+// Sync on demand instead of continuously polling in the background. Changes are
+// pushed to (and pulled from) the server only when:
+//   - the user leaves an editable cell or text box (focusout), and
+//   - the user leaves / switches away from the page (pagehide / tab hidden),
+//   - plus one initial sync when arriving on a page (page load below).
+
+// A tiny debounce lets the blur-triggered local save (saveBundle) finish first,
+// so the follow-up sync actually carries the just-entered value. It also collapses
+// rapid focus changes (e.g. tabbing between cells) into a single sync.
+let _syncOnLeaveTimer = null;
+function scheduleSyncOnLeave() {
+    if (_syncOnLeaveTimer) clearTimeout(_syncOnLeaveTimer);
+    _syncOnLeaveTimer = setTimeout(() => {
+        _syncOnLeaveTimer = null;
+        syncWithServer();
+    }, 200);
+}
+
+// Fires when focus leaves any editable field (contenteditable cells, inputs, etc.).
+document.addEventListener('focusout', (e) => {
+    const el = e.target;
+    if (!el || !el.tagName) return;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable) {
+        scheduleSyncOnLeave();
+    }
+});
+
+// Push/pull when the page is being left or hidden (i.e. switching pages).
+window.addEventListener('pagehide', () => { syncWithServer(); });
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') syncWithServer();
+});
+
+// Initial sync when arriving on a page.
 setTimeout(syncWithServer, 1000);
