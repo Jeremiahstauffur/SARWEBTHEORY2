@@ -399,15 +399,26 @@ async function withSaveButtonFeedback(button, saveAction, options = {}) {
     }
 }
 
+// Public backend (Railway) that runs the SAR sync API (register/login + per-user
+// data buckets). The GitHub-hosted static site cannot execute data.php locally,
+// so all API requests must be sent to this absolute URL instead of a relative path.
+const DEFAULT_SYNC_SERVER_URL = 'https://sarwebtheory2-production.up.railway.app';
+
 function getSyncServerUrl() {
-    if (_serverSettings && _serverSettings[SYNC_URL_STORAGE_KEY]) {
-        return _serverSettings[SYNC_URL_STORAGE_KEY];
+    const configuredUrl = _serverSettings && _serverSettings[SYNC_URL_STORAGE_KEY];
+    // Only honor an explicitly configured absolute URL. A stale relative value
+    // like "data.php" would resolve against the static host and fail with a 405.
+    if (configuredUrl && /^https?:\/\//i.test(configuredUrl)) {
+        return configuredUrl;
     }
-    // Automatically detect sync-server.js or default to data.php
+    // When running the backend locally, talk to the local sync server.
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         return `${window.location.protocol}//${window.location.hostname}:3000`;
     }
-    return 'data.php';
+    // In production the static frontend (GitHub Pages) must reach the remote
+    // backend over an absolute URL; a relative "data.php" would hit the static
+    // host and return a 405 HTML page instead of JSON.
+    return DEFAULT_SYNC_SERVER_URL;
 }
 
 function getSyncBucket() {
