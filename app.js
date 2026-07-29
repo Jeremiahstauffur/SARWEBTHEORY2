@@ -13036,6 +13036,11 @@ async function syncWithServer() {
         return;
     }
 
+    // Without a configured bucket the API path would collapse to "/api/v1//..."
+    // (note the double slash), which the backend answers with a 404 on every
+    // 2s tick. Skip syncing entirely until a bucket is available.
+    if (!bucket) return;
+
     const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
     
     isSyncing = true;
