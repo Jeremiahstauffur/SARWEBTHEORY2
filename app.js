@@ -2229,13 +2229,15 @@ function buildRegionsTable() {
   const dynamicCount = data.headers.length - 2;
 
   if (tableContainer) {
-    if (data.headers.length > 5) {
+    // Keep the normal spreadsheet-style table (with an editable header row) until
+    // there are more than 10 columns; beyond that, wrap the cells into the pill grid.
+    if (data.headers.length > 10) {
       tableContainer.classList.add('force-mobile-layout');
     } else {
       tableContainer.classList.remove('force-mobile-layout');
     }
     // Also remove horizontal overflow from table-card when in card layout
-    if (data.headers.length > 5) {
+    if (data.headers.length > 10) {
       tableContainer.style.overflowX = 'hidden';
     } else {
       tableContainer.style.overflowX = '';
@@ -13134,7 +13136,7 @@ async function syncWithServer() {
     }
 }
 
-async function pushBundleToServer(bundle) {
+async function pushBundleToServer(bundle, isReconcileRetry = false) {
     const bucket = getSyncBucket();
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
@@ -13153,22 +13155,53 @@ async function pushBundleToServer(bundle) {
         // 2. Also push to a file-specific endpoint to aid discovery and prevent truncation
         if (bundle.fileName) {
             const fileKey = bundle.fileName.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+            // A conflict on this secondary endpoint is handled by the bundle push below,
+            // so ignore its failures instead of letting them surface as console noise.
             await fetch(`${baseUrl}/api/v1/${bucket}/${fileKey}`, {
                 method: 'PUT',
                 headers: headers,
                 body: JSON.stringify(bundle)
-            });
+            }).catch(() => {});
         }
 
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
             if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
-                return; // Silently ignore sync conflicts
+                // The server holds a newer (or clock-skewed future) timestamp. Left alone,
+                // this rejects the user's just-made edit and the next sync reverts it. Merge
+                // the server copy with the local edit (local wins), bump the timestamp above
+                // the server's, and push once so the edit reliably persists.
+                if (!isReconcileRetry) {
+                    await reconcileAndRepushBundle(bundle, baseUrl, bucket, headers);
+                }
+                return;
             }
             console.error("Push bundle failed:", resp.status, errorData.message || '');
         }
     } catch (err) {
         console.error("Push bundle failed:", err);
+    }
+}
+
+async function reconcileAndRepushBundle(localBundle, baseUrl, bucket, headers) {
+    try {
+        const resp = await fetch(`${baseUrl}/api/v1/${bucket}/bundle?_=${Date.now()}`, { headers });
+        if (!resp.ok) return; // Nothing to reconcile against; leave the local copy as-is.
+        const serverBundle = await resp.json();
+        if (!serverBundle || typeof serverBundle !== 'object') return;
+
+        // mergeBundles lets its second argument win on conflicts, so pass the local
+        // bundle second to keep the user's edit while still absorbing server-only rows.
+        const reconciled = mergeBundles(serverBundle, localBundle);
+        const serverTime = new Date(serverBundle.lastModified || 0).getTime() || 0;
+        reconciled.lastModified = new Date(Math.max(serverTime, Date.now()) + 1000).toISOString();
+
+        const sanitized = sanitizeBundle(reconciled);
+        _memoryStorage[BUNDLE_STORAGE_KEY] = JSON.stringify(sanitized);
+        await pushBundleToServer(sanitized, true);
+        refreshSyncUI();
+    } catch (err) {
+        console.warn("Bundle reconcile failed:", err);
     }
 }
 
