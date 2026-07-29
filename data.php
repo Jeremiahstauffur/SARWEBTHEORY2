@@ -9,43 +9,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-$db_file = __DIR__ . '/db/sar_sync.db';
-if (!is_dir(__DIR__ . '/db')) {
-    mkdir(__DIR__ . '/db', 0777, true);
+// Resolve MySQL connection settings from the Railway environment variables.
+// Prefer a full connection URL (MYSQL_URL inside Railway, MYSQL_PUBLIC_URL from
+// outside); otherwise fall back to the individual MYSQL* variables.
+function sar_mysql_config() {
+    $url = trim(getenv('MYSQL_URL') ?: (getenv('MYSQL_PUBLIC_URL') ?: (getenv('DATABASE_URL') ?: '')));
+    if ($url && preg_match('#^mysql://#i', $url)) {
+        $p = parse_url($url);
+        return [
+            'host' => isset($p['host']) ? $p['host'] : 'localhost',
+            'port' => isset($p['port']) ? (int)$p['port'] : 3306,
+            'user' => isset($p['user']) ? urldecode($p['user']) : 'root',
+            'pass' => isset($p['pass']) ? urldecode($p['pass']) : '',
+            'name' => isset($p['path']) ? ltrim($p['path'], '/') : 'railway',
+        ];
+    }
+    return [
+        'host' => getenv('MYSQLHOST') ?: (getenv('MYSQL_HOST') ?: 'localhost'),
+        'port' => (int)(getenv('MYSQLPORT') ?: (getenv('MYSQL_PORT') ?: 3306)),
+        'user' => getenv('MYSQLUSER') ?: (getenv('MYSQL_USER') ?: 'root'),
+        'pass' => getenv('MYSQLPASSWORD') ?: (getenv('MYSQL_PASSWORD') ?: (getenv('MYSQL_ROOT_PASSWORD') ?: '')),
+        'name' => getenv('MYSQLDATABASE') ?: (getenv('MYSQL_DATABASE') ?: 'railway'),
+    ];
 }
 
 try {
-    $db = new PDO("sqlite:" . $db_file);
+    $cfg = sar_mysql_config();
+    $dsn = "mysql:host={$cfg['host']};port={$cfg['port']};dbname={$cfg['name']};charset=utf8mb4";
+    $db = new PDO($dsn, $cfg['user'], $cfg['pass']);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    
-    // Ensure table exists
+
+    // Ensure tables exist (MySQL). `key` is a reserved word, so it is quoted.
     $db->exec("CREATE TABLE IF NOT EXISTS store (
-        bucket TEXT,
-        key TEXT,
-        value TEXT,
-        userName TEXT,
-        userPin TEXT,
-        updatedAt TEXT,
-        PRIMARY KEY (bucket, key)
-    )");
+        bucket VARCHAR(191) NOT NULL,
+        `key` VARCHAR(191) NOT NULL,
+        value LONGTEXT,
+        userName VARCHAR(255),
+        userPin VARCHAR(255),
+        updatedAt VARCHAR(64),
+        PRIMARY KEY (bucket, `key`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
     $db->exec("CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY,
-        password TEXT,
-        pin TEXT
-    )");
-    
+        username VARCHAR(191) NOT NULL,
+        password VARCHAR(255),
+        pin VARCHAR(255),
+        PRIMARY KEY (username)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
     $db->exec("CREATE TABLE IF NOT EXISTS user_settings (
-        username TEXT PRIMARY KEY,
-        settings TEXT DEFAULT '{}'
-    )");
-    
+        username VARCHAR(191) NOT NULL,
+        settings LONGTEXT,
+        PRIMARY KEY (username)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
     $db->exec("CREATE TABLE IF NOT EXISTS bucket_history (
-        username TEXT,
-        bucket TEXT,
-        lastAccessed TEXT,
+        username VARCHAR(191) NOT NULL,
+        bucket VARCHAR(191) NOT NULL,
+        lastAccessed VARCHAR(64),
         PRIMARY KEY (username, bucket)
-    )");
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 } catch (PDOException $e) {
     http_response_code(500);
     echo json_encode(["error" => "Database connection failed: " . $e->getMessage()]);
@@ -144,7 +167,7 @@ if ($parts[1] === 'auth') {
             exit;
         } elseif ($method === 'PUT') {
             $settings = json_encode($data);
-            $stmt = $db->prepare("INSERT OR REPLACE INTO user_settings (username, settings) VALUES (?, ?)");
+            $stmt = $db->prepare("REPLACE INTO user_settings (username, settings) VALUES (?, ?)");
             $stmt->execute([$username, $settings]);
             echo json_encode(["success" => true]);
             exit;
@@ -176,7 +199,7 @@ $key = isset($parts[3]) ? $parts[3] : null;
 function trackBucketAccess($db, $bucket) {
     $username = isset($_SERVER['HTTP_X_USER_NAME']) ? $_SERVER['HTTP_X_USER_NAME'] : '';
     if ($username && $bucket) {
-        $stmt = $db->prepare("INSERT OR REPLACE INTO bucket_history (username, bucket, lastAccessed) VALUES (?, ?, ?)");
+        $stmt = $db->prepare("REPLACE INTO bucket_history (username, bucket, lastAccessed) VALUES (?, ?, ?)");
         $stmt->execute([$username, $bucket, date('c')]);
     }
 }
@@ -194,7 +217,7 @@ if ($method === 'GET') {
             echo json_encode(["error" => "No data found"]);
         }
     } elseif ($key === 'all-files') {
-        $stmt = $db->prepare("SELECT key, updatedAt FROM store WHERE bucket = ?");
+        $stmt = $db->prepare("SELECT `key`, updatedAt FROM store WHERE bucket = ?");
         $stmt->execute([$bucket]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $files = [];
@@ -203,7 +226,7 @@ if ($method === 'GET') {
         }
         echo json_encode($files);
     } elseif ($key) {
-        $stmt = $db->prepare("SELECT value FROM store WHERE bucket = ? AND key = ?");
+        $stmt = $db->prepare("SELECT value FROM store WHERE bucket = ? AND `key` = ?");
         $stmt->execute([$bucket, $key]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($row) {
@@ -213,7 +236,7 @@ if ($method === 'GET') {
             echo json_encode(["error" => "Not found"]);
         }
     } else {
-        $stmt = $db->prepare("SELECT key FROM store WHERE bucket = ?");
+        $stmt = $db->prepare("SELECT `key` FROM store WHERE bucket = ?");
         $stmt->execute([$bucket]);
         echo json_encode($stmt->fetchAll(PDO::FETCH_COLUMN));
     }
@@ -265,7 +288,7 @@ if ($method === 'GET') {
     
     $saveTime = date('c', $incomingLastModified / 1000);
     
-    $stmt = $db->prepare("INSERT OR REPLACE INTO store (bucket, key, value, userName, userPin, updatedAt) VALUES (?, ?, ?, ?, ?, ?)");
+    $stmt = $db->prepare("REPLACE INTO store (bucket, `key`, value, userName, userPin, updatedAt) VALUES (?, ?, ?, ?, ?, ?)");
     $stmt->execute([$bucket, $key, $body, $userName, $userPin, $saveTime]);
 
     echo json_encode(["success" => true]);
@@ -280,7 +303,7 @@ if ($method === 'GET') {
     $userPin = isset($_SERVER['HTTP_X_USER_PIN']) ? $_SERVER['HTTP_X_USER_PIN'] : (isset($_SERVER['HTTP_X_USER_PASSWORD']) ? $_SERVER['HTTP_X_USER_PASSWORD'] : '');
     $isSuperAdmin = ($userPin === '1976');
     
-    $stmt = $db->prepare("SELECT userPin FROM store WHERE bucket = ? AND key = ?");
+    $stmt = $db->prepare("SELECT userPin FROM store WHERE bucket = ? AND `key` = ?");
     $stmt->execute([$bucket, $key]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     
@@ -290,7 +313,7 @@ if ($method === 'GET') {
         exit;
     }
     
-    $stmt = $db->prepare("DELETE FROM store WHERE bucket = ? AND key = ?");
+    $stmt = $db->prepare("DELETE FROM store WHERE bucket = ? AND `key` = ?");
     $stmt->execute([$bucket, $key]);
     
     echo json_encode(["success" => true]);

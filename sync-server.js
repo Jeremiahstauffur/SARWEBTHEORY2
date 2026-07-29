@@ -4,7 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
+const mysql = require('mysql2');
 
 const createCredentialHelperFallback = () => {
     const serverEnvironmentState = {
@@ -215,37 +215,128 @@ if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR);
 }
 
-// Initialize Database
-const db = new sqlite3.Database(path.join(DATA_DIR, 'sar_sync.db'));
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS store (
-        bucket TEXT,
-        key TEXT,
-        value TEXT,
-        userName TEXT,
-        userPin TEXT,
-        updatedAt TEXT,
-        PRIMARY KEY (bucket, key)
-    )`);
+// Initialize Database (MySQL on Railway)
+//
+// The frontend uses a small sqlite-style callback API (db.run/db.get/db.all).
+// To keep every endpoint below unchanged we back that API with a MySQL
+// connection pool (mysql2). Connection settings come from the Railway MySQL
+// service environment variables (MYSQL_URL / MYSQLHOST / MYSQLUSER / ...).
+const buildMysqlPool = () => {
+    const commonOptions = {
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0,
+        enableKeepAlive: true,
+        charset: 'utf8mb4'
+    };
 
-    db.run(`CREATE TABLE IF NOT EXISTS users (
-        username TEXT PRIMARY KEY,
-        password TEXT,
-        pin TEXT
-    )`);
+    // Prefer a full connection URL when Railway provides one. Inside Railway's
+    // private network use MYSQL_URL; MYSQL_PUBLIC_URL works from anywhere.
+    const connectionUrl = (process.env.MYSQL_URL
+        || process.env.MYSQL_PUBLIC_URL
+        || process.env.DATABASE_URL
+        || '').trim();
 
-    db.run(`CREATE TABLE IF NOT EXISTS user_buckets (
-        username TEXT,
-        bucket TEXT,
-        lastAccessed TEXT,
-        PRIMARY KEY (username, bucket)
-    )`);
+    if (/^mysql:\/\//i.test(connectionUrl)) {
+        const parsed = new URL(connectionUrl);
+        return mysql.createPool({
+            host: decodeURIComponent(parsed.hostname),
+            port: parsed.port ? Number(parsed.port) : 3306,
+            user: decodeURIComponent(parsed.username || 'root'),
+            password: decodeURIComponent(parsed.password || ''),
+            database: decodeURIComponent((parsed.pathname || '').replace(/^\//, '')) || 'railway',
+            ...commonOptions
+        });
+    }
 
-    db.run(`CREATE TABLE IF NOT EXISTS user_settings (
-        username TEXT PRIMARY KEY,
-        settings TEXT DEFAULT '{}'
-    )`);
-});
+    return mysql.createPool({
+        host: process.env.MYSQLHOST || process.env.MYSQL_HOST || 'localhost',
+        port: Number(process.env.MYSQLPORT || process.env.MYSQL_PORT || 3306),
+        user: process.env.MYSQLUSER || process.env.MYSQL_USER || 'root',
+        password: process.env.MYSQLPASSWORD || process.env.MYSQL_PASSWORD || process.env.MYSQL_ROOT_PASSWORD || '',
+        database: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || 'railway',
+        ...commonOptions
+    });
+};
+
+const pool = buildMysqlPool();
+
+// SQLite used "INSERT OR REPLACE"; MySQL's equivalent is "REPLACE".
+const translateSql = (sql) => sql.replace(/INSERT\s+OR\s+REPLACE/gi, 'REPLACE');
+
+// Preserve the sqlite error text that register() looks for on duplicate keys.
+const normalizeDbError = (err) => {
+    if (err && err.code === 'ER_DUP_ENTRY' && !/UNIQUE constraint failed/i.test(err.message || '')) {
+        err.message = `UNIQUE constraint failed: ${err.message}`;
+    }
+    return err;
+};
+
+// sqlite3-compatible wrapper so existing endpoint code keeps working unchanged.
+const db = {
+    run(sql, params, cb) {
+        if (typeof params === 'function') { cb = params; params = []; }
+        pool.query(translateSql(sql), params || [], function (err, result) {
+            if (err) {
+                if (cb) { cb.call({}, normalizeDbError(err)); }
+                else { console.error('[DB] run error:', err.message); }
+                return;
+            }
+            if (cb) { cb.call({ lastID: result.insertId, changes: result.affectedRows }, null); }
+        });
+    },
+    get(sql, params, cb) {
+        if (typeof params === 'function') { cb = params; params = []; }
+        pool.query(translateSql(sql), params || [], (err, rows) => {
+            if (err) { return cb(normalizeDbError(err)); }
+            cb(null, rows && rows.length ? rows[0] : undefined);
+        });
+    },
+    all(sql, params, cb) {
+        if (typeof params === 'function') { cb = params; params = []; }
+        pool.query(translateSql(sql), params || [], (err, rows) => {
+            if (err) { return cb(normalizeDbError(err)); }
+            cb(null, rows || []);
+        });
+    },
+    serialize(fn) { if (typeof fn === 'function') { fn(); } }
+};
+
+const initDatabaseSchema = () => {
+    db.serialize(() => {
+        db.run(`CREATE TABLE IF NOT EXISTS store (
+            bucket VARCHAR(191) NOT NULL,
+            \`key\` VARCHAR(191) NOT NULL,
+            value LONGTEXT,
+            userName VARCHAR(255),
+            userPin VARCHAR(255),
+            updatedAt VARCHAR(64),
+            PRIMARY KEY (bucket, \`key\`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS users (
+            username VARCHAR(191) NOT NULL,
+            password VARCHAR(255),
+            pin VARCHAR(255),
+            PRIMARY KEY (username)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS user_buckets (
+            username VARCHAR(191) NOT NULL,
+            bucket VARCHAR(191) NOT NULL,
+            lastAccessed VARCHAR(64),
+            PRIMARY KEY (username, bucket)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+
+        db.run(`CREATE TABLE IF NOT EXISTS user_settings (
+            username VARCHAR(191) NOT NULL,
+            settings LONGTEXT,
+            PRIMARY KEY (username)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+    });
+};
+
+initDatabaseSchema();
 
 app.use(cors({
     origin: '*',
@@ -503,7 +594,7 @@ const getFilePath = (bucket, key) => {
 app.get('/api/v1/:bucket/all-files', authMiddleware, (req, res) => {
     const {bucket} = req.params;
     trackBucketAccess(req.user.username, bucket);
-    db.all("SELECT key, updatedAt FROM store WHERE bucket = ?", [bucket], (err, rows) => {
+    db.all("SELECT `key`, updatedAt FROM store WHERE bucket = ?", [bucket], (err, rows) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
         const files = {};
         rows.forEach(row => {
@@ -530,7 +621,7 @@ app.get('/api/v1/:bucket/latest', authMiddleware, (req, res) => {
 // Get a specific key
 app.get('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
     const {bucket, key} = req.params;
-    db.get("SELECT value FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err, row) => {
+    db.get("SELECT value FROM store WHERE bucket = ? AND `key` = ?", [bucket, key], (err, row) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
         if (!row) return res.status(404).json({error: 'Not found'});
         try {
@@ -548,7 +639,7 @@ app.delete('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
     const userPin = req.headers['x-user-pin'] || req.headers['x-user-password'] || '';
     const isSuperAdmin = userPin === '1976';
 
-    db.get("SELECT userPin FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err, row) => {
+    db.get("SELECT userPin FROM store WHERE bucket = ? AND `key` = ?", [bucket, key], (err, row) => {
         if (err) return res.status(500).json({error: 'Failed to query db'});
         if (!row) return res.json({success: true}); // already gone
         
@@ -559,7 +650,7 @@ app.delete('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
             });
         }
         
-        db.run("DELETE FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err) => {
+        db.run("DELETE FROM store WHERE bucket = ? AND `key` = ?", [bucket, key], (err) => {
             if (err) return res.status(500).json({error: 'Failed to delete data'});
             res.json({success: true});
         });
@@ -593,7 +684,7 @@ app.put('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
         }
     }
 
-    db.get("SELECT userPin, updatedAt FROM store WHERE bucket = ? AND key = ?", [bucket, key], (err, row) => {
+    db.get("SELECT userPin, updatedAt FROM store WHERE bucket = ? AND `key` = ?", [bucket, key], (err, row) => {
         if (err) return res.status(500).json({error: 'Failed to query database'});
 
         if (row) {
@@ -623,7 +714,7 @@ app.put('/api/v1/:bucket/:key', authMiddleware, (req, res) => {
             ? new Date(incomingLastModified).toISOString() 
             : new Date().toISOString();
 
-        db.run(`INSERT OR REPLACE INTO store (bucket, key, value, userName, userPin, updatedAt)
+        db.run(`INSERT OR REPLACE INTO store (bucket, \`key\`, value, userName, userPin, updatedAt)
                 VALUES (?, ?, ?, ?, ?, ?)`,
                 [bucket, key, JSON.stringify(req.body), userName, userPin, saveTime],
                 (err) => {
