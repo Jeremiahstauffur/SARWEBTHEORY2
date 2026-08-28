@@ -13,7 +13,7 @@
       <div class="nav-wrap">
         <div>
           <div class="brand">Search & Rescue Theory Software</div>
-          <div class="file-badge">Current file: <span data-file-name>us-pill-data.json</span></div>
+          <div class="file-badge">Case #: <span data-file-name>us-pill-data.json</span></div>
         </div>
                                                 <nav>
           <a href="home.html" id="nav-home" class="" title="Home"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg></a>
@@ -179,16 +179,17 @@
           <div class="home-panel full-width">
             <h2>Data Synchronization</h2>
             <p style="margin-bottom: 15px; color: var(--muted); font-size: 0.95rem;">
-              Enter your Sync Server URL (from Railway) and a unique Bucket ID to synchronize data across devices.
-              Phones and computers must use the <b>same</b> Server and Bucket ID to talk to each other.
+              Enter your Sync Server URL (from Railway) to synchronize data across devices.
+              All devices logged in with the same username will share data automatically.
             </p>
             <div class="home-row" style="flex-wrap: wrap; gap: 10px;">
               <input class="pill-input" id="sync-url-input" placeholder="Sync Server URL (e.g., https://my-sync-server.railway.app)" style="flex: 1; min-width: 250px;"
                      type="text">
-              <input class="pill-input" id="sync-bucket-input" placeholder="Bucket ID (e.g., my-private-bucket)" style="flex: 1; min-width: 200px;"
-                     type="text">
               <button class="clear-btn" id="save-sync-url-btn" style="white-space: nowrap;" type="button">Save Sync
                 Settings
+              </button>
+              <button class="clear-btn" id="test-sync-btn" style="margin-left: 10px; border-color: var(--accent); color: var(--accent);"
+                      type="button">Test Connection
               </button>
             </div>
             <div id="sync-status-msg" style="margin-top: 10px; font-size: 0.85rem; color: var(--accent);"></div>
@@ -224,6 +225,7 @@
     </nav>
   </div>
   <script src="map-segment-utils.js"></script>
+  <script src="sync-delta.js"></script>
   <script src="app.js"></script>
 
     <div class="notification-sidebar" id="notif-sidebar">

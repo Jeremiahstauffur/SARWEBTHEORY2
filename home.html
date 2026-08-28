@@ -14,7 +14,7 @@
       <div class="nav-wrap">
         <div>
           <div class="brand">Search & Rescue Theory Software</div>
-          <div class="file-badge">Current file: <span data-file-name>us-pill-data.json</span></div>
+          <div class="file-badge">Case #: <span data-file-name>us-pill-data.json</span></div>
         </div>
                                                 <nav>
           <a href="home.html" id="nav-home" class="active" title="Home"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg></a>
@@ -44,7 +44,7 @@
               <p>All table data across the site is stored together as one exportable file. Export it anytime, rename it, import it back later, or reset to a blank file.</p>
             </div>
             <div class="hero-col-right" style="display: flex; justify-content: flex-end; align-items: center;">
-              <button id="print-search-file-btn" class="clear-btn" style="white-space: nowrap;">Search File Printout</button>
+              <button id="print-search-file-btn" class="clear-btn" style="white-space: nowrap;">Case # Printout</button>
             </div>
           </div>
         </section>
@@ -57,6 +57,13 @@
             <p style="color: var(--muted); font-size: 0.95rem; line-height: 1.5;">
               Welcome to the Search & Rescue Theory Software dashboard. All table data across the site?including regions, segments, personnel rosters, and search logs?is stored within a single exportable JSON file. Use this dashboard to manage your project data, track operational statistics, and ensure data persistence.
             </p>
+          </div>
+
+          <div id="search-history-panel" class="home-panel full-width" style="display: none;">
+            <h2>Case # History</h2>
+            <div id="search-history-list" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 10px;">
+              <!-- History items will be injected here -->
+            </div>
           </div>
 
           <div class="home-panel full-width mobile-only">
@@ -93,27 +100,8 @@
             </div>
           </div>
 
-          <div class="home-panel" style="grid-row: span 2;">
-            <h2>File Actions & Stats</h2>
-            <div class="home-row" style="margin-bottom: 15px;">
-              <input id="bundle-file-name" class="pill-input" type="text" placeholder="us-pill-data.json" style="min-width: 150px; flex-grow: 1;" />
-              <button id="save-file-name" class="clear-btn" type="button">Save</button>
-              <button id="create-new-search-btn" class="clear-btn" type="button">New</button>
-              <button id="import-search-btn" class="clear-btn" type="button">Import</button>
-            </div>
-            <div id="home-status" style="margin-bottom: 15px; color: var(--accent); font-size: 0.85rem; min-height: 1.2em;"></div>
-            <input type="file" id="import-search-input" style="display: none;" accept=".json">
-
-            <div id="dashboard-stats" style="display: grid; grid-template-columns: 1fr; gap: 10px; color: var(--muted); font-size: 0.95rem;">
-              <div style="background: rgba(255,255,255,0.02); padding: 10px; border-radius: 999px; border: 1px solid var(--line);">Regions: <span id="stat-regions" style="color: var(--text); font-weight: bold; float: right;">0</span></div>
-              <div style="background: rgba(255,255,255,0.02); padding: 10px; border-radius: 999px; border: 1px solid var(--line);">Segments: <span id="stat-segments" style="color: var(--text); font-weight: bold; float: right;">0</span></div>
-              <div style="background: rgba(255,255,255,0.02); padding: 10px; border-radius: 999px; border: 1px solid var(--line);">Personnel: <span id="stat-personnel" style="color: var(--text); font-weight: bold; float: right;">0</span></div>
-              <div style="background: rgba(255,255,255,0.02); padding: 10px; border-radius: 999px; border: 1px solid var(--line);">Tasks Logged: <span id="stat-tasks" style="color: var(--text); font-weight: bold; float: right;">0</span></div>
-            </div>
-          </div>
-
-          <!-- Charts Column - Now side-by-side and tall -->
-          <div class="home-panel" style="grid-row: span 2; grid-column: span 2;">
+          <!-- Charts Column - Now full width -->
+          <div class="home-panel full-width">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                 <h2 style="margin:0;">Operational Charts</h2>
                 <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
@@ -155,22 +143,33 @@
           </div>
 
           <div class="home-panel full-width">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <h2>Saved Search Files</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+              <h2 style="margin:0;">Saved Cases</h2>
               <button id="backup-all-zip-btn" class="clear-btn" type="button" style="font-size: 0.8rem; padding: 5px 10px;">Backup All (ZIP)</button>
             </div>
+            <div class="home-row saved-cases-toolbar" style="margin-top: 15px; flex-wrap: wrap; gap: 10px; align-items: center;">
+              <label for="bundle-file-name" style="font-weight: 600;">CASE #</label>
+              <input id="bundle-file-name" class="pill-input" type="text" placeholder="CASE #" aria-label="CASE #" style="min-width: 150px; flex-grow: 1;" />
+              <button id="save-file-name" class="clear-btn" type="button">Save</button>
+              <button id="create-new-search-btn" class="clear-btn" type="button">New</button>
+              <button id="import-search-btn" class="clear-btn" type="button">Import</button>
+            </div>
+            <div id="home-status" style="margin-top: 10px; color: var(--accent); font-size: 0.85rem; min-height: 1.2em;"></div>
+            <input type="file" id="import-search-input" style="display: none;" accept=".json">
             <div style="overflow-x: auto; margin-top: 15px;">
               <table class="grid-table" style="width: 100%;">
                 <thead>
                   <tr>
-                    <th style="text-align: left;">File Name</th>
-                    <th style="text-align: left;">Last Modified</th>
-                    <th style="text-align: left;">File Size</th>
+                    <th style="text-align: left;">Case #</th>
+                    <th style="text-align: center;">Regions</th>
+                    <th style="text-align: center;">Segments</th>
+                    <th style="text-align: center;">Personnel</th>
+                    <th style="text-align: center;">Tasks Logged</th>
                     <th style="text-align: center;">Actions</th>
                   </tr>
                 </thead>
                 <tbody id="saved-files-body">
-                  <tr><td colspan="4" style="text-align: center; color: var(--muted); padding: 20px;">No saved search files yet.</td></tr>
+                  <tr><td colspan="6" style="text-align: center; color: var(--muted); padding: 20px;">No saved cases yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -227,6 +226,7 @@
         </a>
     </nav>
   </div>
+  <script src="sync-delta.js"></script>
   <script src="app.js"></script>
 
     <div class="notification-sidebar" id="notif-sidebar">

@@ -161,6 +161,112 @@ if (isset($_GET['health']) || (isset($_SERVER['PATH_INFO']) && $_SERVER['PATH_IN
     exit;
 }
 
+if (isset($requestData['endpoint']) || (isset($requestData['api_call']) && $requestData['api_call']) || (isset($_GET['api_call']) && $_GET['api_call'])) {
+    $method = strtoupper(getTrimmedString(isset($requestData['method']) ? $requestData['method'] : 'GET'));
+    $endpoint = getTrimmedString(isset($requestData['endpoint']) ? $requestData['endpoint'] : '');
+    $payload = isset($requestData['payload']) ? $requestData['payload'] : null;
+    $domain = ensureHttpsDomain(isset($requestData['domain']) ? $requestData['domain'] : 'caltopo.com');
+
+    if ($endpoint === '') {
+        http_response_code(400);
+        echo json_encode(['error' => 'Missing endpoint']);
+        exit;
+    }
+
+    $creds = resolveCalTopoCredentials($requestData);
+    $targetUrl = 'https://' . $domain . $endpoint;
+
+    if (!$creds['configured']) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => 'Proxy Not Configured',
+            'message' => 'This proxy needs a CalTopo Credential ID and Credential Secret in the server environment to sign the Team API request.',
+            'targetUrl' => $targetUrl,
+            'signingRequired' => true,
+            'supportsClientSuppliedCredentials' => false
+        ]);
+        exit;
+    }
+
+    $payloadString = ($payload && (is_array($payload) || is_object($payload)) && count((array)$payload) > 0)
+        ? json_encode($payload)
+        : (is_string($payload) && strlen($payload) > 0 ? $payload : '');
+
+    $signatureData = signRequest($method, $endpoint, $payloadString, $creds['credentialSecret']);
+    $authParams = [
+        'id' => $creds['credentialId'],
+        'expires' => $signatureData['expires'],
+        'signature' => $signatureData['signature']
+    ];
+
+    $hasPayload = strlen($payloadString) > 0;
+    $isWrite = in_array($method, ['POST', 'PUT', 'PATCH'], true);
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+
+    if ($isWrite && $hasPayload) {
+        // CalTopo's Team API requires write requests to be form-encoded, with the
+        // signed JSON payload supplied in a `json` field alongside the auth params
+        // (id/expires/signature) in the request body and no query string. Sending
+        // the JSON as a raw application/json body causes "Error Saving Object".
+        $formParams = $authParams;
+        $formParams['json'] = $payloadString;
+        curl_setopt($ch, CURLOPT_URL, $targetUrl);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($formParams));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/x-www-form-urlencoded']);
+    } else {
+        $url = $targetUrl . '?' . http_build_query($authParams);
+        curl_setopt($ch, CURLOPT_URL, $url);
+        if ($method === 'DELETE') {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+        } else if ($isWrite) {
+            curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $method);
+        }
+    }
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $error = curl_error($ch);
+    curl_close($ch);
+
+    if ($response === false) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => 'Proxy Connection Error',
+            'message' => 'The PHP proxy could not connect to CalTopo. Details: ' . $error,
+            'targetUrl' => $targetUrl
+        ]);
+        exit;
+    }
+
+    $decoded = json_decode($response, true);
+    $detailMessage = is_string($decoded)
+        ? substr($decoded, 0, 400)
+        : ((is_array($decoded) && isset($decoded['message'])) ? $decoded['message'] : '');
+
+    if ($httpCode >= 400) {
+        http_response_code($httpCode);
+        echo json_encode([
+            'error' => 'CalTopo Error ' . $httpCode,
+            'message' => $detailMessage !== '' ? $detailMessage : 'The request to CalTopo failed.',
+            'targetUrl' => $targetUrl,
+            'signingRequired' => true,
+            'credentialSource' => $creds['source'],
+            'supportsClientSuppliedCredentials' => false,
+            'caltopoResponse' => $decoded
+        ]);
+        exit;
+    }
+
+    echo $decoded !== null ? json_encode($decoded) : $response;
+    exit;
+}
+
 $mapId = getTrimmedString(isset($requestData['mapId']) ? $requestData['mapId'] : '');
 $domain = ensureHttpsDomain(isset($requestData['domain']) ? $requestData['domain'] : 'caltopo.com');
 

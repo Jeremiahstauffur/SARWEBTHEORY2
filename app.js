@@ -5,10 +5,16 @@ const BUNDLE_STORAGE_KEY = 'pill-table-bundle-v1';
 const FILE_LIST_STORAGE_KEY = 'sar-saved-files-v1';
 const DEFAULT_FILE_NAME = 'us-pill-data.json';
 const SYNC_URL_STORAGE_KEY = 'sar-sync-url-v1';
+const SYNC_URL_LOCAL_STORAGE_KEY = 'sar-sync-url-local-v1';
 const SYNC_BUCKET_STORAGE_KEY = 'sar-sync-bucket-v1';
+const USER_NAME_STORAGE_KEY = 'sar-user-name-v1';
+const USER_PASSWORD_STORAGE_KEY = 'sar-user-password-v1';
 const CALTOPO_PROXY_STORAGE_KEY = 'sar-caltopo-proxy-v1';
 const CALTOPO_CREDS_STORAGE_KEY = 'sar-caltopo-creds-v1';
 const DEVICE_ID_STORAGE_KEY = 'sar-device-id-v1';
+// Snapshot of the search file as the server last confirmed it. Every save is
+// diffed against this so a device uploads only the rows it actually changed.
+const SYNC_SNAPSHOT_STORAGE_KEY = 'sar-sync-snapshot-v1';
 // const DEFAULT_BUCKET = 'MNSAR14';
 const SAVE_BUTTON_MIN_LOADING_MS = 1000;
 const SAVE_BUTTON_SUCCESS_MS = 3000;
@@ -169,7 +175,22 @@ function resolveDisplayedSegmentOpacity(isActiveSearch, settings, baseOpacity = 
     }
 
     const safeBaseOpacity = Number.isFinite(baseOpacity) ? Math.min(1, Math.max(0, baseOpacity)) : 0.2;
-    return isActiveSearch ? getSegmentDisplaySettings(settings).activeSearchOpacity : safeBaseOpacity;
+    if (!isActiveSearch) {
+        return safeBaseOpacity;
+    }
+    // `settings` may already be a normalized display-settings object (with a numeric
+    // activeSearchOpacity) or a raw bundle; use the normalized value directly when
+    // present so the user's configured active-search opacity is honored.
+    const normalizedSettings = (settings && typeof settings.activeSearchOpacity === 'number')
+        ? settings
+        : getSegmentDisplaySettings(settings);
+    // The active-search opacity setting is an ABSOLUTE reset: actively-searched
+    // segments are drawn at exactly the configured opacity, regardless of the
+    // segment's existing/base opacity.
+    const activeSearchOpacity = Number.isFinite(normalizedSettings.activeSearchOpacity)
+        ? normalizedSettings.activeSearchOpacity
+        : 0.5;
+    return Math.min(1, Math.max(0, activeSearchOpacity));
 }
 
 function buildSegmentNameSet(rows) {
@@ -186,27 +207,62 @@ function buildSegmentNameSet(rows) {
 }
 
 function isMapPsrcOverlayEnabled() {
-    return localStorage.getItem(MAP_PSRC_OVERLAY_STORAGE_KEY) === 'true';
+    return _serverSettings && _serverSettings[MAP_PSRC_OVERLAY_STORAGE_KEY] === 'true';
 }
 
 function setMapPsrcOverlayEnabled(enabled) {
-    localStorage.setItem(MAP_PSRC_OVERLAY_STORAGE_KEY, enabled ? 'true' : 'false');
+    if (_serverSettings) {
+        _serverSettings[MAP_PSRC_OVERLAY_STORAGE_KEY] = enabled ? 'true' : 'false';
+        saveServerSettings(_serverSettings);
+    }
 }
 
 function isCalTopoAssignmentOverlayEnabled() {
-    return localStorage.getItem(CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY) === 'true';
+    return _serverSettings && _serverSettings[CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY] === 'true';
 }
 
 function setCalTopoAssignmentOverlayEnabled(enabled) {
-    localStorage.setItem(CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY, enabled ? 'true' : 'false');
+    if (_serverSettings) {
+        _serverSettings[CALTOPO_ASSIGNMENT_OVERLAY_STORAGE_KEY] = enabled ? 'true' : 'false';
+        saveServerSettings(_serverSettings);
+    }
+}
+
+function getCalTopoApiObjectType(feature) {
+    const utils = getMapSegmentUtils();
+    return typeof utils.getCalTopoApiObjectType === 'function' ? utils.getCalTopoApiObjectType(feature) : 'Assignment';
+}
+
+function getCalTopoApiObjectTypeCandidates(feature) {
+    const primaryType = getCalTopoApiObjectType(feature);
+    const candidates = [primaryType, 'Assignment', 'Shape'];
+
+    const attrs = feature?.attributes || feature?.properties || {};
+    const rawClass = attrs.class || attrs.type || feature?.geometry?.class || feature?.geometry?.type || '';
+    if (typeof rawClass === 'string' && rawClass.trim()) {
+        const normalized = rawClass.trim().toLowerCase();
+        if (normalized === 'marker') {
+            candidates.push('Marker');
+        } else if (normalized === 'folder') {
+            candidates.push('Folder');
+        }
+    }
+
+    return candidates.filter((type, index, all) => !!type && all.indexOf(type) === index);
 }
 
 function captureCalTopoFeatureStyle(attributes = {}) {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.captureCalTopoFeatureStyle === 'function') {
+        return utils.captureCalTopoFeatureStyle(attributes);
+    }
     return {
+        color: Object.prototype.hasOwnProperty.call(attributes, 'color') ? attributes.color : null,
         stroke: Object.prototype.hasOwnProperty.call(attributes, 'stroke') ? attributes.stroke : null,
         fill: Object.prototype.hasOwnProperty.call(attributes, 'fill') ? attributes.fill : null,
         'fill-opacity': Object.prototype.hasOwnProperty.call(attributes, 'fill-opacity') ? attributes['fill-opacity'] : null,
-        opacity: Object.prototype.hasOwnProperty.call(attributes, 'opacity') ? attributes.opacity : null
+        opacity: Object.prototype.hasOwnProperty.call(attributes, 'opacity') ? attributes.opacity : null,
+        'stroke-opacity': Object.prototype.hasOwnProperty.call(attributes, 'stroke-opacity') ? attributes['stroke-opacity'] : null
     };
 }
 
@@ -216,7 +272,11 @@ function resolveOverlayOpacity(value, fallback = 1) {
 }
 
 function applyCapturedCalTopoFeatureStyle(attributes, style = {}) {
-    ['stroke', 'fill', 'fill-opacity', 'opacity'].forEach(key => {
+    const utils = getMapSegmentUtils();
+    if (typeof utils.applyCapturedCalTopoFeatureStyle === 'function') {
+        return utils.applyCapturedCalTopoFeatureStyle(attributes, style);
+    }
+    ['color', 'stroke', 'fill', 'fill-opacity', 'opacity', 'stroke-opacity'].forEach(key => {
         if (!Object.prototype.hasOwnProperty.call(style, key)) {
             return;
         }
@@ -229,20 +289,131 @@ function applyCapturedCalTopoFeatureStyle(attributes, style = {}) {
     });
 }
 
+function cloneIfValidGeoJsonGeometry(geometry) {
+    if (!geometry || typeof geometry !== 'object' || Array.isArray(geometry)) {
+        return null;
+    }
+
+    const type = typeof geometry.type === 'string' ? geometry.type.trim() : '';
+    if (!type) {
+        return null;
+    }
+
+    const hasCoordinates = Object.prototype.hasOwnProperty.call(geometry, 'coordinates');
+    const hasGeometries = type === 'GeometryCollection' && Array.isArray(geometry.geometries);
+    if (!hasCoordinates && !hasGeometries) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(JSON.stringify(geometry));
+    } catch (error) {
+        return null;
+    }
+}
+
+function resolveCalTopoFeatureId(feature, attributes = {}, fallbackId = '') {
+    const candidates = [
+        feature?.id,
+        attributes?.id,
+        attributes?.uuid,
+        attributes?.objectId,
+        attributes?.objectID,
+        attributes?.featureId,
+        attributes?.assignmentId,
+        attributes?.sid,
+        attributes?.gid,
+        feature?.uuid,
+        feature?.objectId,
+        feature?.objectID,
+        feature?.featureId,
+        feature?.assignmentId,
+        feature?.sid,
+        feature?.gid
+    ];
+
+    for (const candidate of candidates) {
+        if (candidate === null || candidate === undefined) {
+            continue;
+        }
+        if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+            return String(candidate);
+        }
+        const normalized = String(candidate).trim();
+        if (normalized && normalized !== '[object Object]') {
+            return normalized;
+        }
+    }
+
+    return typeof fallbackId === 'string' ? fallbackId : '';
+}
+
+function isSyntheticCalTopoFeatureId(featureId) {
+    const normalizedId = typeof featureId === 'string' ? featureId.trim() : String(featureId || '').trim();
+    return /^gfx-\d+$/i.test(normalizedId);
+}
+
+function getCalTopoWritableFeatureId(feature) {
+    const attrs = feature?.attributes || feature?.properties || {};
+    const resolvedId = resolveCalTopoFeatureId(feature, attrs, '');
+    if (!resolvedId || isSyntheticCalTopoFeatureId(resolvedId)) {
+        return '';
+    }
+    return resolvedId;
+}
+
+function getCalTopoOverlayOriginalStyleKey(feature) {
+    const writableId = getCalTopoWritableFeatureId(feature);
+    if (writableId) {
+        return writableId;
+    }
+    const attrs = feature?.attributes || feature?.properties || {};
+    const fallbackId = resolveCalTopoFeatureId(feature, attrs, '');
+    return fallbackId || '';
+}
+
 function buildCalTopoFeatureUpdatePayload(feature, styleOverrides = {}) {
-    const attributes = {...(feature?.attributes || {})};
-    const geometry = feature?.geometry ? JSON.parse(JSON.stringify(feature.geometry)) : null;
+    const utils = getMapSegmentUtils();
+    if (typeof utils.buildCalTopoFeatureUpdatePayload === 'function') {
+        return utils.buildCalTopoFeatureUpdatePayload(feature, styleOverrides);
+    }
+    const attributes = {...(feature?.attributes || feature?.properties || {})};
+    const geometry = cloneIfValidGeoJsonGeometry(feature?.geometry);
 
     delete attributes.ObjectID;
     delete attributes.id;
 
     applyCapturedCalTopoFeatureStyle(attributes, styleOverrides);
 
-    return {
-        id: feature?.attributes?.id || null,
+    const payload = {
+        id: resolveCalTopoFeatureId(feature, feature?.attributes || feature?.properties || {}, null),
         type: 'Feature',
-        geometry,
         properties: attributes
+    };
+
+    if (geometry) {
+        payload.geometry = geometry;
+    }
+
+    return payload;
+}
+
+// Builds the CalTopo style overlay for an assignment shape.
+// Invariant: the border/outline opacity is CONSTANT (fully opaque) so that only the
+// FILL communicates status. The fill opacity is the only thing that reacts to the
+// active-search state: non-searched segments use the overlay base opacity, while
+// actively-searched segments reset to the opacity configured in Settings.
+function buildCalTopoOverlayStyle(overlayColor, isActiveSearch, segmentDisplaySettings) {
+    const STROKE_OVERLAY_OPACITY = 1;
+    const fillOpacity = Number(resolveDisplayedSegmentOpacity(isActiveSearch, segmentDisplaySettings, 0.42).toFixed(4));
+    const strokeOpacity = STROKE_OVERLAY_OPACITY;
+    return {
+        color: overlayColor,
+        stroke: overlayColor,
+        fill: overlayColor,
+        'fill-opacity': fillOpacity,
+        opacity: strokeOpacity,
+        'stroke-opacity': strokeOpacity
     };
 }
 
@@ -279,12 +450,12 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
     const psrcLookup = buildSegmentPsrcLookup(segmentRows, segmentDisplaySettings);
     const activeSearchNames = buildActiveSearchSegmentNameSet(bundle, segmentRows);
     const matchingAssignments = features.filter(feature => {
-        const featureId = feature?.attributes?.id;
-        if (!featureId || getCalTopoFeatureTypeKey(feature) !== 'assignment') {
+        const styleKey = getCalTopoOverlayOriginalStyleKey(feature);
+        if (!styleKey || getCalTopoFeatureTypeKey(feature) !== 'assignment') {
             return false;
         }
         if (!enabled) {
-            return !!originals[featureId];
+            return !!originals[styleKey];
         }
         return !!getFeaturePsrcAssignmentStyle(feature, psrcLookup, segmentDisplaySettings);
     });
@@ -298,41 +469,70 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
         throw new Error('No matching assignment shapes were found for your current segments.');
     }
 
+    let updatedCount = 0;
+    const errors = [];
+
     for (const feature of matchingAssignments) {
-        const featureId = feature.attributes.id;
-        const featureName = feature.attributes.name || featureId;
-        const originalStyle = originals[featureId] || captureCalTopoFeatureStyle(feature.attributes);
+        const styleKey = getCalTopoOverlayOriginalStyleKey(feature);
+        const featureId = getCalTopoWritableFeatureId(feature);
+        const featureName = feature.attributes.name || styleKey || 'Unnamed Assignment';
+        const originalStyle = originals[styleKey] || captureCalTopoFeatureStyle(feature.attributes);
         const style = enabled
             ? getFeaturePsrcAssignmentStyle(feature, psrcLookup, segmentDisplaySettings)
-            : originals[featureId];
+            : originals[styleKey];
 
         if (!style) {
             continue;
         }
 
-        if (enabled && !Object.prototype.hasOwnProperty.call(originals, featureId)) {
-            originals[featureId] = originalStyle;
+        if (enabled && !Object.prototype.hasOwnProperty.call(originals, styleKey)) {
+            originals[styleKey] = originalStyle;
         }
 
         const isActiveSearch = enabled && isFeatureActivelyBeingSearched(feature, activeSearchNames);
-        const opacityFactor = isActiveSearch ? segmentDisplaySettings.activeSearchOpacity : 1;
+        const overlayColor = style.stroke || style.fill || (style.color ? style.color.css : null) || '#40c057';
         const overlayStyle = enabled
-            ? {
-                stroke: style.stroke,
-                fill: style.fill,
-                'fill-opacity': Number((resolveOverlayOpacity(originalStyle['fill-opacity'], resolveOverlayOpacity(feature.attributes['fill-opacity'], 0.35)) * opacityFactor).toFixed(4)),
-                opacity: Number((resolveOverlayOpacity(originalStyle.opacity, resolveOverlayOpacity(feature.attributes.opacity, 1)) * opacityFactor).toFixed(4))
-            }
+            ? buildCalTopoOverlayStyle(overlayColor, isActiveSearch, segmentDisplaySettings)
             : style;
 
         const payload = buildCalTopoFeatureUpdatePayload(feature, overlayStyle);
-        const endpoint = `/api/v1/map/${encodeURIComponent(map.id)}/Shape/${encodeURIComponent(featureId)}`;
-        const result = await caltopo_api_call('POST', endpoint, payload, map.domain || 'caltopo.com');
+        if (featureId) {
+            payload.id = featureId;
+        }
+
+        if (!featureId) {
+            errors.push(`CalTopo could not update assignment "${featureName}" because it has no valid CalTopo object ID.`);
+            continue;
+        }
+
+        const typeCandidates = getCalTopoApiObjectTypeCandidates(feature);
+        let result = null;
+        let successfulType = null;
+
+        for (const objectType of typeCandidates) {
+            const endpoint = `/api/v1/map/${encodeURIComponent(map.id)}/${encodeURIComponent(objectType)}/${encodeURIComponent(featureId)}`;
+            result = await caltopo_api_call('POST', endpoint, payload, map.domain || 'caltopo.com', {silent: true});
+            if (result) {
+                successfulType = objectType;
+                break;
+            }
+        }
+
+        if (result && successfulType && feature.attributes.class !== successfulType) {
+            feature.attributes.class = successfulType;
+        }
+
         if (!result) {
-            throw new Error(`CalTopo could not update assignment "${featureName}".`);
+            errors.push(`CalTopo could not update assignment "${featureName}".`);
+            continue;
         }
 
         applyCapturedCalTopoFeatureStyle(feature.attributes, overlayStyle);
+        updatedCount++;
+    }
+
+    if (errors.length > 0 && updatedCount === 0) {
+        throw new Error(errors.join('\n'));
     }
 
     if (enabled) {
@@ -342,7 +542,75 @@ async function updateCalTopoAssignmentOverlay(enabled, options = {}) {
     }
 
     saveBundle(bundle);
-    return {updatedCount: matchingAssignments.length};
+    return {updatedCount, errors};
+}
+
+// Re-push the CalTopo/SARTopo assignment overlay (PSRc colors + active-search
+// fill opacity) whenever the underlying data changes - e.g. a search log edit
+// that recomputes a segment's PSRc, or that flips a segment between actively
+// searched and idle.
+//
+// This is a best-effort, debounced, SILENT refresh: it does nothing unless the
+// assignment overlay is currently enabled and a CalTopo map with already
+// fetched shapes exists. That way ordinary edits on devices that never turned
+// the overlay on (or never fetched shapes) pay no cost and trigger no network
+// requests.
+let _caltopoOverlayRefreshTimer = null;
+let _caltopoOverlayRefreshInFlight = false;
+let _caltopoOverlayRefreshPending = false;
+
+function refreshCalTopoAssignmentOverlayIfEnabled(options = {}) {
+    const {delay = 1200} = options;
+    if (typeof isCalTopoAssignmentOverlayEnabled !== 'function' || !isCalTopoAssignmentOverlayEnabled()) {
+        return;
+    }
+    // A map with already-fetched shapes must exist; otherwise there is nothing
+    // to recolor and we must not surprise the user with a background fetch.
+    let bundle;
+    try {
+        bundle = loadBundle();
+    } catch (e) {
+        return;
+    }
+    const map = bundle && bundle.maps && bundle.maps[0] ? bundle.maps[0] : null;
+    if (!map || !map.id || !Array.isArray(map.features) || map.features.length === 0) {
+        return;
+    }
+    if (_caltopoOverlayRefreshTimer) {
+        clearTimeout(_caltopoOverlayRefreshTimer);
+    }
+    _caltopoOverlayRefreshTimer = setTimeout(runCalTopoAssignmentOverlayRefresh, delay);
+}
+
+async function runCalTopoAssignmentOverlayRefresh() {
+    _caltopoOverlayRefreshTimer = null;
+    // Collapse overlapping requests: if a push is already running, remember that
+    // another refresh was requested and run it once the current one settles so
+    // the map always ends on the latest colors/opacity.
+    if (_caltopoOverlayRefreshInFlight) {
+        _caltopoOverlayRefreshPending = true;
+        return;
+    }
+    if (typeof isCalTopoAssignmentOverlayEnabled !== 'function' || !isCalTopoAssignmentOverlayEnabled()) {
+        return;
+    }
+    _caltopoOverlayRefreshInFlight = true;
+    try {
+        await updateCalTopoAssignmentOverlay(true);
+        if (typeof refreshCalTopoIframe === 'function') {
+            try { refreshCalTopoIframe(); } catch (e) {}
+        }
+    } catch (err) {
+        // Silent by design: an auto-refresh must never interrupt data entry with
+        // an error dialog. The manual toggle still surfaces problems to the user.
+        console.warn('CalTopo assignment overlay auto-refresh failed:', err);
+    } finally {
+        _caltopoOverlayRefreshInFlight = false;
+        if (_caltopoOverlayRefreshPending) {
+            _caltopoOverlayRefreshPending = false;
+            _caltopoOverlayRefreshTimer = setTimeout(runCalTopoAssignmentOverlayRefresh, 300);
+        }
+    }
 }
 
 function wait(ms) {
@@ -391,74 +659,385 @@ async function withSaveButtonFeedback(button, saveAction, options = {}) {
     }
 }
 
-function getSyncServerUrl() {
-    let url = localStorage.getItem(SYNC_URL_STORAGE_KEY);
-    return url || 'https://sarwebtheory2-production.up.railway.app';
+// Public backend (Railway) that runs the SAR sync API (register/login + per-user
+// data buckets). The GitHub-hosted static site cannot execute data.php locally,
+// so all API requests must be sent to this absolute URL instead of a relative path.
+const DEFAULT_SYNC_SERVER_URL = 'https://sarwebtheory2-production.up.railway.app';
+
+// A locally-stored (cookie) sync server URL, set from the login popup BEFORE
+// authentication. This is the source against which all data flows in and out.
+// It must be readable before login, so it lives in a cookie rather than the
+// server-side settings (which are only loaded after a successful login).
+function getLocalSyncServerUrl() {
+    const url = getCookie(SYNC_URL_LOCAL_STORAGE_KEY);
+    return (url && /^https?:\/\//i.test(url)) ? url : '';
 }
+
+function setLocalSyncServerUrl(url) {
+    const trimmed = typeof url === 'string' ? url.trim() : '';
+    if (trimmed) {
+        setCookie(SYNC_URL_LOCAL_STORAGE_KEY, trimmed);
+    } else {
+        eraseCookie(SYNC_URL_LOCAL_STORAGE_KEY);
+    }
+}
+
+function getSyncServerUrl() {
+    // A URL explicitly set from the login popup wins over everything else so the
+    // user can point the app at their own server before (and after) logging in.
+    const localUrl = getLocalSyncServerUrl();
+    if (localUrl) {
+        return localUrl;
+    }
+    const configuredUrl = _serverSettings && _serverSettings[SYNC_URL_STORAGE_KEY];
+    // Only honor an explicitly configured absolute URL. A stale relative value
+    // like "data.php" would resolve against the static host and fail with a 405.
+    if (configuredUrl && /^https?:\/\//i.test(configuredUrl)) {
+        return configuredUrl;
+    }
+    // When running the backend locally, talk to the local sync server.
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        return `${window.location.protocol}//${window.location.hostname}:3000`;
+    }
+    // In production the static frontend (GitHub Pages) must reach the remote
+    // backend over an absolute URL; a relative "data.php" would hit the static
+    // host and return a 405 HTML page instead of JSON.
+    return DEFAULT_SYNC_SERVER_URL;
+}
+
+const _memoryStorage = {};
+
+function getStorageItem(key) {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage !== null) {
+      const val = localStorage.getItem(key);
+      if (val !== null && val !== undefined) return val;
+    }
+  } catch (e) {}
+  return _memoryStorage[key] || null;
+}
+
+function setStorageItem(key, value) {
+  _memoryStorage[key] = value;
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage !== null) {
+      localStorage.setItem(key, value);
+    }
+  } catch (e) {}
+}
+
+function removeStorageItem(key) {
+  delete _memoryStorage[key];
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage !== null) {
+      localStorage.removeItem(key);
+    }
+  } catch (e) {}
+}
+
+const SERVER_SETTINGS_CACHE_KEY = 'sar-server-settings-cache-v1';
 
 function getSyncBucket() {
-    return localStorage.getItem(SYNC_BUCKET_STORAGE_KEY) || '';
+    let bucket = _serverSettings && _serverSettings[SYNC_BUCKET_STORAGE_KEY] ? _serverSettings[SYNC_BUCKET_STORAGE_KEY] : '';
+    if (!bucket) {
+        try {
+            const cached = getStorageItem(SERVER_SETTINGS_CACHE_KEY);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                if (parsed && parsed[SYNC_BUCKET_STORAGE_KEY]) {
+                    bucket = parsed[SYNC_BUCKET_STORAGE_KEY];
+                }
+            }
+        } catch (e) {}
+    }
+    const creds = getUserCredentials();
+    if (bucket && creds && creds.password) {
+        return `${bucket}_${creds.password}`;
+    }
+    return bucket;
 }
 
-function showBucketPromptPopup() {
+function setSyncBucket(bucket) {
+    // Persist the chosen CASE # server-side. Return the save promise so callers
+    // that reload the page (e.g. the case-number popup) can await it first;
+    // otherwise the reload aborts the in-flight PUT and the case number is lost.
+    if (!_serverSettings) { _serverSettings = {}; }
+    _serverSettings[SYNC_BUCKET_STORAGE_KEY] = bucket;
+    return saveServerSettings(_serverSettings);
+}
+
+// Convert an internal sync-bucket id back to the clean CASE # to show the user.
+// getSyncBucket() appends "_<pin>" so each team's data is namespaced in the
+// shared store; that suffix is an internal detail and must never be displayed
+// or fed back into setSyncBucket() (doing so would double the suffix). The list
+// returned by /api/auth/history stores those suffixed ids, so anything shown to
+// the user or used for duplicate detection must pass through here first.
+function bucketToCaseNumber(bucket) {
+    if (!bucket) return '';
+    const creds = getUserCredentials();
+    const suffix = creds && creds.password ? `_${creds.password}` : '';
+    if (suffix && bucket.endsWith(suffix)) {
+        return bucket.slice(0, -suffix.length);
+    }
+    return bucket;
+}
+
+function setCookie(name, value, days = 365) {
+    let expires = "";
+    if (days) {
+        const date = new Date();
+        date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+        expires = "; expires=" + date.toUTCString();
+    }
+    document.cookie = name + "=" + (value || "")  + expires + "; path=/";
+}
+
+function getCookie(name) {
+    const nameEQ = name + "=";
+    const ca = document.cookie.split(';');
+    for(let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+    }
+    return null;
+}
+
+function eraseCookie(name) {
+    document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
+}
+
+function getUserCredentials() {
+    const name = getCookie(USER_NAME_STORAGE_KEY);
+    const password = getCookie(USER_PASSWORD_STORAGE_KEY);
+    if (!name || !password) return null;
+    return { name, password };
+}
+
+// Server-side settings cache (cached in localStorage + memory, loaded from server on login)
+let _serverSettings = null;
+let _serverSettingsLoading = false;
+
+async function loadServerSettings() {
+    const creds = getUserCredentials();
+    if (!creds) return {};
+    if (_serverSettings !== null) return _serverSettings;
+    if (_serverSettingsLoading) return _serverSettings || {};
+
+    try {
+        const cached = getStorageItem(SERVER_SETTINGS_CACHE_KEY);
+        if (cached && _serverSettings === null) {
+            _serverSettings = JSON.parse(cached);
+        }
+    } catch (e) {}
+
+    _serverSettingsLoading = true;
+    try {
+        const serverUrl = getSyncServerUrl();
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/settings`, {
+            headers: {
+                'X-User-Name': creds.name,
+                'X-User-Password': creds.password
+            }
+        });
+        if (resp.ok) {
+            _serverSettings = await resp.json();
+            setStorageItem(SERVER_SETTINGS_CACHE_KEY, JSON.stringify(_serverSettings));
+        } else if (_serverSettings === null) {
+            _serverSettings = {};
+        }
+    } catch (e) {
+        console.warn('Failed to load server settings:', e);
+        if (_serverSettings === null) {
+            _serverSettings = {};
+        }
+    } finally {
+        _serverSettingsLoading = false;
+    }
+    return _serverSettings;
+}
+
+async function saveServerSettings(settings) {
+    const creds = getUserCredentials();
+    if (!creds) return;
+    _serverSettings = settings;
+    try {
+        setStorageItem(SERVER_SETTINGS_CACHE_KEY, JSON.stringify(settings));
+    } catch (e) {}
+    try {
+        const serverUrl = getSyncServerUrl();
+        await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/settings`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-User-Name': creds.name,
+                'X-User-Password': creds.password
+            },
+            body: JSON.stringify(settings)
+        });
+    } catch (e) {
+        console.warn('Failed to save server settings:', e);
+    }
+}
+
+async function getServerSetting(key) {
+    const settings = await loadServerSettings();
+    return settings[key] !== undefined ? settings[key] : null;
+}
+
+async function setServerSetting(key, value) {
+    const settings = await loadServerSettings();
+    settings[key] = value;
+    await saveServerSettings(settings);
+}
+
+async function fetchUserHistory() {
+    const creds = getUserCredentials();
+    if (!creds) return [];
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl) return [];
+
+    try {
+        const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/history`, {
+            headers: {
+                'X-User-Name': creds.name
+            }
+        });
+        if (resp.ok) {
+            return await resp.json();
+        }
+    } catch (e) {
+        console.warn("Failed to fetch history:", e);
+    }
+    return [];
+}
+
+// Read a fetch Response as JSON without crashing when the server answers with
+// something that is not JSON. An outdated or misconfigured sync server returns
+// an HTML page (for example "<!DOCTYPE html> ... Cannot POST /api/auth/login"),
+// which otherwise makes resp.json() throw the cryptic
+// "Unexpected token '<', "<!DOCTYPE "... is not valid JSON".
+async function readJsonResponse(resp) {
+    const raw = await resp.text();
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    if (contentType.includes('application/json') || /^\s*[[{]/.test(raw)) {
+        try {
+            return JSON.parse(raw);
+        } catch (e) {
+            // Content was not valid JSON; fall through to the descriptive error.
+        }
+    }
+    const looksLikeHtml = /^\s*</.test(raw);
+    const snippet = raw.trim().replace(/\s+/g, ' ').slice(0, 120);
+    const detail = looksLikeHtml
+        ? 'the server returned an HTML page instead of JSON'
+        : (snippet ? `the server returned: "${snippet}"` : 'the server returned an empty response');
+    throw new Error(`Unexpected server response (HTTP ${resp.status}): ${detail}. Make sure the Sync Server URL points to the SAR sync server that provides /api/auth/login.`);
+}
+
+function showLoginPopup() {
+    if (document.querySelector('.popup-overlay.login-popup')) return;
     const onCancel = () => {
-        if (!getSyncBucket()) {
-            // We need a slight delay because createPopup handles its own close which might conflict with immediate reshhow
+        if (!getUserCredentials()) {
             setTimeout(() => {
-                if (!getSyncBucket()) {
-                    alert('A Bucket ID is required to synchronize data.');
-                    showBucketPromptPopup();
+                if (!getUserCredentials()) {
+                    alert('Login is required to synchronize data.');
+                    showLoginPopup();
                 }
             }, 300);
         }
     };
-    const popup = createPopup('Set Bucket ID', null, onCancel);
+    const popup = createPopup('Login', null, onCancel);
+    popup.classList.add('login-popup');
     const content = popup.querySelector('.popup-content');
     const btnContainer = popup.querySelector('.popup-buttons');
 
-    // Override the default flex-direction: column for popup-buttons to make them side-by-side if we want,
-    // but the issue said "very short and wide", and standard popup-buttons are column.
-    // Given they are "popup-btn", they will have good padding now.
-    
     const inputs = document.createElement('div');
     inputs.className = 'popup-input-container';
+    inputs.style.display = 'flex';
     inputs.style.flexDirection = 'column';
     inputs.style.gap = '15px';
 
-    const promptText = document.createElement('p');
-    promptText.textContent = 'Please enter a unique Bucket ID to synchronize your data across devices.';
-    promptText.style.textAlign = 'center';
-    promptText.style.marginBottom = '10px';
-    inputs.appendChild(promptText);
+    const usernameInput = document.createElement('input');
+    usernameInput.type = 'text';
+    usernameInput.placeholder = 'Username';
+    usernameInput.className = 'pill-input';
+    usernameInput.style.textAlign = 'center';
+    usernameInput.style.width = '100%';
+    usernameInput.style.padding = '12px';
+    inputs.appendChild(usernameInput);
 
-    const bucketInput = document.createElement('input');
-    bucketInput.type = 'text';
-    bucketInput.placeholder = 'e.g., my-team-bucket';
-    bucketInput.className = 'pill-input';
-    bucketInput.style.textAlign = 'center';
-    bucketInput.style.width = '100%';
-    bucketInput.style.padding = '16px';
-    bucketInput.style.fontSize = '1.1rem';
-    bucketInput.style.marginTop = '10px';
-    inputs.appendChild(bucketInput);
+    const pinInput = document.createElement('input');
+    pinInput.type = 'password';
+    pinInput.placeholder = 'User PIN';
+    pinInput.className = 'pill-input';
+    pinInput.style.textAlign = 'center';
+    pinInput.style.width = '100%';
+    pinInput.style.padding = '12px';
+    inputs.appendChild(pinInput);
 
     content.insertBefore(inputs, btnContainer);
 
-    const setBtn = document.createElement('button');
-    setBtn.className = 'popup-btn primary';
-    setBtn.style.padding = '16px'; // Extra padding for emphasis
-    setBtn.textContent = 'Set Bucket ID & Reload';
-    setBtn.onclick = () => {
-        const val = bucketInput.value.trim();
-        if (val) {
-            localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, val);
-            closePopup(popup);
-            window.location.reload();
-        } else {
-            alert('Please enter a valid Bucket ID');
+    const loginBtn = document.createElement('button');
+    loginBtn.className = 'popup-btn primary';
+    loginBtn.textContent = 'Login';
+    loginBtn.onclick = async () => {
+        const username = usernameInput.value.trim();
+        const pin = pinInput.value.trim();
+        if (!username || !pin) return alert('Username and PIN required');
+
+        const serverUrl = getSyncServerUrl();
+        try {
+            const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, pin })
+            });
+            const data = await readJsonResponse(resp);
+            if (resp.ok && data.success) {
+                setCookie(USER_NAME_STORAGE_KEY, data.user.username);
+                setCookie(USER_PASSWORD_STORAGE_KEY, data.user.pin);
+                setCurrentUser(data.user);
+                closePopup(popup);
+                window.location.reload();
+            } else {
+                alert(data.error || 'no matching login found');
+            }
+        } catch (e) {
+            console.error("Login connection error:", e);
+            alert(`Login failed: ${e.message || 'Unable to reach the sync server.'}`);
         }
     };
-    btnContainer.appendChild(setBtn);
+    btnContainer.appendChild(loginBtn);
+
+    // Registration is gated behind a Super-Admin password. This button turns the
+    // username/PIN already typed above into a new account, but only after the
+    // themed Super-Admin popup verifies the admin password server-side.
+    const registerBtn = document.createElement('button');
+    registerBtn.className = 'popup-btn';
+    registerBtn.id = 'login-register-btn';
+    registerBtn.textContent = 'Register';
+    registerBtn.onclick = () => {
+        const username = usernameInput.value.trim();
+        const pin = pinInput.value.trim();
+        if (!username || !pin) return alert('Enter a username and PIN to register.');
+        if (typeof showAdminVerifyPopup !== 'function') {
+            alert('Registration is temporarily unavailable.');
+            return;
+        }
+        showAdminVerifyPopup(username, pin, popup);
+    };
+    btnContainer.appendChild(registerBtn);
+
+    // Opens a second popup where the user can type/paste the address of the
+    // server against which all data flows in and out.
+    const setServerBtn = document.createElement('button');
+    setServerBtn.className = 'popup-btn';
+    setServerBtn.textContent = 'Set Server';
+    setServerBtn.onclick = () => {
+        showSetServerPopup();
+    };
+    btnContainer.appendChild(setServerBtn);
 
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'popup-btn';
@@ -469,13 +1048,177 @@ function showBucketPromptPopup() {
     };
     btnContainer.appendChild(cancelBtn);
 
-    bucketInput.onkeydown = (e) => {
-        if (e.key === 'Enter') {
-            setBtn.click();
+    setTimeout(() => usernameInput.focus(), 100);
+}
+
+// Themed Super-Admin verification popup (opened from the login popup's
+// "Register" button). It collects ONLY the Super-Admin password and sends it,
+// together with the username/PIN typed on the login popup, to the gated
+// /api/auth/register endpoint. On success the new account is created and the
+// user is logged in immediately (the same path as a normal login). The gate
+// itself lives on the server, so this popup cannot bypass it.
+function showAdminVerifyPopup(username, pin, loginPopup) {
+    if (document.querySelector('.popup-overlay.admin-verify-popup')) return;
+    const popup = createPopup('Super-Admin Verification', null, null);
+    popup.classList.add('admin-verify-popup');
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    const inputs = document.createElement('div');
+    inputs.className = 'popup-input-container';
+    inputs.style.display = 'flex';
+    inputs.style.flexDirection = 'column';
+    inputs.style.gap = '10px';
+
+    const label = document.createElement('div');
+    label.textContent = `Enter the Super-Admin password to create the account "${username}".`;
+    label.style.textAlign = 'center';
+    label.style.fontSize = '0.9em';
+    label.style.opacity = '0.85';
+    inputs.appendChild(label);
+
+    const adminInput = document.createElement('input');
+    adminInput.type = 'password';
+    adminInput.placeholder = 'Super-Admin password';
+    adminInput.className = 'pill-input';
+    adminInput.style.textAlign = 'center';
+    adminInput.style.width = '100%';
+    adminInput.style.padding = '12px';
+    inputs.appendChild(adminInput);
+
+    content.insertBefore(inputs, btnContainer);
+
+    const registerBtn = document.createElement('button');
+    registerBtn.className = 'popup-btn primary';
+    registerBtn.textContent = 'Register';
+    registerBtn.onclick = async () => {
+        const adminPassword = adminInput.value.trim();
+        if (!adminPassword) return alert('Enter the Super-Admin password.');
+
+        const serverUrl = getSyncServerUrl();
+        registerBtn.disabled = true;
+        registerBtn.textContent = 'Registering\u2026';
+        try {
+            const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, pin, adminPassword })
+            });
+            const data = await readJsonResponse(resp);
+            if (resp.ok && data.success) {
+                // Auto-login the new account: identical to the login-success path.
+                setCookie(USER_NAME_STORAGE_KEY, data.user.username);
+                setCookie(USER_PASSWORD_STORAGE_KEY, data.user.pin);
+                setCurrentUser(data.user);
+                closePopup(popup);
+                if (loginPopup) closePopup(loginPopup);
+                window.location.reload();
+            } else {
+                alert(data.error || 'Registration failed');
+                registerBtn.disabled = false;
+                registerBtn.textContent = 'Register';
+            }
+        } catch (e) {
+            // Never log the admin password itself; only the error is reported.
+            console.error("Registration connection error:", e);
+            alert(`Registration failed: ${e.message || 'Unable to reach the sync server.'}`);
+            registerBtn.disabled = false;
+            registerBtn.textContent = 'Register';
         }
     };
+    btnContainer.appendChild(registerBtn);
 
-    setTimeout(() => bucketInput.focus(), 100);
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'popup-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => {
+        closePopup(popup);
+    };
+    btnContainer.appendChild(cancelBtn);
+
+    setTimeout(() => adminInput.focus(), 100);
+}
+
+// Second popup (opened from the login popup's "Set Server" button) that lets the
+// user type or paste the address of the server against which all data flows in
+// and out. On "Set" the URL is validated and persisted locally so it takes
+// effect immediately for every request, including the login that follows.
+function showSetServerPopup() {
+    if (document.querySelector('.popup-overlay.set-server-popup')) return;
+    const popup = createPopup('Set Server', null, null);
+    popup.classList.add('set-server-popup');
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    const inputs = document.createElement('div');
+    inputs.className = 'popup-input-container';
+    inputs.style.display = 'flex';
+    inputs.style.flexDirection = 'column';
+    inputs.style.gap = '10px';
+
+    const label = document.createElement('div');
+    label.textContent = 'Server address (e.g. https://your-server.example.com)';
+    label.style.textAlign = 'center';
+    label.style.fontSize = '0.9em';
+    label.style.opacity = '0.85';
+    inputs.appendChild(label);
+
+    const serverInput = document.createElement('input');
+    serverInput.type = 'text';
+    serverInput.placeholder = 'https://your-server.example.com';
+    serverInput.className = 'pill-input';
+    serverInput.style.textAlign = 'center';
+    serverInput.style.width = '100%';
+    serverInput.style.padding = '12px';
+    serverInput.value = getLocalSyncServerUrl() || getSyncServerUrl() || '';
+    inputs.appendChild(serverInput);
+
+    content.insertBefore(inputs, btnContainer);
+
+    const setBtn = document.createElement('button');
+    setBtn.className = 'popup-btn primary';
+    setBtn.textContent = 'Set';
+    setBtn.onclick = () => {
+        let url = serverInput.value.trim();
+        if (!url) return alert('Please enter a server address.');
+        // Be forgiving about a missing scheme so pasting a bare host still works.
+        if (!/^https?:\/\//i.test(url)) {
+            url = 'https://' + url;
+        }
+        try {
+            // Validate the address before persisting it.
+            // eslint-disable-next-line no-new
+            new URL(url);
+        } catch (e) {
+            return alert('That does not look like a valid server address.');
+        }
+        // Strip a trailing slash for a consistent base URL.
+        url = url.replace(/\/$/, '');
+        setLocalSyncServerUrl(url);
+        // Keep any loaded server-side settings in sync so it also persists for
+        // the logged-in session, not just this device's cookie.
+        if (_serverSettings) {
+            _serverSettings[SYNC_URL_STORAGE_KEY] = url;
+            saveServerSettings(_serverSettings);
+        }
+        alert(`Server set to:\n${url}`);
+        closePopup(popup);
+    };
+    btnContainer.appendChild(setBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'popup-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => {
+        closePopup(popup);
+    };
+    btnContainer.appendChild(cancelBtn);
+
+    setTimeout(() => serverInput.focus(), 100);
+}
+
+function showBucketPromptPopup() {
+    showLoginPopup();
 }
 
 function normalizeCalTopoProxyUrl(url) {
@@ -503,6 +1246,48 @@ function normalizeCalTopoProxyUrl(url) {
     return queryString ? `${resolvedBaseUrl}?${queryString}` : resolvedBaseUrl;
 }
 
+function appendUrlQueryParam(url, key, value = '1') {
+    const rawUrl = typeof url === 'string' ? url.trim() : '';
+    if (!rawUrl) {
+        return '';
+    }
+    const [baseUrl, queryString = ''] = rawUrl.split('?');
+    const encodedPart = `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    const nextQuery = queryString ? `${queryString}&${encodedPart}` : encodedPart;
+    return `${baseUrl}?${nextQuery}`;
+}
+
+function normalizeCalTopoDomain(domain, fallback = 'caltopo.com') {
+    const fallbackDomain = (typeof fallback === 'string' && fallback.trim()) ? fallback.trim().toLowerCase() : 'caltopo.com';
+    const rawDomain = typeof domain === 'string' ? domain.trim().toLowerCase() : '';
+    if (!rawDomain) {
+        return fallbackDomain;
+    }
+
+    let candidate = rawDomain.replace(/^[a-z]+:\/\//i, '').replace(/^\/\//, '');
+    candidate = candidate.split('#')[0].split('?')[0].split('/')[0].trim();
+    if (candidate.includes('@')) {
+        candidate = candidate.split('@').pop() || '';
+    }
+    if (candidate.includes(':')) {
+        candidate = candidate.split(':')[0];
+    }
+
+    candidate = candidate.replace(/^www\./, '').replace(/^\.+|\.+$/g, '');
+    if (!candidate) {
+        return fallbackDomain;
+    }
+
+    if (candidate.includes('sartopo.com')) {
+        return 'sartopo.com';
+    }
+    if (candidate.includes('caltopo.com')) {
+        return 'caltopo.com';
+    }
+
+    return /^[a-z0-9.-]+$/.test(candidate) ? candidate : fallbackDomain;
+}
+
 function getCalTopoProxyHealthUrl(url) {
     const normalizedProxyUrl = normalizeCalTopoProxyUrl(url);
     if (!normalizedProxyUrl) {
@@ -510,7 +1295,7 @@ function getCalTopoProxyHealthUrl(url) {
     }
 
     if (normalizedProxyUrl.includes('.php')) {
-        return normalizedProxyUrl.split('?')[0] + (normalizedProxyUrl.includes('?') ? '&' : '?') + 'health=1';
+        return appendUrlQueryParam(normalizedProxyUrl, 'health', '1');
     }
 
     const [baseUrl] = normalizedProxyUrl.split('?');
@@ -518,20 +1303,26 @@ function getCalTopoProxyHealthUrl(url) {
 }
 
 function getCalTopoProxy() {
-    let proxy = localStorage.getItem(CALTOPO_PROXY_STORAGE_KEY);
+    let proxy = _serverSettings && _serverSettings[CALTOPO_PROXY_STORAGE_KEY] ? _serverSettings[CALTOPO_PROXY_STORAGE_KEY] : null;
     // Migration: Migrate from old SARTopo key if needed
     if (!proxy) {
-        const oldProxy = localStorage.getItem('sar-sartopo-proxy-v1');
+        const oldProxy = _serverSettings && _serverSettings['sar-sartopo-proxy-v1'] ? _serverSettings['sar-sartopo-proxy-v1'] : null;
         if (oldProxy) {
             proxy = oldProxy;
-            localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
-            localStorage.removeItem('sar-sartopo-proxy-v1');
+            if (_serverSettings) {
+                _serverSettings[CALTOPO_PROXY_STORAGE_KEY] = proxy;
+                delete _serverSettings['sar-sartopo-proxy-v1'];
+                saveServerSettings(_serverSettings);
+            }
         }
     }
     const normalizedProxy = normalizeCalTopoProxyUrl(proxy);
     if (proxy && normalizedProxy && proxy !== normalizedProxy) {
         proxy = normalizedProxy;
-        localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, proxy);
+        if (_serverSettings) {
+            _serverSettings[CALTOPO_PROXY_STORAGE_KEY] = proxy;
+            saveServerSettings(_serverSettings);
+        }
     }
     return proxy || 'https://sarwebtheory2-production.up.railway.app/api/proxy';
 }
@@ -610,23 +1401,38 @@ const checkProxyHealth = async (timeoutMs = 5000) => {
 };
 
 function setCalTopoProxy(url) {
-    if (url) localStorage.setItem(CALTOPO_PROXY_STORAGE_KEY, url);
-    else localStorage.removeItem(CALTOPO_PROXY_STORAGE_KEY);
+    if (url) {
+        if (_serverSettings) {
+            _serverSettings[CALTOPO_PROXY_STORAGE_KEY] = url;
+            saveServerSettings(_serverSettings);
+        }
+    } else {
+        if (_serverSettings) {
+            delete _serverSettings[CALTOPO_PROXY_STORAGE_KEY];
+            saveServerSettings(_serverSettings);
+        }
+    }
 }
 
 function getCalTopoCredentials() {
-    return JSON.parse(localStorage.getItem(CALTOPO_CREDS_STORAGE_KEY) || '{}');
+    return _serverSettings && _serverSettings[CALTOPO_CREDS_STORAGE_KEY] ? JSON.parse(_serverSettings[CALTOPO_CREDS_STORAGE_KEY]) : {};
 }
 
 function setCalTopoCredentials(creds) {
-    localStorage.setItem(CALTOPO_CREDS_STORAGE_KEY, JSON.stringify(creds));
+    if (_serverSettings) {
+        _serverSettings[CALTOPO_CREDS_STORAGE_KEY] = JSON.stringify(creds);
+        saveServerSettings(_serverSettings);
+    }
 }
 
 function getDeviceId() {
-    let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    let id = _serverSettings && _serverSettings[DEVICE_ID_STORAGE_KEY] ? _serverSettings[DEVICE_ID_STORAGE_KEY] : null;
     if (!id) {
         id = 'device-' + Math.random().toString(36).substring(2, 11) + '-' + Date.now();
-        localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+        if (_serverSettings) {
+            _serverSettings[DEVICE_ID_STORAGE_KEY] = id;
+            saveServerSettings(_serverSettings);
+        }
     }
     return id;
 }
@@ -768,7 +1574,7 @@ function isUserAdmin(user) {
 function getAccountName(user) {
     if (!user) return '';
     if (user.pin === '1976') return 'Super-Admin';
-    return (user.firstName + (user.lastName ? ' ' + (user.lastName || '') : '')).trim();
+    return (user.username || '').trim();
 }
 
 function getVisibleMobileNavPages(user = getCurrentUser()) {
@@ -1046,40 +1852,41 @@ function setCurrentUser(user) {
     notifyActiveUser(user);
   } else {
     sessionStorage.removeItem('sar-current-user');
+    eraseCookie(USER_NAME_STORAGE_KEY);
+    eraseCookie(USER_PASSWORD_STORAGE_KEY);
+    eraseCookie(SYNC_BUCKET_STORAGE_KEY);
   }
     syncMobileBottomNav();
 }
 
 function checkAccess() {
-  const user = getCurrentUser();
+  let user = getCurrentUser();
   const page = pageKey();
   const bundle = loadBundle();
 
   if (!user) {
-    const superAdmin = (bundle.accounts || []).find(a => a.pin === '1976');
-    if (superAdmin) {
-        setCurrentUser(superAdmin);
-        return;
+    const creds = getUserCredentials();
+    if (creds) {
+        user = {
+            username: creds.name,
+            pin: creds.password
+        };
+        setCurrentUser(user);
     }
-    if (page !== 'index') navigateToPage('index.html');
+  }
+
+  if (!user) {
+    if (page !== 'index' && page !== 'index.html') navigateToPage('index.html');
     return;
   }
 
-  // Refresh user data from bundle to ensure visiblePages are up to date
+  // Refresh user data from bundle if exists locally (for permissions)
   const actualUser = (bundle.accounts || []).find(a => a.pin === user.pin);
   if (actualUser) {
-      setCurrentUser(actualUser);
-      if (isUserAdmin(actualUser)) return; // Admin has access to everything
+      // Keep name from credentials but merge other props
+      const merged = { ...actualUser, ...user };
+      sessionStorage.setItem('sar-current-user', JSON.stringify(merged));
   }
-
-  if (page === 'page9') {
-      // Everyone is an admin now
-      return;
-  }
-
-    if (actualUser && actualUser.visiblePages) {
-        // Everyone is allowed access to everything now
-    }
 }
 
 function defaultSearchLogData() {
@@ -1141,7 +1948,7 @@ function defaultBundle() {
     uploads: [],
     maps: [],
     accounts: [
-      { firstName: 'Super', lastName: 'Admin', pin: '1976', color: 'none', handle: 'Super-Admin', isFileManager: true, theme: 'dark', visiblePages: ['index', 'page2', 'page3', 'page4', 'page5', 'page6', 'page7', 'settings', 'home', 'page8', 'page9', 'page10'] }
+      { username: 'Super Admin', pin: '1976', color: 'none', handle: 'Super-Admin', isFileManager: true, theme: 'dark', visiblePages: ['index', 'page2', 'page3', 'page4', 'page5', 'page6', 'page7', 'settings', 'home', 'page8', 'page9', 'page10'] }
     ],
     profile: {
       incidentNumber: '',
@@ -1299,6 +2106,15 @@ function sanitizeBundle(bundle) {
 
   const parCheckFrequency = (bundle.parCheckFrequency !== undefined) ? bundle.parCheckFrequency : 20;
   const showTips = (bundle.showTips !== undefined) ? bundle.showTips : true;
+
+  // Preserve the segment color-scale / active-search opacity display settings.
+  // Normalize them through the shared helper so saved values stay valid.
+  const segmentDisplaySettings = getSegmentDisplaySettings(bundle);
+  const segmentColorScaleUsePsriMax = segmentDisplaySettings.usePsriMax;
+  const segmentColorScaleLowColor = segmentDisplaySettings.lowColor;
+  const segmentColorScaleMidColor = segmentDisplaySettings.midColor;
+  const segmentColorScaleHighColor = segmentDisplaySettings.highColor;
+  const segmentActiveSearchOpacityPercent = segmentDisplaySettings.activeSearchOpacityPercent;
   const theme = bundle.theme || 'dark';
   const lastModified = bundle.lastModified || new Date().toISOString();
   const forms = bundle.forms || {};
@@ -1310,8 +2126,7 @@ function sanitizeBundle(bundle) {
 
   // 1. Ensure only one Super Admin exists
   const superAdmin = accounts.find(a => a.pin === '1976') || fallback.accounts[0];
-  superAdmin.firstName = 'Super';
-  superAdmin.lastName = 'Admin';
+  superAdmin.username = 'Super Admin';
   superAdmin.handle = 'Super-Admin';
   superAdmin.pin = '1976';
   
@@ -1351,14 +2166,12 @@ function sanitizeBundle(bundle) {
 
     // Fallback to name match
     if (!existing) {
-        existing = accounts.find(a => a.handle === name || (a.firstName + ' ' + (a.lastName || '')).trim() === name);
+        existing = accounts.find(a => a.handle === name || (a.username || '').trim() === name);
     }
 
     if (existing) {
       // Update account name from Personnel list (Personnel is source of truth for name unless changed via User Account page which also updates Personnel)
-      const parts = name.split(' ');
-      existing.firstName = parts[0];
-      existing.lastName = parts.slice(1).join(' ');
+      existing.username = name;
       existing.handle = name;
       
       // Ensure PIN link is established in Personnel list
@@ -1370,10 +2183,8 @@ function sanitizeBundle(bundle) {
     } else {
       // Create new account
       const newPin = rowPin || getNextPin(syncedAccounts);
-      const parts = name.split(' ');
       const newAcc = {
-        firstName: parts[0],
-        lastName: parts.slice(1).join(' '),
+        username: name,
         pin: newPin,
         color: 'none',
         handle: name,
@@ -1415,6 +2226,11 @@ function sanitizeBundle(bundle) {
     dismissedNotifications,
     parCheckFrequency, 
     showTips, 
+    segmentColorScaleUsePsriMax,
+    segmentColorScaleLowColor,
+    segmentColorScaleMidColor,
+    segmentColorScaleHighColor,
+    segmentActiveSearchOpacityPercent,
     pages, 
     forms, 
     profile, 
@@ -1426,7 +2242,7 @@ function sanitizeBundle(bundle) {
 
 function loadBundle() {
   try {
-    const raw = localStorage.getItem(BUNDLE_STORAGE_KEY);
+    const raw = getStorageItem(BUNDLE_STORAGE_KEY);
     if (!raw) return defaultBundle();
     return sanitizeBundle(JSON.parse(raw));
   } catch {
@@ -1434,23 +2250,36 @@ function loadBundle() {
   }
 }
 
+let _inFlightPushPromise = null;
+
 function saveBundle(bundle, skipSync = false) {
   bundle.lastModified = new Date().toISOString();
   const sanitized = sanitizeBundle(bundle);
 
-  localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
-  
+  setStorageItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
+
+  let pushPromise = null;
   if (!skipSync) {
-      pushBundleToServer(sanitized);
+      // Send ONLY the rows this device changed. Return this promise so callers
+      // that reload or wait can await the write; track it in
+      // _inFlightPushPromise so background pulls never race in front.
+      pushPromise = pushBundleDelta(sanitized);
+      _inFlightPushPromise = pushPromise;
+      pushPromise.finally(() => {
+          if (_inFlightPushPromise === pushPromise) {
+              _inFlightPushPromise = null;
+          }
+      });
       // Ensure the current file is always in the saved files list
       saveFileToList(sanitized.fileName, sanitized);
   }
   
   updateFileNameDisplay();
+  return pushPromise;
 }
 
 function getSavedFiles() {
-    const raw = localStorage.getItem(FILE_LIST_STORAGE_KEY);
+    const raw = getStorageItem(FILE_LIST_STORAGE_KEY);
     if (!raw) return {};
     try {
         return JSON.parse(raw);
@@ -1468,7 +2297,7 @@ function saveFileToList(fileName, bundle) {
         bundle: sanitizeBundle(bundle),
         lastModified: new Date().toISOString()
     };
-    localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+    setStorageItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
     // No longer push to server immediately to prevent race conditions during sync.
     // Background sync loop will handle pushing merged updates.
 }
@@ -1477,7 +2306,7 @@ function deleteFileFromList(fileName) {
     const files = getSavedFiles();
     logDeletion('File', fileName);
     delete files[fileName];
-    localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+    setStorageItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
     // No longer push to server immediately to prevent race conditions during sync.
 }
 
@@ -1530,12 +2359,14 @@ function confirmDeleteRow(rowElement, onConfirm) {
 const PERMANENT_PERSONNEL_KEY = 'permanent_personnel_global';
 
 function getPermanentPersonnel() {
-  const stored = localStorage.getItem(PERMANENT_PERSONNEL_KEY);
-  return stored ? JSON.parse(stored) : {};
+    const bundle = loadBundle();
+    return bundle.permanentPersonnel || {};
 }
 
 function setPermanentPersonnel(data) {
-  localStorage.setItem(PERMANENT_PERSONNEL_KEY, JSON.stringify(data));
+    const bundle = loadBundle();
+    bundle.permanentPersonnel = data;
+    saveBundle(bundle);
 }
 
 function syncPersonnelData(fileData) {
@@ -1641,6 +2472,12 @@ function saveCurrentPageData(data) {
     bundle.pages[key] = data;
   }
   saveBundle(bundle);
+  // A Search Log edit can change a segment's active/inactive search state (e.g.
+  // logging that a team searched or finished a segment). Push the refreshed
+  // colors/opacity to SARTopo when the assignment overlay is enabled.
+  if (key === 'page4') {
+    refreshCalTopoAssignmentOverlayIfEnabled();
+  }
   const status = document.getElementById('save-status');
   if (status) {
     const now = new Date();
@@ -2002,6 +2839,11 @@ function recalculateEverything() {
   });
 
   saveBundle(bundle);
+
+  // Segment PSRc values (column 7) were just recomputed. If the CalTopo
+  // assignment overlay is on, re-color and re-opacity the shapes on SARTopo so
+  // the map always reflects the latest PSRc scale.
+  refreshCalTopoAssignmentOverlayIfEnabled();
 }
 
 function buildRegionsTable() {
@@ -2014,13 +2856,15 @@ function buildRegionsTable() {
   const dynamicCount = data.headers.length - 2;
 
   if (tableContainer) {
-    if (data.headers.length > 5) {
+    // Keep the normal spreadsheet-style table (with an editable header row) until
+    // there are more than 10 columns; beyond that, wrap the cells into the pill grid.
+    if (data.headers.length > 10) {
       tableContainer.classList.add('force-mobile-layout');
     } else {
       tableContainer.classList.remove('force-mobile-layout');
     }
     // Also remove horizontal overflow from table-card when in card layout
-    if (data.headers.length > 5) {
+    if (data.headers.length > 10) {
       tableContainer.style.overflowX = 'hidden';
     } else {
       tableContainer.style.overflowX = '';
@@ -2103,24 +2947,6 @@ function buildRegionsTable() {
         }
       });
 
-      const toggleContainer = document.createElement('label');
-      toggleContainer.className = 'toggle-switch header-toggle';
-
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = data.voterVisibility[c - 1] ?? true;
-      checkbox.addEventListener('change', () => {
-        data.voterVisibility[c - 1] = checkbox.checked;
-        saveCurrentPageData(data);
-        buildRegionsTable();
-      });
-
-      const slider = document.createElement('span');
-      slider.className = 'slider round';
-
-      toggleContainer.appendChild(checkbox);
-      toggleContainer.appendChild(slider);
-
       const delBtn = document.createElement('button');
       delBtn.className = 'col-delete-btn';
       delBtn.innerHTML = '✕';
@@ -2137,7 +2963,6 @@ function buildRegionsTable() {
       };
 
       headerContainer.appendChild(headerPill);
-      headerContainer.appendChild(toggleContainer);
       headerContainer.appendChild(delBtn);
       th.appendChild(headerContainer);
     }
@@ -2178,7 +3003,7 @@ function buildRegionsTable() {
       const cell = document.createElement('div');
       cell.className = 'pill-cell';
       const isVoterCol = c > 0 && c < data.headers.length - 1;
-      if (isVoterCol && !data.voterVisibility[c - 1]) {
+      if (isVoterCol) {
         cell.classList.add('password-style');
       }
       cell.contentEditable = 'true';
@@ -2978,7 +3803,7 @@ function buildPersonnelTable() {
         }
 
         // 3. Clear data
-        localStorage.removeItem(PERMANENT_PERSONNEL_KEY);
+        delete bundle.permanentPersonnel;
         bundle.pages.page3 = [];
         
         saveBundle(bundle);
@@ -4643,7 +5468,7 @@ function addActivityLogEntry(team, action, bundle = null, membersOverride = null
   }
 
   const currentUser = getCurrentUser();
-  const userTag = currentUser ? ` - ${currentUser.handle || (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim()}` : '';
+  const userTag = currentUser ? ` - ${currentUser.handle || (currentUser.username || '').trim()}` : '';
 
   let members = '';
   if (team !== 'System') {
@@ -4686,14 +5511,16 @@ function logCreation(type, name, bundle = null) {
   addActivityLogEntry('System', `Created ${type}: ${name || 'unknown'}`, bundle);
 }
 
-function showLoginPopup() {
+function showUserSelectionPopup() {
+  if (document.querySelector('.popup-overlay.user-selection-popup')) return;
   const onCancel = () => {
     if (!getCurrentUser()) {
         alert('You must select a team member to continue');
-        showLoginPopup();
+        setTimeout(showUserSelectionPopup, 300);
     }
   };
   const popup = createPopup('Select Team Member', null, onCancel);
+  popup.classList.add('user-selection-popup');
   const content = popup.querySelector('.popup-content');
   const btnContainer = popup.querySelector('.popup-buttons');
   
@@ -4732,14 +5559,14 @@ function showLoginPopup() {
     pillsContainer.innerHTML = '';
     const query = userSearchInput.value.toLowerCase();
     const filtered = accounts.filter(acc => 
-      `${acc.firstName} ${acc.lastName}`.toLowerCase().includes(query)
+      (acc.username || '').toLowerCase().includes(query)
     );
 
     filtered.forEach(acc => {
       const pill = document.createElement('button');
       pill.className = 'mini-pill';
-      pill.textContent = `${acc.firstName} ${acc.lastName}`;
-      if (selectedUser && selectedUser.firstName === acc.firstName && selectedUser.lastName === acc.lastName) {
+      pill.textContent = acc.username || '';
+      if (selectedUser && selectedUser.username === acc.username) {
           pill.style.background = 'var(--pill-bg-hover)';
           pill.style.borderColor = 'var(--accent)';
       }
@@ -4790,7 +5617,7 @@ function showAccountManager() {
     row.style.borderBottom = '1px solid var(--line)';
 
     const info = document.createElement('div');
-    info.textContent = `${acc.firstName} ${acc.lastName} (@${acc.handle || 'no-handle'})`;
+    info.textContent = `${acc.username || ''} (@${acc.handle || 'no-handle'})`;
     row.appendChild(info);
 
     const actions = document.createElement('div');
@@ -4821,7 +5648,7 @@ function showAccountManager() {
             };
             if (b.deleteMode) {
                 doDelete();
-            } else if (confirm(`Delete account ${acc.firstName}?`)) {
+            } else if (confirm(`Delete account ${acc.username || ''}?`)) {
                 doDelete();
             }
         };
@@ -4861,17 +5688,11 @@ function showEditAccountPopup(acc, index = -1) {
     const inputs = document.createElement('div');
     inputs.className = 'popup-input-container';
 
-    const fName = document.createElement('input');
-    fName.className = 'pill-input';
-    fName.placeholder = 'First Name';
-    fName.value = acc ? acc.firstName : '';
-    inputs.appendChild(fName);
-
-    const lName = document.createElement('input');
-    lName.className = 'pill-input';
-    lName.placeholder = 'Last Name';
-    lName.value = acc ? acc.lastName : '';
-    inputs.appendChild(lName);
+    const usernameField = document.createElement('input');
+    usernameField.className = 'pill-input';
+    usernameField.placeholder = 'Username';
+    usernameField.value = acc ? acc.username || '' : '';
+    inputs.appendChild(usernameField);
 
     const handle = document.createElement('input');
     handle.className = 'pill-input';
@@ -4964,8 +5785,7 @@ function showEditAccountPopup(acc, index = -1) {
                 finalPin = next.toString();
             }
             const newAcc = {
-                firstName: fName.value,
-                lastName: lName.value,
+                username: usernameField.value,
                 handle: handle.value,
                 pin: finalPin,
                 color: color.value,
@@ -4974,11 +5794,11 @@ function showEditAccountPopup(acc, index = -1) {
 
             // Sync to Personnel list
             if (bundle.pages && bundle.pages.page3) {
-                const newName = newAcc.handle || (newAcc.firstName + ' ' + (newAcc.lastName || '')).trim();
+                const newName = newAcc.handle || (newAcc.username || '').trim();
                 if (acc) {
                     const oldPin = acc.pin;
                     const oldHandle = acc.handle;
-                    const oldFullName = (acc.firstName + ' ' + (acc.lastName || '')).trim();
+                    const oldFullName = (acc.username || '').trim();
                     bundle.pages.page3.forEach(row => {
                         const rowName = (row[0] || '').trim();
                         const rowPin = (row[8] || '').trim();
@@ -5028,9 +5848,9 @@ function updateHeaderProfile() {
     btn.style.borderColor = '';
 
     if (user) {
-        const f = (user.firstName || '').trim().charAt(0).toUpperCase();
-        const l = (user.lastName || '').trim().charAt(0).toUpperCase();
-        btn.innerHTML = (f + l) || '??';
+        const uName = (user.username || '').trim();
+        const initial = uName.charAt(0).toUpperCase();
+        btn.innerHTML = initial || '??';
         
         if (pageKey() === 'page8') {
             btn.classList.add('active');
@@ -5051,7 +5871,11 @@ function updateHeaderProfile() {
         btn.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
         btn.onclick = (e) => {
             e.preventDefault();
-            showLoginPopup();
+            if (!getUserCredentials()) {
+                showLoginPopup();
+            } else {
+                showUserSelectionPopup();
+            }
         };
     }
 
@@ -5243,7 +6067,7 @@ function createLogTimestampPill(entry) {
       userPill.style.fontSize = '0.7rem';
       userPill.style.background = 'rgba(255,255,255,0.05)';
       userPill.style.borderColor = 'rgba(255,255,255,0.1)';
-      userPill.textContent = currentUser.handle || (currentUser.firstName + ' ' + (currentUser.lastName || '')).trim();
+      userPill.textContent = currentUser.handle || (currentUser.username || '').trim();
       container.appendChild(userPill);
     }
   }
@@ -5622,8 +6446,8 @@ function renderMemberIncidentCards(memberName, container) {
     container.innerHTML = '';
     
     const bundle = loadBundle();
-    const allRows = (bundle.pages.page3 || []).filter(r => r[0] === memberName);
-    if (allRows.length === 0) return;
+    const memberRows = (bundle.pages.page3 || []).filter(r => r[0] === memberName);
+    const allRows = memberRows;
 
     const cardsWrapper = document.createElement('div');
     cardsWrapper.className = 'incident-times-container';
@@ -5647,7 +6471,17 @@ function renderMemberIncidentCards(memberName, container) {
             e.stopPropagation();
             if (confirm('Delete this incident row?')) {
                 const page3 = bundle.pages.page3 || [];
-                // Find the absolute index in page3
+                const memberIncidentRows = page3.filter(row => row[0] === memberName);
+                if (memberIncidentRows.length <= 1) {
+                    pRow[9] = '';
+                    pRow[10] = '';
+                    pRow[11] = '';
+                    pRow[12] = '';
+                    saveBundle(bundle);
+                    renderMemberIncidentCards(memberName, container);
+                    return;
+                }
+
                 const absoluteIndex = page3.indexOf(pRow);
                 if (absoluteIndex > -1) {
                     page3.splice(absoluteIndex, 1);
@@ -5721,8 +6555,9 @@ function renderMemberIncidentCards(memberName, container) {
         const page3 = bundle.pages.page3 || [];
         // Create a new row for the same member
         // Assuming the structure from previous knowledge: member name is index 0
-        const firstRow = allRows[0];
-        const newRow = [...firstRow];
+        const firstRow = memberRows[0];
+        const newRow = firstRow ? [...firstRow] : Array(14).fill('');
+        newRow[0] = memberName;
         // Clear incident times in the new row (indexes 9-12)
         newRow[9] = '';
         newRow[10] = '';
@@ -6525,6 +7360,7 @@ function buildMetricsTable() {
     });
 }
 
+let chartsResizeAttached = false;
 function initCharts() {
     const startInput = document.getElementById('chart-start-datetime');
     const endInput = document.getElementById('chart-end-datetime');
@@ -6543,6 +7379,12 @@ function initCharts() {
         };
     }
     renderCharts();
+    if (!chartsResizeAttached) {
+        window.addEventListener('resize', () => {
+            renderCharts();
+        });
+        chartsResizeAttached = true;
+    }
 }
 
 function renderCharts() {
@@ -6632,14 +7474,17 @@ function drawLineChart(containerId, data, color, startTimeTs, endTimeTs) {
         tick.setAttribute("stroke", "rgba(255,255,255,0.4)");
         svg.appendChild(tick);
 
-        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-        text.setAttribute("x", x);
-        text.setAttribute("y", height - padding.bottom + 20);
-        text.setAttribute("fill", "var(--muted)");
-        text.setAttribute("font-size", "7.5"); // Smaller to fit date/time
-        text.setAttribute("text-anchor", "middle");
-        text.textContent = formatHourOffset(tickTs);
-        svg.appendChild(text);
+        // Only show timeline increment labels for every other increment
+        if (i % 2 === 0) {
+            const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+            text.setAttribute("x", x);
+            text.setAttribute("y", height - padding.bottom + 20);
+            text.setAttribute("fill", "var(--muted)");
+            text.setAttribute("font-size", "7.5"); // Smaller to fit date/time
+            text.setAttribute("text-anchor", "middle");
+            text.textContent = formatHourOffset(tickTs);
+            svg.appendChild(text);
+        }
     }
 
     const points = data.map((val, i) => {
@@ -6701,104 +7546,267 @@ function drawBarChart(containerId, data, color) {
 }
 
 
-function buildSavedFilesTable() {
+// Count the populated Regions / Segments / Personnel / Tasks rows inside a case
+// bundle. Used by the Saved Cases table to show per-case metrics. Kept tolerant
+// of partially-formed bundles so it never throws while rendering the table.
+function computeBundleStats(bundle) {
+    const empty = { regions: 0, segments: 0, personnel: 0, tasks: 0 };
+    if (!bundle || !bundle.pages) return empty;
+    const pages = bundle.pages;
+    const indexRows = (pages.index && pages.index.rows) || [];
+    const page2 = pages.page2 || [];
+    const page3 = pages.page3 || [];
+    const page4 = pages.page4 || [];
+    return {
+        regions: indexRows.filter(r => r && r[0] && String(r[0]).trim() !== '').length,
+        segments: page2.filter(r => r && r[1] && String(r[1]).trim() !== '').length,
+        personnel: page3.filter(r => r && r[0] && String(r[0]).trim() !== '').length,
+        tasks: page4.filter(r => r && r[0] && String(r[0]).trim() !== '').length
+    };
+}
+
+// Themed popup used by the Saved Cases "Edit" action to rename a case number.
+// Mirrors the createPopup/pill-input pattern used elsewhere (e.g.
+// showCaseNumberPopup) instead of a raw browser prompt.
+function showRenameCasePopup(currentName, originElement, onConfirm) {
+    if (document.querySelector('.popup-overlay.rename-case-popup')) return;
+    const popup = createPopup('Rename Case #', originElement);
+    popup.classList.add('rename-case-popup');
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    const inputs = document.createElement('div');
+    inputs.className = 'popup-input-container';
+    inputs.style.display = 'flex';
+    inputs.style.flexDirection = 'column';
+    inputs.style.gap = '12px';
+
+    const label = document.createElement('div');
+    label.textContent = 'Enter a new case number.';
+    label.style.textAlign = 'center';
+    label.style.fontSize = '0.9em';
+    label.style.opacity = '0.85';
+    inputs.appendChild(label);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'pill-input';
+    input.value = currentName;
+    input.style.textAlign = 'center';
+    input.style.width = '100%';
+    input.style.padding = '12px';
+    inputs.appendChild(input);
+
+    content.insertBefore(inputs, btnContainer);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'popup-btn primary';
+    saveBtn.textContent = 'Rename';
+    saveBtn.onclick = () => {
+        const newName = input.value.trim();
+        if (!newName) { alert('Enter a case number.'); return; }
+        closePopup(popup);
+        onConfirm(newName);
+    };
+    btnContainer.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'popup-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => closePopup(popup);
+    btnContainer.appendChild(cancelBtn);
+
+    setTimeout(() => { input.focus(); input.select(); }, 100);
+}
+
+// Saved Cases table. Rows come from the current user's server-side case history
+// (/api/auth/history via fetchUserHistory) merged with any locally-cached
+// bundles (getSavedFiles), keyed by the clean CASE #. Per-case metric columns
+// are computed only when the bundle is cached locally; otherwise a "—"
+// placeholder is shown until the case is opened.
+async function buildSavedFilesTable() {
     const tbody = document.getElementById('saved-files-body');
     if (!tbody) return;
 
     const files = getSavedFiles();
-    const fileNames = Object.keys(files).sort();
-    
-    if (fileNames.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--muted); padding: 20px;">No saved search files yet.</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = '';
     const currentUser = getCurrentUser();
     const isAdmin = isUserAdmin(currentUser);
     const isFileManager = currentUser && (currentUser.isFileManager === true || currentUser.isFileManager === 'true');
 
-    fileNames.forEach(name => {
-        const fileInfo = files[name];
+    // Normalize a case-number/file-name for merge/dedup (drop any .json suffix).
+    const normalizeCase = (name) => String(name || '').replace(/\.json$/i, '');
+
+    // Ordered, de-duplicated list of case numbers plus per-case metadata.
+    const order = [];
+    const seen = new Set();
+    const meta = {};
+    const addCase = (caseNumber) => {
+        if (!caseNumber) return;
+        if (!seen.has(caseNumber)) { seen.add(caseNumber); order.push(caseNumber); meta[caseNumber] = {}; }
+    };
+
+    // 1) Server case history first (preserves lastAccessed ordering).
+    let history = [];
+    try {
+        history = await fetchUserHistory();
+    } catch (e) {
+        history = [];
+    }
+    (history || []).forEach(item => {
+        const caseNumber = normalizeCase(bucketToCaseNumber(item.bucket));
+        if (!caseNumber) return;
+        addCase(caseNumber);
+        meta[caseNumber].lastAccessed = item.lastAccessed;
+    });
+
+    // 2) Merge in any locally-cached cases (provide the bundle for metrics).
+    Object.keys(files).forEach(name => {
+        const caseNumber = normalizeCase(name);
+        addCase(caseNumber);
+        meta[caseNumber].localKey = name;
+        meta[caseNumber].localInfo = files[name];
+    });
+
+    if (order.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--muted); padding: 20px;">No saved cases yet.</td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = '';
+
+    order.forEach(caseNumber => {
+        const info = meta[caseNumber] || {};
+        const localInfo = info.localInfo;
+        const hasLocal = !!(localInfo && localInfo.bundle);
+        const stats = hasLocal ? computeBundleStats(localInfo.bundle) : null;
+
         const tr = document.createElement('tr');
         tr.style.borderBottom = '1px solid rgba(255,255,255,0.05)';
 
-        // Name (Open button-like pill)
-        const tdName = document.createElement('td');
-        tdName.setAttribute('data-label', 'File Name');
-        tdName.style.padding = '12px 15px';
-        const nameBtn = document.createElement('button');
-        nameBtn.className = 'mini-pill';
-        nameBtn.style.fontWeight = 'bold';
-        nameBtn.textContent = name;
-        nameBtn.onclick = () => {
-            saveBundle(fileInfo.bundle);
-            window.location.reload();
-        };
-        tdName.appendChild(nameBtn);
-        tr.appendChild(tdName);
+        // Case #
+        const tdCase = document.createElement('td');
+        tdCase.setAttribute('data-label', 'Case #');
+        tdCase.style.padding = '12px 15px';
+        tdCase.style.fontWeight = 'bold';
+        tdCase.textContent = caseNumber;
+        tr.appendChild(tdCase);
 
-        // Date
-        const tdDate = document.createElement('td');
-        tdDate.setAttribute('data-label', 'Last Modified');
-        tdDate.style.padding = '12px 15px';
-        tdDate.style.color = 'var(--muted)';
-        try {
-            tdDate.textContent = new Date(fileInfo.lastModified).toLocaleString();
-        } catch(e) {
-            tdDate.textContent = fileInfo.lastModified;
-        }
-        tr.appendChild(tdDate);
+        // Metric columns (Regions / Segments / Personnel / Tasks Logged)
+        const metricKeys = ['regions', 'segments', 'personnel', 'tasks'];
+        metricKeys.forEach(key => {
+            const td = document.createElement('td');
+            td.style.padding = '12px 15px';
+            td.style.textAlign = 'center';
+            td.style.color = 'var(--muted)';
+            td.textContent = stats ? String(stats[key]) : '\u2014';
+            tr.appendChild(td);
+        });
 
-        // Size
-        const tdSize = document.createElement('td');
-        tdSize.setAttribute('data-label', 'File Size');
-        tdSize.style.padding = '12px 15px';
-        tdSize.style.color = 'var(--muted)';
-        const sizeInBytes = JSON.stringify(fileInfo.bundle).length;
-        const sizeInKB = (sizeInBytes / 1024).toFixed(1);
-        tdSize.textContent = `${sizeInKB} KB`;
-        tr.appendChild(tdSize);
-
-        // Actions
+        // Actions: Edit (rename) / Load / Delete / Export
         const tdActions = document.createElement('td');
         tdActions.setAttribute('data-label', 'Actions');
         tdActions.style.padding = '12px 15px';
         tdActions.style.textAlign = 'center';
-        
+
         const btnCont = document.createElement('div');
         btnCont.className = 'tool-actions';
         btnCont.style.justifyContent = 'center';
         btnCont.style.gap = '10px';
 
-        const downBtn = document.createElement('button');
-        downBtn.className = 'mini-pill';
-        downBtn.textContent = 'Download';
-        downBtn.onclick = () => {
-            downloadTextFile(name, JSON.stringify(fileInfo.bundle, null, 2));
-        };
-        btnCont.appendChild(downBtn);
+        // Edit (rename the case number). Works on locally-cached cases; a
+        // non-cached case must be opened first so its data can be re-keyed.
+        const editBtn = document.createElement('button');
+        editBtn.className = 'mini-pill';
+        editBtn.textContent = 'Edit';
+        editBtn.onclick = () => {
+            if (!hasLocal) {
+                alert('Open this case (Load) before renaming it.');
+                return;
+            }
+            showRenameCasePopup(caseNumber, editBtn, (newName) => {
+                const cleanNew = normalizeCase(newName);
+                if (!cleanNew || cleanNew === caseNumber) return;
+                const files2 = getSavedFiles();
+                const collisionKey = Object.keys(files2).find(k => normalizeCase(k) === cleanNew);
+                if (collisionKey) {
+                    if (!confirm(`A case named "${cleanNew}" already exists. Overwrite it?`)) return;
+                }
+                const localKey = info.localKey;
+                const targetBundle = (files2[localKey] && files2[localKey].bundle) || localInfo.bundle;
+                targetBundle.fileName = cleanNew;
 
+                const active = loadBundle();
+                const wasActive = active && normalizeCase(active.fileName) === caseNumber;
+
+                saveFileToList(cleanNew, targetBundle);
+                if (localKey && normalizeCase(localKey) !== cleanNew) {
+                    deleteFileFromList(localKey);
+                }
+                if (wasActive) {
+                    active.fileName = cleanNew;
+                    saveBundle(active);
+                    setSyncBucket(cleanNew);
+                    updateFileNameDisplay();
+                }
+                buildSavedFilesTable();
+            });
+        };
+        btnCont.appendChild(editBtn);
+
+        // Load (open the case).
+        const loadBtn = document.createElement('button');
+        loadBtn.className = 'mini-pill';
+        loadBtn.style.fontWeight = 'bold';
+        loadBtn.textContent = 'Load';
+        loadBtn.onclick = async () => {
+            if (hasLocal) {
+                saveBundle(localInfo.bundle);
+            } else {
+                await setSyncBucket(caseNumber);
+            }
+            window.location.reload();
+        };
+        btnCont.appendChild(loadBtn);
+
+        // Delete (existing admin / file-manager permission rules).
         const delBtn = document.createElement('button');
         delBtn.className = 'row-delete-btn';
         delBtn.textContent = 'Delete';
         delBtn.onclick = () => {
-            if (isAdmin || isFileManager) {
-                const b = loadBundle();
-                const doDelete = () => {
-                    deleteFileFromList(name);
-                    buildSavedFilesTable();
-                };
-                if (b.deleteMode) {
-                    doDelete();
-                } else if (confirm(`Are you sure you want to delete "${name}"?`)) {
-                    doDelete();
-                }
-            } else {
+            if (!(isAdmin || isFileManager)) {
                 alert('You do not have permission to delete files. Contact Super Admin or a File Manager.');
+                return;
+            }
+            if (!hasLocal) {
+                alert('This case is not stored locally; open it (Load) before deleting.');
+                return;
+            }
+            const localKey = info.localKey;
+            const b = loadBundle();
+            const doDelete = () => {
+                deleteFileFromList(localKey);
+                buildSavedFilesTable();
+            };
+            if (b.deleteMode) {
+                doDelete();
+            } else if (confirm(`Are you sure you want to delete "${caseNumber}"?`)) {
+                doDelete();
             }
         };
         btnCont.appendChild(delBtn);
+
+        // Export (download the case JSON).
+        const exportBtn = document.createElement('button');
+        exportBtn.className = 'mini-pill';
+        exportBtn.textContent = 'Export';
+        exportBtn.onclick = () => {
+            if (!hasLocal) {
+                alert('Open this case (Load) before exporting it.');
+                return;
+            }
+            downloadTextFile(caseNumber + '.json', JSON.stringify(localInfo.bundle, null, 2));
+        };
+        btnCont.appendChild(exportBtn);
 
         tdActions.appendChild(btnCont);
         tr.appendChild(tdActions);
@@ -6807,8 +7815,222 @@ function buildSavedFilesTable() {
     });
 }
 
+async function populateSearchHistory() {
+    const historyPanel = document.getElementById('search-history-panel');
+    const historyList = document.getElementById('search-history-list');
+    if (!historyPanel || !historyList) return;
+
+    const history = await fetchUserHistory();
+    if (history && history.length > 0) {
+        historyPanel.style.display = 'block';
+        historyList.innerHTML = '';
+        history.forEach(item => {
+            const btn = document.createElement('button');
+            btn.className = 'clear-btn';
+            btn.style.textAlign = 'left';
+            btn.style.padding = '10px 15px';
+            btn.style.display = 'flex';
+            btn.style.flexDirection = 'column';
+            btn.style.gap = '4px';
+
+            const caseNumber = bucketToCaseNumber(item.bucket);
+
+            const nameSpan = document.createElement('span');
+            nameSpan.style.fontWeight = 'bold';
+            nameSpan.textContent = caseNumber;
+            btn.appendChild(nameSpan);
+
+            const dateSpan = document.createElement('span');
+            dateSpan.style.fontSize = '0.75rem';
+            dateSpan.style.color = 'var(--muted)';
+            dateSpan.textContent = new Date(item.lastAccessed).toLocaleString();
+            btn.appendChild(dateSpan);
+
+            btn.onclick = async () => {
+                // Switch using the clean CASE # (not the suffixed internal bucket)
+                // and await the write so the reload doesn't abort it.
+                await setSyncBucket(caseNumber);
+                window.location.reload();
+            };
+            historyList.appendChild(btn);
+        });
+    } else {
+        historyPanel.style.display = 'none';
+    }
+}
+
+// Website-themed popup (replacing the raw browser prompt) for creating a new
+// case number or switching to one already associated with the account. Reuses
+// the same createPopup/pill-input/mini-pill patterns as showUserSelectionPopup()
+// so it matches the site theme.
+function showCaseNumberPopup(originElement = null) {
+    if (document.querySelector('.popup-overlay.case-number-popup')) return;
+    const popup = createPopup('Case Number', originElement);
+    popup.classList.add('case-number-popup');
+    const content = popup.querySelector('.popup-content');
+    const btnContainer = popup.querySelector('.popup-buttons');
+
+    const inputs = document.createElement('div');
+    inputs.className = 'popup-input-container';
+    inputs.style.display = 'flex';
+    inputs.style.flexDirection = 'column';
+    inputs.style.gap = '12px';
+
+    const label = document.createElement('div');
+    label.textContent = 'Type a case number, or pick an existing one below.';
+    label.style.textAlign = 'center';
+    label.style.fontSize = '0.9em';
+    label.style.opacity = '0.85';
+    inputs.appendChild(label);
+
+    const caseInput = document.createElement('input');
+    caseInput.type = 'text';
+    caseInput.placeholder = 'New case number';
+    caseInput.className = 'pill-input';
+    caseInput.style.textAlign = 'center';
+    caseInput.style.width = '100%';
+    caseInput.style.padding = '12px';
+    inputs.appendChild(caseInput);
+
+    const listContainer = document.createElement('div');
+    listContainer.style.display = 'flex';
+    listContainer.style.flexWrap = 'wrap';
+    listContainer.style.justifyContent = 'center';
+    listContainer.style.gap = '5px';
+    listContainer.style.marginTop = '5px';
+    listContainer.style.maxHeight = '220px';
+    listContainer.style.overflowY = 'auto';
+    inputs.appendChild(listContainer);
+
+    content.insertBefore(inputs, btnContainer);
+
+    // Cache of existing case numbers (sync buckets) for this account. Populated
+    // asynchronously so the popup renders immediately even if the server is slow.
+    let existingCases = [];
+
+    // Same normalization the New-search creation uses, so "exact duplicate" is
+    // judged on the actual stored bucket id.
+    const normalizeBucket = (name) =>
+        name.replace(/\.json$/i, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    // The unique, clean CASE #s for this account (buckets carry an internal
+    // per-user suffix that must not be shown or reused directly).
+    const getCaseNumbers = () =>
+        [...new Set(existingCases.map(item => bucketToCaseNumber(item.bucket)).filter(Boolean))];
+
+    const updateList = () => {
+        listContainer.innerHTML = '';
+        const query = caseInput.value.trim().toLowerCase();
+        const caseNumbers = getCaseNumbers();
+        const filtered = caseNumbers.filter(name => name.toLowerCase().includes(query));
+        if (filtered.length === 0) {
+            const empty = document.createElement('div');
+            empty.style.fontSize = '0.85em';
+            empty.style.opacity = '0.6';
+            empty.textContent = caseNumbers.length === 0
+                ? 'No existing case numbers.'
+                : 'No matches.';
+            listContainer.appendChild(empty);
+            return;
+        }
+        filtered.forEach(name => {
+            const pill = document.createElement('button');
+            pill.className = 'mini-pill';
+            pill.textContent = name;
+            pill.onclick = async () => {
+                // Switch using the clean CASE # and await the write before
+                // reloading so the reload doesn't abort the PUT.
+                await setSyncBucket(name);
+                window.location.reload();
+            };
+            listContainer.appendChild(pill);
+        });
+    };
+
+    caseInput.oninput = updateList;
+    updateList();
+
+    // Fetch existing case numbers without blocking popup rendering.
+    fetchUserHistory().then(history => {
+        existingCases = Array.isArray(history) ? history : [];
+        updateList();
+    }).catch(() => {
+        existingCases = [];
+        updateList();
+    });
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'popup-btn primary';
+    saveBtn.textContent = 'Save';
+    saveBtn.onclick = async () => {
+        const typed = caseInput.value.trim();
+        if (!typed) return alert('Please enter a case number.');
+
+        const newBucket = normalizeBucket(typed);
+        if (!newBucket) return alert('Please enter a valid case number.');
+
+        // Reject exact duplicates (case-insensitive) against the clean CASE #s
+        // already associated with this account.
+        const isDuplicate = getCaseNumbers().some(name =>
+            name.toLowerCase() === newBucket.toLowerCase()
+        );
+        if (isDuplicate) {
+            return alert(`Case # "${newBucket}" already exists. Pick it from the list or choose a different name.`);
+        }
+
+        // Build the new search, preserving personnel/accounts (same as the old
+        // New-search flow).
+        let nextName = typed;
+        if (!nextName.toLowerCase().endsWith('.json')) nextName += '.json';
+
+        const currentBundle = loadBundle();
+        const newBundle = defaultBundle();
+        newBundle.fileName = nextName;
+
+        const oldPersonnel = currentBundle.pages.page3 || [];
+        const preservedPersonnel = oldPersonnel.filter(r => r[0] && r[0].trim() !== '').map(r => {
+            const newRow = [...r];
+            newRow[1] = ''; // Clear team
+            newRow[2] = ''; // Clear lead
+            newRow[6] = 'false'; // Off-scene
+            return newRow;
+        });
+        if (preservedPersonnel.length > 0) {
+            newBundle.pages.page3 = preservedPersonnel;
+        }
+
+        newBundle.accounts = currentBundle.accounts;
+
+        logCreation('New Case #', newBundle.fileName, newBundle);
+
+        // Await the server writes before reloading: the reload would otherwise
+        // abort the in-flight case-number PUT and bundle push, so nothing would
+        // reach the database and the case number would be lost on refresh.
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
+        try {
+            await setSyncBucket(newBucket);
+            await saveBundle(newBundle);
+        } catch (e) {
+            console.warn('Failed to persist new case number:', e);
+        }
+        window.location.reload();
+    };
+    btnContainer.appendChild(saveBtn);
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'popup-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = () => closePopup(popup);
+    btnContainer.appendChild(cancelBtn);
+
+    setTimeout(() => caseInput.focus(), 100);
+}
+
 function buildHomePage() {
   updateFileNameDisplay();
+  // The former "Case # History" panel is retired; the user's case numbers now
+  // live in the Saved Cases table (see buildSavedFilesTable).
   const fileNameInput = document.getElementById('bundle-file-name');
   const saveNameBtn = document.getElementById('save-file-name');
   const homeStatus = document.getElementById('home-status');
@@ -6820,65 +8042,7 @@ function buildHomePage() {
 
   const createNewBtn = document.getElementById('create-new-search-btn');
   if (createNewBtn) {
-    createNewBtn.onclick = () => {
-        const popup = createPopup('Create New Search?', createNewBtn);
-        const content = popup.querySelector('.popup-content');
-        const btnContainer = popup.querySelector('.popup-buttons');
-        
-        const desc = document.createElement('p');
-        desc.style.color = 'var(--muted)';
-        desc.style.fontSize = '0.9rem';
-        desc.style.margin = '10px 0 20px 0';
-        desc.textContent = 'Create a new search file? Registered personnel will be preserved but set to off-scene.';
-        content.insertBefore(desc, btnContainer);
-        
-        const confirmBtn = document.createElement('button');
-        confirmBtn.className = 'popup-btn primary';
-        confirmBtn.textContent = 'Confirm';
-        confirmBtn.onclick = () => {
-            let nextName = prompt('Enter a name for the new search:', 'new-search.json');
-            if (nextName === null) {
-                closePopup(popup);
-                return;
-            }
-            nextName = nextName.trim();
-            if (!nextName) nextName = 'new-search.json';
-            if (!nextName.toLowerCase().endsWith('.json')) nextName += '.json';
-
-            const currentBundle = loadBundle();
-            const newBundle = defaultBundle();
-            newBundle.fileName = nextName;
-            
-            // Preserve personnel but set to off-scene
-            const oldPersonnel = currentBundle.pages.page3 || [];
-            const preservedPersonnel = oldPersonnel.filter(r => r[0] && r[0].trim() !== '').map(r => {
-                const newRow = [...r];
-                newRow[1] = ''; // Clear team
-                newRow[2] = ''; // Clear lead
-                newRow[6] = 'false'; // Off-scene
-                return newRow;
-            });
-            
-            if (preservedPersonnel.length > 0) {
-                newBundle.pages.page3 = preservedPersonnel;
-            }
-            
-            // Preserve accounts
-            newBundle.accounts = currentBundle.accounts;
-
-            logCreation('New Search File', newBundle.fileName, newBundle);
-            saveBundle(newBundle);
-            window.location.reload();
-        };
-        
-        const cancelBtn = document.createElement('button');
-        cancelBtn.className = 'popup-btn';
-        cancelBtn.textContent = 'Cancel';
-        cancelBtn.onclick = () => closePopup(popup);
-        
-        btnContainer.appendChild(confirmBtn);
-        btnContainer.appendChild(cancelBtn);
-    };
+    createNewBtn.onclick = () => showCaseNumberPopup(createNewBtn);
   }
 
   const printBtn = document.getElementById('print-search-file-btn');
@@ -6896,7 +8060,7 @@ function buildHomePage() {
       const files = getSavedFiles();
       const fileNames = Object.keys(files);
       if (fileNames.length === 0) {
-        alert("No saved search files to backup.");
+        alert("No saved cases to backup.");
         return;
       }
 
@@ -6924,28 +8088,8 @@ function buildHomePage() {
     };
   }
 
-  // Populate stats
-  const statRegions = document.getElementById('stat-regions');
-  const statSegments = document.getElementById('stat-segments');
-  const statPersonnel = document.getElementById('stat-personnel');
-  const statTasks = document.getElementById('stat-tasks');
-
-  if (statRegions) {
-    const rows = bundle.pages.index.rows || [];
-    statRegions.textContent = rows.filter(r => r[0] && r[0].trim() !== '').length;
-  }
-  if (statSegments) {
-    const rows = bundle.pages.page2 || [];
-    statSegments.textContent = rows.filter(r => r[1] && r[1].trim() !== '').length;
-  }
-  if (statPersonnel) {
-    const rows = bundle.pages.page3 || [];
-    statPersonnel.textContent = rows.filter(r => r[0] && r[0].trim() !== '').length;
-  }
-  if (statTasks) {
-    const rows = bundle.pages.page4 || [];
-    statTasks.textContent = rows.filter(r => r[0] && r[0].trim() !== '').length;
-  }
+  // Per-case stats now live in the Saved Cases table (see buildSavedFilesTable);
+  // the standalone dashboard-stats panel was removed from home.html.
 
   const recentLogsContainer = document.getElementById('recent-logs');
   const updateRecentLogs = () => {
@@ -6993,15 +8137,21 @@ function buildHomePage() {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         try {
           const importedBundle = JSON.parse(event.target.result);
           if (!importedBundle.pages || !importedBundle.fileName) {
-              alert('Invalid search file format. Missing pages or fileName.');
+              alert('Invalid case file format. Missing pages or case number.');
               return;
           }
-          logCreation('Imported Search File', importedBundle.fileName, importedBundle);
-          saveBundle(importedBundle);
+          logCreation('Imported Case #', importedBundle.fileName, importedBundle);
+          
+          // Set the internal bucket for the imported CASE #.
+          const newBucket = importedBundle.fileName.replace('.json', '').replace(/[^a-zA-Z0-9_-]/g, '_');
+          // Await the server writes before reloading; otherwise the reload aborts
+          // the in-flight case-number PUT and bundle push and the import is lost.
+          await setSyncBucket(newBucket);
+          await saveBundle(importedBundle);
           window.location.reload();
         } catch (err) {
           alert('Error importing file: ' + err.message);
@@ -7013,8 +8163,9 @@ function buildHomePage() {
 
   saveNameBtn.onclick = () => {
     const currentBundle = loadBundle();
+    // CASE #: store exactly what the user typed (letters, numbers and symbols
+    // are all allowed). No ".json" suffix is forced onto the value anymore.
     let nextName = fileNameInput.value.trim() || DEFAULT_FILE_NAME;
-    if (!nextName.toLowerCase().endsWith('.json')) nextName += '.json';
     
     // Check if we are renaming an existing file list entry
     const files = getSavedFiles();
@@ -7034,7 +8185,7 @@ function buildHomePage() {
     saveBundle(currentBundle);
 
     fileNameInput.value = nextName;
-    homeStatus.textContent = `File identifier updated to ${nextName} and saved to list.`;
+    homeStatus.textContent = `CASE # updated to ${nextName} and saved to list.`;
     updateFileNameDisplay();
     buildSavedFilesTable();
   };
@@ -7066,7 +8217,7 @@ function applyTheme(bundle) {
   if (user) {
     // Look up current user in bundle to get latest theme preference
     const actualUser = (bundle.accounts || []).find(a => 
-      a.firstName === user.firstName && a.lastName === user.lastName && a.pin === user.pin
+      a.username === user.username && a.pin === user.pin
     );
     if (actualUser && actualUser.theme) {
       theme = actualUser.theme;
@@ -7341,43 +8492,80 @@ function buildSettingsPage() {
     }
 
   if (syncUrlInput && saveSyncBtn) {
-    const syncBucketInput = document.getElementById('sync-bucket-input');
       syncUrlInput.value = getSyncServerUrl();
-    if (syncBucketInput) syncBucketInput.value = getSyncBucket();
 
     saveSyncBtn.onclick = async () => {
         await withSaveButtonFeedback(saveSyncBtn, async () => {
             const serverUrl = syncUrlInput.value.trim();
-            const bucket = syncBucketInput ? syncBucketInput.value.trim() : getSyncBucket();
 
-            if (serverUrl && bucket) {
-                localStorage.setItem(SYNC_URL_STORAGE_KEY, serverUrl);
-                localStorage.setItem(SYNC_BUCKET_STORAGE_KEY, bucket);
+            if (serverUrl) {
+                // Persist locally too so it takes effect immediately and is not
+                // masked by a stale login-popup cookie (getSyncServerUrl prefers
+                // the local value).
+                setLocalSyncServerUrl(serverUrl);
+                if (_serverSettings) {
+                    _serverSettings[SYNC_URL_STORAGE_KEY] = serverUrl;
+                    saveServerSettings(_serverSettings);
+                }
                 syncStatusMsg.textContent = 'Sync settings saved! Testing connection...';
 
                 try {
-                    const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
-                    const [resp, listResp] = await Promise.all([
-                        fetch(`${apiBase}/bundle?_=${Date.now()}`),
-                        fetch(`${apiBase}/all-files?_=${Date.now()}`)
-                    ]);
+                    const healthUrl = `${serverUrl.replace(/\/$/, '')}/api/health?_=${Date.now()}`;
+                    const resp = await fetch(healthUrl);
 
-                    if (resp.ok || listResp.ok) {
-                        syncStatusMsg.textContent = 'Sync connection successful! Data found.';
-                    } else if (resp.status === 404 && listResp.status === 404) {
-                        syncStatusMsg.textContent = 'Connected! New bucket created on server.';
+                    if (resp.ok) {
+                        syncStatusMsg.textContent = 'Sync connection successful! Server is reachable.';
                     } else {
-                        syncStatusMsg.textContent = `Server returned status ${resp.status}/${listResp.status}.`;
+                        syncStatusMsg.textContent = `Server returned status ${resp.status}.`;
                     }
-                    await Promise.resolve(syncWithServer());
                 } catch (err) {
-                    syncStatusMsg.textContent = 'Could not reach sync server. Check the URL and your connection.';
+                    console.error("Sync connection error:", err);
+                    syncStatusMsg.textContent = `Could not reach sync server: ${err.message}. Check the URL and your connection.`;
                 }
             } else {
-                syncStatusMsg.textContent = 'Please enter both Server URL and Bucket ID.';
+                syncStatusMsg.textContent = 'Please enter a Server URL.';
             }
         });
     };
+
+    const testSyncBtn = document.getElementById('test-sync-btn');
+    if (testSyncBtn) {
+        testSyncBtn.onclick = async () => {
+            const serverUrl = syncUrlInput.value.trim();
+            if (!serverUrl) return alert('Please enter a Sync Server URL first.');
+
+            testSyncBtn.textContent = 'Testing...';
+            testSyncBtn.disabled = true;
+
+            const healthUrl = `${serverUrl.replace(/\/$/, '')}/api/health`;
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+                const healthUrlWithBuster = `${healthUrl}?_=${Date.now()}`;
+                const resp = await fetch(healthUrlWithBuster, {signal: controller.signal});
+                const data = await resp.json().catch(() => ({}));
+                clearTimeout(timeoutId);
+
+                if (resp.ok) {
+                    alert(`Success!\n\nSync Server Version: ${data.version || 'unknown'}\nStatus: ${data.status}\nService: ${data.service}\n\nSync server is reachable and active.`);
+                } else {
+                    alert(`Sync Server Error ${resp.status}\n\nThe server is reachable but returned an error. Check server logs.`);
+                }
+            } catch (err) {
+                console.error("Sync server test error:", err);
+                if (err.name === 'AbortError') {
+                    alert(`Connection Timed Out\n\nCould not reach ${healthUrl} within 10 seconds.`);
+                } else {
+                    alert(`Connection Failed\n\nCould not reach ${healthUrl}.\n\nError: ${err.message}\n\nMake sure the URL is correct and the server is running.`);
+                }
+            } finally {
+                testSyncBtn.textContent = 'Test Connection';
+                testSyncBtn.disabled = false;
+            }
+        };
+    }
   }
 }
 
@@ -9512,14 +10700,16 @@ function printSearchFile() {
             for (let i = 0; i <= numXTicks; i++) {
                 const tickTs = startTimeTs + (i / numXTicks) * durationMs;
                 const x = padding.left + (i / numXTicks) * chartWidth;
-                const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-                text.setAttribute("x", x);
-                text.setAttribute("y", height - 10);
-                text.setAttribute("text-anchor", "middle");
-                text.setAttribute("font-size", "7");
-                text.setAttribute("fill", "#666");
-                text.textContent = formatHourOffset(tickTs);
-                svg.appendChild(text);
+                if (i % 2 === 0) {
+                    const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                    text.setAttribute("x", x);
+                    text.setAttribute("y", height - 10);
+                    text.setAttribute("text-anchor", "middle");
+                    text.setAttribute("font-size", "7");
+                    text.setAttribute("fill", "#666");
+                    text.textContent = formatHourOffset(tickTs);
+                    svg.appendChild(text);
+                }
             }
 
             // Path
@@ -10246,6 +11436,9 @@ const PAGE_ORDER = [
 ];
 
 function navigateToPage(targetUrl) {
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+        document.activeElement.blur();
+    }
     window.location.href = targetUrl;
 }
 
@@ -10265,14 +11458,35 @@ function initPageTransitions() {
 document.addEventListener('DOMContentLoaded', async () => {
     initPageTransitions();
     
-    if (!getSyncBucket()) {
-        showBucketPromptPopup();
-        return; // Stop initialization until bucket is set
+    if (!getUserCredentials()) {
+        showLoginPopup();
+        return;
+    }
+
+    // Working data lives only in memory (_memoryStorage) and is wiped on every
+    // reload, so the database is the single source of truth. Await the server
+    // settings first so getSyncBucket() knows the current CASE # on a fresh load;
+    // otherwise the case number and every saved row disappear on refresh (and a
+    // later auto-save can even overwrite the server with an empty default bundle).
+    // The wait is bounded by a timeout so an unreachable server can't hang the page.
+    await withTimeout(loadServerSettings(), 8000);
+
+    if (!getSyncBucket() && !isHomePage()) {
+        // No case number is set yet. Instead of silently bouncing the user back
+        // to home, send them home and flag that the case-number popup should open
+        // so they can create/select one (confirmed behavior: prompt to pick).
+        try { sessionStorage.setItem('sar-open-case-popup', '1'); } catch (e) { /* ignore */ }
+        window.location.href = 'home.html';
+        return;
     }
     
-    // For new devices, attempt an immediate sync to get the latest file from the server
-    if (!localStorage.getItem(BUNDLE_STORAGE_KEY)) {
-        await syncWithServer();
+    // Pull the latest bundle and file list from the database BEFORE rendering so a
+    // reload restores everything (CASE # + all rows) from the server instead of
+    // showing an empty default — and so no empty bundle is pushed before the real
+    // data has been read back. Bounded by a timeout so a slow/down server still
+    // lets the page finish loading (it re-syncs on the next save/visibility change).
+    if (getSyncBucket()) {
+        await withTimeout(syncWithServer(), 10000);
     }
     
     const bundle = loadBundle();
@@ -10290,7 +11504,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             setCurrentUser(superAdmin);
             checkAccess();
         } else {
-            showLoginPopup();
+            showUserSelectionPopup();
         }
     } else {
         checkAccess();
@@ -10349,6 +11563,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (isHomePage()) {
     buildHomePage();
+    // If the user was redirected here because no case number was set (or there is
+    // still none), open the themed case-number popup so they can pick/create one
+    // instead of being silently stranded on home.
+    let shouldPromptCase = false;
+    try { shouldPromptCase = sessionStorage.getItem('sar-open-case-popup') === '1'; } catch (e) { /* ignore */ }
+    if (shouldPromptCase) {
+        try { sessionStorage.removeItem('sar-open-case-popup'); } catch (e) { /* ignore */ }
+        showCaseNumberPopup();
+    }
     return;
   }
 
@@ -10390,15 +11613,18 @@ function initBaseTeamsAccordion() {
   const accordionContainer = document.getElementById('base-teams-container-header');
   if (!accordionHeader || !accordionContainer) return;
 
-  // Restore state from localStorage
-  const isCollapsed = localStorage.getItem('baseTeamsCollapsed') === 'true';
+  const bundle = loadBundle();
+  // Restore state from bundle
+  const isCollapsed = bundle.baseTeamsCollapsed === true;
   if (isCollapsed) {
     accordionContainer.classList.add('collapsed');
   }
 
   accordionHeader.onclick = () => {
     accordionContainer.classList.toggle('collapsed');
-    localStorage.setItem('baseTeamsCollapsed', accordionContainer.classList.contains('collapsed'));
+    const nextBundle = loadBundle();
+    nextBundle.baseTeamsCollapsed = accordionContainer.classList.contains('collapsed');
+    saveBundle(nextBundle);
   };
 }
 
@@ -10407,15 +11633,18 @@ function initSearchTeamsAccordion() {
   const accordionContainer = document.getElementById('search-teams-container');
   if (!accordionHeader || !accordionContainer) return;
 
-  // Restore state from localStorage
-  const isCollapsed = localStorage.getItem('searchTeamsCollapsed') === 'true';
+  const bundle = loadBundle();
+  // Restore state from bundle
+  const isCollapsed = bundle.searchTeamsCollapsed === true;
   if (isCollapsed) {
     accordionContainer.classList.add('collapsed');
   }
 
   accordionHeader.onclick = () => {
     accordionContainer.classList.toggle('collapsed');
-    localStorage.setItem('searchTeamsCollapsed', accordionContainer.classList.contains('collapsed'));
+    const nextBundle = loadBundle();
+    nextBundle.searchTeamsCollapsed = accordionContainer.classList.contains('collapsed');
+    saveBundle(nextBundle);
   };
 }
 
@@ -10836,35 +12065,64 @@ function showSegmentsImportPreviewPopup(segments, options = {}) {
 }
 
 function importSegmentsAction(segments) {
+    beginUserAction();
     const b = loadBundle();
     const segmentRows = ensureSegmentsPageRows(b);
+
+    // Keep all non-blank existing rows
+    const nonBlankRows = segmentRows.filter(row => Array.isArray(row) && row.some(c => c !== '' && c !== undefined && c !== null));
 
     const importedNames = [];
     segments.forEach(seg => {
         const lengthVal = parseFloat(seg.length) || 0;
         const timeVal = lengthVal / 0.5;
+        const segName = String(seg.segment || seg.name || '').trim();
+        const calTopoId = String(seg.feature?.attributes?.id || seg.caltopoId || '').trim();
+
+        // Check if segment already exists in nonBlankRows
+        const existingIdx = nonBlankRows.findIndex(r => {
+            const rCalTopoId = String(r[9] || '').trim();
+            const rSegName = String(r[1] || '').trim().toLowerCase();
+            if (calTopoId && rCalTopoId && calTopoId === rCalTopoId) return true;
+            if (segName && rSegName && segName.toLowerCase() === rSegName) return true;
+            return false;
+        });
+
         const newRow = [
-            '',
-            seg.segment,
-            seg.area ? seg.area + ' ac' : '',
-            seg.length ? seg.length + ' mi' : '',
-            (seg.sweep || 20) + ' ft',
-            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : '',
-            '',
-            '',
-            '',
-            seg.feature?.attributes?.id || ''
+            seg.region || (existingIdx !== -1 ? nonBlankRows[existingIdx][0] : ''),
+            segName || (existingIdx !== -1 ? nonBlankRows[existingIdx][1] : ''),
+            seg.area ? (String(seg.area).includes('ac') ? seg.area : seg.area + ' ac') : (existingIdx !== -1 ? nonBlankRows[existingIdx][2] : ''),
+            seg.length ? (String(seg.length).includes('mi') ? seg.length : seg.length + ' mi') : (existingIdx !== -1 ? nonBlankRows[existingIdx][3] : ''),
+            (seg.sweep || (existingIdx !== -1 ? nonBlankRows[existingIdx][4] : 20)) + (typeof (seg.sweep || '') === 'string' && (seg.sweep || '').includes('ft') ? '' : ' ft'),
+            timeVal > 0 ? timeVal.toFixed(2) + ' hr' : (existingIdx !== -1 ? nonBlankRows[existingIdx][5] : ''),
+            existingIdx !== -1 ? nonBlankRows[existingIdx][6] : '',
+            existingIdx !== -1 ? nonBlankRows[existingIdx][7] : '',
+            existingIdx !== -1 ? nonBlankRows[existingIdx][8] : '',
+            calTopoId || (existingIdx !== -1 ? nonBlankRows[existingIdx][9] : '')
         ];
-        segmentRows.push(newRow);
-        newlyImportedSegments.add(`|${seg.segment}`);
-        importedNames.push(seg.segment);
+
+        if (existingIdx !== -1) {
+            nonBlankRows[existingIdx] = newRow;
+        } else {
+            nonBlankRows.push(newRow);
+        }
+
+        newlyImportedSegments.add(`${newRow[0]}|${newRow[1]}`);
+        importedNames.push(newRow[1]);
     });
+
+    const minRows = typeof ROWS !== 'undefined' ? ROWS : 50;
+    while (nonBlankRows.length < minRows) {
+        nonBlankRows.push(Array.from({ length: 10 }, () => ''));
+    }
+
+    b.pages.page2 = nonBlankRows;
 
     if (importedNames.length > 0) {
         addActivityLogEntry('System', 'Imported segments: ' + importedNames.join(', '), b);
     }
 
-    saveBundle(b);
+    const savePromise = saveBundle(b);
     recalculateEverything();
     if (isSegmentsPage()) buildSegmentsTable();
 
@@ -10872,6 +12130,10 @@ function importSegmentsAction(segments) {
         newlyImportedSegments.clear();
         if (isSegmentsPage()) buildSegmentsTable();
     }, 7000);
+
+    Promise.resolve(savePromise).finally(() => {
+        endUserAction();
+    });
 }
 
 async function showCalTopoLinkPopup(originalIdx) {
@@ -11457,15 +12719,18 @@ function importCalTopoSegments(selected) {
     })));
 }
 
-async function caltopo_api_call(method, endpoint, payload = null, domain = null) {
+async function caltopo_api_call(method, endpoint, payload = null, domain = null, options = {}) {
+  const { silent = false } = (typeof options === 'object' && options !== null) ? options : {};
   try {
     return await _execute_caltopo_api_call(method, endpoint, payload, domain);
   } catch (error) {
     console.error('CalTopo API Call Error:', error);
-    if (error.message.includes('Unexpected token')) {
-       alert('CalTopo API Call Error: The server returned an invalid response (not JSON). This usually happens when the proxy URL is incorrect or the server is down.');
-    } else {
-       alert('CalTopo API Call Error: ' + error.message);
+    if (!silent) {
+      if (error.message.includes('Unexpected token')) {
+         alert('CalTopo API Call Error: The server returned an invalid response (not JSON). This usually happens when the proxy URL is incorrect or the server is down.');
+      } else {
+         alert('CalTopo API Call Error: ' + error.message);
+      }
     }
     return null;
   }
@@ -11478,12 +12743,13 @@ async function _execute_caltopo_api_call(method, endpoint, payload, domain) {
     return null;
   }
 
-  const requestBody = { method, endpoint, payload, domain };
+  const normalizedDomain = normalizeCalTopoDomain(domain);
+  const requestBody = { method, endpoint, payload, domain: normalizedDomain };
 
   // Ensure we call /api/call - normalizeCalTopoProxyUrl always ends in /api/proxy or is a .php file
   let proxyCallUrl = normalizeCalTopoProxyUrl(proxyUrl);
   if (proxyCallUrl.includes('.php')) {
-      proxyCallUrl = proxyCallUrl.split('?')[0] + (proxyCallUrl.includes('?') ? '&' : '?') + 'api_call=1';
+      proxyCallUrl = appendUrlQueryParam(proxyCallUrl, 'api_call', '1');
   } else {
       proxyCallUrl = proxyCallUrl.replace(/\/api\/proxy\/?$/i, '/api/call').replace(/\/fetch-map\/?$/i, '/api/call');
   }
@@ -11529,7 +12795,7 @@ async function _execute_caltopo_api_call(method, endpoint, payload, domain) {
       if (response.status === 404) {
         const lowerText = text.toLowerCase();
         if (lowerText.includes("lost") || text.includes("404image.png") || lowerText.includes("not found")) {
-           throw new Error(`The CalTopo endpoint '${endpoint}' was not found. This might be because the Team ID is incorrect or the domain '${domain || 'caltopo.com'}' is wrong for this account.`);
+           throw new Error(`The CalTopo endpoint '${endpoint}' was not found. This might be because the Team ID is incorrect or the domain '${normalizedDomain}' is wrong for this account.`);
         }
         throw new Error(`Endpoint not found (404) at '${proxyCallUrl}'. Your proxy server might be out of date. Please ensure you have the latest sync-server.js running.`);
       }
@@ -11562,7 +12828,7 @@ async function handleCreateMap() {
 
   const teamId = teamIdInput.value.trim();
   const title = titleInput.value.trim();
-  const domain = domainInput.value;
+  const domain = normalizeCalTopoDomain(domainInput.value);
 
   if (!teamId) {
     alert('Please enter a Team ID.');
@@ -11629,7 +12895,7 @@ async function verifyCalTopoAccount() {
   if (!teamIdInput || !domainInput || !resultSmall || !verifyBtn) return;
 
   const teamId = teamIdInput.value.trim();
-  const domain = domainInput.value;
+  const domain = normalizeCalTopoDomain(domainInput.value);
 
   if (!teamId) {
     alert('Please enter a Team ID first.');
@@ -11663,7 +12929,7 @@ async function caltopo_request(btn = null, options = {}) {
   if (!map || !map.id) return;
 
   const activeMapId = map.id;
-  const activeMapDomain = map.domain || 'caltopo.com';
+  const activeMapDomain = normalizeCalTopoDomain(map.domain);
 
   if (btn) {
     btn.disabled = true;
@@ -11714,9 +12980,10 @@ async function caltopo_request(btn = null, options = {}) {
         return hasGeom && isAllowed;
       }).map((f, idx) => {
         const props = f.properties || f;
-        const geom = f.geometry || f;
+        const geom = cloneIfValidGeoJsonGeometry(f.geometry) || cloneIfValidGeoJsonGeometry(props.geometry);
         const objectId = idx + 1;
-        
+        const resolvedFeatureId = resolveCalTopoFeatureId(f, props, '');
+
         let name = props.label || props.title || props.name || props.text;
         
         // Robust naming for Assignments or unnamed features
@@ -11737,7 +13004,7 @@ async function caltopo_request(btn = null, options = {}) {
             ...props,
             ObjectID: objectId,
             name: name,
-            id: f.id || props.id || props.uuid || `gfx-${objectId}`
+            id: resolvedFeatureId || `gfx-${objectId}`
           }
         };
 
@@ -11895,15 +13162,21 @@ function renderArcGISMap() {
 
         const overlayColor = usePsrcOverlay ? getFeaturePsrcColor(f, psrcLookup, segmentDisplaySettings) : null;
         const isActiveSearch = isFeatureActivelyBeingSearched(f, activeSearchNames);
+        // The area border/outline opacity stays CONSTANT so that only the fill
+        // communicates active-search status. `strokeOpacity` remains responsive for
+        // line/marker features (which have no fill), where the stroke is the primary
+        // visual; `borderOpacity` is the constant value used for area outlines.
         const strokeOpacity = resolveDisplayedSegmentOpacity(isActiveSearch, segmentDisplaySettings, overlayColor ? 1 : 0.2);
+        const borderOpacity = overlayColor ? 1 : 0.2;
         const fillOpacity = resolveDisplayedSegmentOpacity(isActiveSearch, segmentDisplaySettings, overlayColor ? 0.42 : 0.4);
         const overlayRgb = overlayColor ? [...overlayColor.rgb, strokeOpacity] : [64, 192, 87, strokeOpacity];
+        const overlayBorderRgb = overlayColor ? [...overlayColor.rgb, borderOpacity] : [64, 192, 87, borderOpacity];
         const overlayFillRgb = overlayColor ? [...overlayColor.rgb, fillOpacity] : [64, 192, 87, fillOpacity];
 
       let symbol = {
         type: "simple-fill",
           color: overlayFillRgb,
-          outline: {color: overlayRgb, width: overlayColor ? 3 : 2}
+          outline: {color: overlayBorderRgb, width: overlayColor ? 3 : 2}
       };
 
       if (arcgisGeom.type === 'polyline') {
@@ -12062,12 +13335,8 @@ function buildUserAccountPage() {
     container.innerHTML = `
         <div class="profile-form" style="max-width: 800px; margin: 0 auto; background: rgba(0,0,0,0.2); padding: 30px; border-radius: 32px; border: 1px solid rgba(255,255,255,0.1);">
             <div class="form-group small">
-                <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">First Name</label>
-                <input type="text" id="user-first-name" class="pill-input" value="${userToEdit.firstName || ''}" style="width: 100%; box-sizing: border-box;">
-            </div>
-            <div class="form-group small">
-                <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Last Name</label>
-                <input type="text" id="user-last-name" class="pill-input" value="${userToEdit.lastName || ''}" style="width: 100%; box-sizing: border-box;">
+                <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">Username</label>
+                <input type="text" id="user-username" class="pill-input" value="${userToEdit.username || ''}" style="width: 100%; box-sizing: border-box;">
             </div>
             <div class="form-group small">
                 <label style="display: block; margin-bottom: 8px; color: var(--text); font-weight: bold;">User PIN</label>
@@ -12093,6 +13362,7 @@ function buildUserAccountPage() {
             <div class="tool-actions" style="margin-top: 20px; justify-content: center; grid-column: span 6;">
                 <button id="save-user-btn" class="update-pill" style="padding: 12px 40px; font-size: 1rem;">Update Account</button>
                 <button id="switch-user-btn" class="mini-pill" style="padding: 12px 20px; font-size: 1rem; margin-left: 10px; background: rgba(235, 87, 87, 0.1); border-color: rgba(235, 87, 87, 0.4);">Switch User</button>
+                <button id="logout-btn" class="mini-pill" style="padding: 12px 20px; font-size: 1rem; margin-left: 10px; background: rgba(235, 87, 87, 0.1); border-color: rgba(235, 87, 87, 0.4);">Log Out</button>
             </div>
         </div>
     `;
@@ -12167,31 +13437,37 @@ function buildUserAccountPage() {
         };
     }
 
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) {
+        logoutBtn.onclick = () => {
+            setCurrentUser(null);
+            window.location.href = 'index.html';
+        };
+    }
+
     document.getElementById('save-user-btn').onclick = () => {
-        const newFirstName = document.getElementById('user-first-name').value;
-        const newLastName = document.getElementById('user-last-name').value;
+        const newUsername = document.getElementById('user-username').value;
         const newPin = document.getElementById('user-pin').value;
         const newHandle = document.getElementById('user-handle').value;
         
-        if (!newFirstName || !newPin) {
-            alert('First Name and PIN are required.');
+        if (!newUsername || !newPin) {
+            alert('Username and PIN are required.');
             return;
         }
 
         const oldPin = userToEdit.pin;
         const oldHandle = userToEdit.handle;
-        const oldFullName = (userToEdit.firstName + ' ' + (userToEdit.lastName || '')).trim();
+        const oldFullName = (userToEdit.username || '').trim();
 
         const idx = (bundle.accounts || []).findIndex(a => a.pin === oldPin);
 
-        userToEdit.firstName = newFirstName;
-        userToEdit.lastName = newLastName;
+        userToEdit.username = newUsername;
         userToEdit.pin = newPin;
         userToEdit.handle = newHandle;
         
         // Sync name change to Personnel list (page3)
         if (bundle.pages && bundle.pages.page3) {
-            const newName = newHandle || (newFirstName + ' ' + (newLastName || '')).trim();
+            const newName = newHandle || (newUsername || '').trim();
             bundle.pages.page3.forEach(row => {
                 const rowName = (row[0] || '').trim();
                 const rowPin = (row[8] || '').trim();
@@ -12359,7 +13635,7 @@ function buildMapsPage() {
   container.innerHTML = `
     <section class="hero">
       <h1>Maps Management</h1>
-      <p>Manage your CalTopo maps here. Add a Map ID to embed and fetch shapes. Polygons are imported as segments, lines are not imported.</p>
+      <p>Manage your CalTopo maps here. Add a Map ID to embed the map and enable the website to fetch shapes (aka assignments). Assignments are imported as segments, lines are not imported. Also, use the toggle button to enable color scaling and opacity effects for the linked segments based on the color scale and opacity set in the settings page.</p>
       
       <div class="tabs" style="display: flex; gap: 10px; margin-top: 20px;">
         <button id="tab-map" class="mini-pill ${activeTab === 'map' ? 'active' : ''}" style="padding: 10px 24px; font-size: 1rem; cursor: pointer;">CalTopo View</button>
@@ -12547,7 +13823,7 @@ function buildMapsPage() {
   const viewMap = (id, name, domain, teamId, skipScroll = false) => {
     activeMapId = id;
     activeMapTeamId = teamId || null;
-    activeMapDomain = domain || 'caltopo.com';
+    activeMapDomain = normalizeCalTopoDomain(domain);
     currentMapTitle.textContent = name || id;
     const suffix = isFullMode ? '' : '/embed';
     mapIframe.src = `https://${activeMapDomain}/m/${id}${suffix}`;
@@ -12601,31 +13877,217 @@ function buildMapsPage() {
 
 let isSyncing = false;
 
-function mergeTableRows(localRows, serverRows) {
-    if (!Array.isArray(localRows) || !Array.isArray(serverRows)) return serverRows;
-    const merged = [...serverRows];
-    const serverMap = new Map();
-    serverRows.forEach((row, index) => {
-        if (Array.isArray(row) && row[0]) serverMap.set(row[0].toString().trim(), index);
+function mergeSegmentsRows(localRows, serverRows) {
+    if (!Array.isArray(localRows)) return Array.isArray(serverRows) ? serverRows : defaultSegmentsData();
+    if (!Array.isArray(serverRows)) return localRows;
+
+    const isRowNonBlank = (row) => Array.isArray(row) && row.some(c => c !== '' && c !== undefined && c !== null);
+    const getCalTopoId = (row) => (Array.isArray(row) && row[9]) ? String(row[9]).trim() : '';
+    const getSegName = (row) => (Array.isArray(row) && row[1]) ? String(row[1]).trim().toLowerCase() : '';
+
+    const merged = [];
+    const serverIdMap = new Map();
+    const serverNameMap = new Map();
+
+    serverRows.forEach((row) => {
+        if (!isRowNonBlank(row)) return;
+        const rowCopy = [...row];
+        while (rowCopy.length < 10) rowCopy.push('');
+        const mIdx = merged.length;
+        merged.push(rowCopy);
+        const cId = getCalTopoId(rowCopy);
+        if (cId) serverIdMap.set(cId, mIdx);
+        const sName = getSegName(rowCopy);
+        if (sName) serverNameMap.set(sName, mIdx);
     });
 
     localRows.forEach(localRow => {
-        if (!Array.isArray(localRow) || !localRow[0]) return;
-        const id = localRow[0].toString().trim();
-        if (serverMap.has(id)) {
-            const sIdx = serverMap.get(id);
-            const sRow = merged[sIdx];
-            // Merge columns: if server is empty, take local. Server wins on conflicts (sMod > lMod)
-            for (let c = 1; c < Math.max(localRow.length, sRow.length); c++) {
-                if ((sRow[c] === '' || sRow[c] === undefined) && localRow[c] !== '' && localRow[c] !== undefined) {
-                    sRow[c] = localRow[c];
+        if (!isRowNonBlank(localRow)) return;
+        const lCopy = [...localRow];
+        while (lCopy.length < 10) lCopy.push('');
+
+        const cId = getCalTopoId(lCopy);
+        const sName = getSegName(lCopy);
+
+        let targetIdx = -1;
+        if (cId && serverIdMap.has(cId)) {
+            targetIdx = serverIdMap.get(cId);
+        } else if (sName && serverNameMap.has(sName)) {
+            targetIdx = serverNameMap.get(sName);
+        }
+
+        if (targetIdx !== -1) {
+            const targetRow = merged[targetIdx];
+            for (let c = 0; c < 10; c++) {
+                if ((targetRow[c] === '' || targetRow[c] === undefined || targetRow[c] === null) &&
+                    (lCopy[c] !== '' && lCopy[c] !== undefined && lCopy[c] !== null)) {
+                    targetRow[c] = lCopy[c];
                 }
             }
         } else {
-            // New row locally
-            merged.push(localRow);
+            const newIdx = merged.length;
+            merged.push(lCopy);
+            if (cId) serverIdMap.set(cId, newIdx);
+            if (sName) serverNameMap.set(sName, newIdx);
         }
     });
+
+    const minRows = typeof ROWS !== 'undefined' ? ROWS : 50;
+    while (merged.length < minRows) {
+        merged.push(Array.from({ length: 10 }, () => ''));
+    }
+
+    return merged;
+}
+
+function mergePersonnelRows(localRows, serverRows) {
+    if (!Array.isArray(localRows)) return Array.isArray(serverRows) ? serverRows : defaultPersonnelData();
+    if (!Array.isArray(serverRows)) return localRows;
+
+    const isRowNonBlank = (row) => Array.isArray(row) && row.some(c => c !== '' && c !== undefined && c !== null);
+    const getName = (row) => (Array.isArray(row) && row[0]) ? String(row[0]).trim().toLowerCase() : '';
+
+    const merged = [];
+    const nameMap = new Map();
+
+    serverRows.forEach(row => {
+        if (!isRowNonBlank(row)) return;
+        const rowCopy = [...row];
+        while (rowCopy.length < 14) rowCopy.push('');
+        const mIdx = merged.length;
+        merged.push(rowCopy);
+        const name = getName(rowCopy);
+        if (name) nameMap.set(name, mIdx);
+    });
+
+    localRows.forEach(localRow => {
+        if (!isRowNonBlank(localRow)) return;
+        const lCopy = [...localRow];
+        while (lCopy.length < 14) lCopy.push('');
+        const name = getName(lCopy);
+
+        if (name && nameMap.has(name)) {
+            const targetRow = merged[nameMap.get(name)];
+            for (let c = 0; c < 14; c++) {
+                if ((targetRow[c] === '' || targetRow[c] === undefined || targetRow[c] === null) &&
+                    (lCopy[c] !== '' && lCopy[c] !== undefined && lCopy[c] !== null)) {
+                    targetRow[c] = lCopy[c];
+                }
+            }
+        } else {
+            const newIdx = merged.length;
+            merged.push(lCopy);
+            if (name) nameMap.set(name, newIdx);
+        }
+    });
+
+    const minRows = typeof ROWS !== 'undefined' ? ROWS : 50;
+    while (merged.length < minRows) {
+        merged.push(Array.from({ length: 14 }, () => ''));
+    }
+
+    return merged;
+}
+
+function mergeSearchLogRows(localRows, serverRows) {
+    if (!Array.isArray(localRows)) return Array.isArray(serverRows) ? serverRows : defaultSearchLogData();
+    if (!Array.isArray(serverRows)) return localRows;
+
+    const isRowNonBlank = (row) => Array.isArray(row) && row.some(c => c !== '' && c !== undefined && c !== null);
+    const getLogKey = (row) => {
+        if (!Array.isArray(row)) return '';
+        return [row[0], row[1], row[2], row[3], row[4], row[5]]
+            .map(v => (v || '').toString().trim().toLowerCase())
+            .join('|');
+    };
+
+    const merged = [];
+    const keyMap = new Map();
+
+    serverRows.forEach(row => {
+        if (!isRowNonBlank(row)) return;
+        const rowCopy = [...row];
+        const mIdx = merged.length;
+        merged.push(rowCopy);
+        const key = getLogKey(rowCopy);
+        if (key && key !== '|||||') keyMap.set(key, mIdx);
+    });
+
+    localRows.forEach(localRow => {
+        if (!isRowNonBlank(localRow)) return;
+        const lCopy = [...localRow];
+        const key = getLogKey(lCopy);
+
+        if (key && key !== '|||||' && keyMap.has(key)) {
+            const targetRow = merged[keyMap.get(key)];
+            for (let c = 0; c < Math.max(targetRow.length, lCopy.length); c++) {
+                if ((targetRow[c] === '' || targetRow[c] === undefined || targetRow[c] === null) &&
+                    (lCopy[c] !== '' && lCopy[c] !== undefined && lCopy[c] !== null)) {
+                    targetRow[c] = lCopy[c];
+                }
+            }
+        } else {
+            const newIdx = merged.length;
+            merged.push(lCopy);
+            if (key && key !== '|||||') keyMap.set(key, newIdx);
+        }
+    });
+
+    const minRows = typeof ROWS !== 'undefined' ? ROWS : 50;
+    while (merged.length < minRows) {
+        merged.push(Array.from({ length: 13 }, () => ''));
+    }
+
+    return merged;
+}
+
+function mergeTableRows(localRows, serverRows) {
+    if (!Array.isArray(localRows) || !Array.isArray(serverRows)) return serverRows || localRows || [];
+    const isRowNonBlank = (row) => Array.isArray(row) && row.some(c => c !== '' && c !== undefined && c !== null);
+    const getRowKey = (row) => {
+        if (!Array.isArray(row)) return '';
+        if (row[0]) return row[0].toString().trim().toLowerCase();
+        return row.map(v => (v || '').toString().trim().toLowerCase()).join('|');
+    };
+
+    const merged = [];
+    const keyMap = new Map();
+
+    serverRows.forEach(row => {
+        if (!isRowNonBlank(row)) return;
+        const rowCopy = [...row];
+        const mIdx = merged.length;
+        merged.push(rowCopy);
+        const key = getRowKey(rowCopy);
+        if (key) keyMap.set(key, mIdx);
+    });
+
+    localRows.forEach(localRow => {
+        if (!isRowNonBlank(localRow)) return;
+        const lCopy = [...localRow];
+        const key = getRowKey(lCopy);
+
+        if (key && keyMap.has(key)) {
+            const targetRow = merged[keyMap.get(key)];
+            for (let c = 0; c < Math.max(targetRow.length, lCopy.length); c++) {
+                if ((targetRow[c] === '' || targetRow[c] === undefined || targetRow[c] === null) &&
+                    (lCopy[c] !== '' && lCopy[c] !== undefined && lCopy[c] !== null)) {
+                    targetRow[c] = lCopy[c];
+                }
+            }
+        } else {
+            const newIdx = merged.length;
+            merged.push(lCopy);
+            if (key) keyMap.set(key, newIdx);
+        }
+    });
+
+    const minRows = typeof ROWS !== 'undefined' ? ROWS : 50;
+    const colCount = (merged[0] && merged[0].length) ? merged[0].length : 10;
+    while (merged.length < minRows) {
+        merged.push(Array.from({ length: colCount }, () => ''));
+    }
+
     return merged;
 }
 
@@ -12677,9 +14139,18 @@ function mergeBundles(local, server) {
         merged.pages = { ...server.pages };
         for (const key in local.pages) {
             if (server.pages[key]) {
-                if (key === 'index') merged.pages[key] = mergeRegionsData(local.pages[key], server.pages[key]);
-                else if (Array.isArray(local.pages[key]) && Array.isArray(server.pages[key])) {
+                if (key === 'index') {
+                    merged.pages[key] = mergeRegionsData(local.pages[key], server.pages[key]);
+                } else if (key === 'page2') {
+                    merged.pages[key] = mergeSegmentsRows(local.pages[key], server.pages[key]);
+                } else if (key === 'page3') {
+                    merged.pages[key] = mergePersonnelRows(local.pages[key], server.pages[key]);
+                } else if (key === 'page4') {
+                    merged.pages[key] = mergeSearchLogRows(local.pages[key], server.pages[key]);
+                } else if (Array.isArray(local.pages[key]) && Array.isArray(server.pages[key])) {
                     merged.pages[key] = mergeTableRows(local.pages[key], server.pages[key]);
+                } else if (typeof local.pages[key] === 'object' && typeof server.pages[key] === 'object') {
+                    merged.pages[key] = { ...server.pages[key], ...local.pages[key] };
                 }
             } else {
                 merged.pages[key] = local.pages[key];
@@ -12697,6 +14168,54 @@ function mergeBundles(local, server) {
         });
         merged.activityLog = Array.from(logMap.values()).sort((a, b) => new Date(b.time) - new Date(a.time));
     }
+    if (local.currentAssignments || server.currentAssignments) {
+        merged.currentAssignments = { ...(server.currentAssignments || {}), ...(local.currentAssignments || {}) };
+    }
+    if (local.teamStatuses || server.teamStatuses) {
+        merged.teamStatuses = { ...(server.teamStatuses || {}), ...(local.teamStatuses || {}) };
+    }
+    if (local.parChecks || server.parChecks) {
+        merged.parChecks = { ...(server.parChecks || {}), ...(local.parChecks || {}) };
+    }
+    if (local.teamLeaveTimes || server.teamLeaveTimes) {
+        merged.teamLeaveTimes = { ...(server.teamLeaveTimes || {}), ...(local.teamLeaveTimes || {}) };
+    }
+    if (local.teamAssignmentTimes || server.teamAssignmentTimes) {
+        merged.teamAssignmentTimes = { ...(server.teamAssignmentTimes || {}), ...(local.teamAssignmentTimes || {}) };
+    }
+    if (local.dismissedNotifications || server.dismissedNotifications) {
+        merged.dismissedNotifications = { ...(server.dismissedNotifications || {}), ...(local.dismissedNotifications || {}) };
+    }
+    if (local.maps || server.maps) {
+        const localMaps = Array.isArray(local.maps) ? local.maps : [];
+        const serverMaps = Array.isArray(server.maps) ? server.maps : [];
+        if (localMaps.length > 0 && serverMaps.length > 0) {
+            const mergedMaps = serverMaps.map(sm => {
+                const lm = localMaps.find(m => m.id === sm.id);
+                if (lm && Array.isArray(lm.features) && lm.features.length > (sm.features?.length || 0)) {
+                    return { ...sm, features: lm.features };
+                }
+                return sm;
+            });
+            localMaps.forEach(lm => {
+                if (!mergedMaps.some(m => m.id === lm.id)) mergedMaps.push(lm);
+            });
+            merged.maps = mergedMaps;
+        } else {
+            merged.maps = localMaps.length > 0 ? localMaps : serverMaps;
+        }
+    }
+    if (local.accounts && server.accounts) {
+        const accMap = new Map();
+        server.accounts.forEach(a => { if (a && a.pin) accMap.set(a.pin, a); });
+        local.accounts.forEach(a => {
+            if (a && a.pin) {
+                const existing = accMap.get(a.pin);
+                accMap.set(a.pin, existing ? { ...existing, ...a } : a);
+            }
+        });
+        merged.accounts = Array.from(accMap.values());
+    }
     return merged;
 }
 
@@ -12706,26 +14225,63 @@ function areBundlesEqual(a, b) {
     return JSON.stringify(aCopy) === JSON.stringify(bCopy);
 }
 
+function getAuthHeaders(extra = {}) {
+    const creds = getUserCredentials();
+    const headers = {
+        'X-User-Name': creds ? creds.name : '',
+        'X-User-Pin': creds ? creds.password : '',
+        'X-User-Password': creds ? creds.password : ''
+    };
+    if (!(extra instanceof FormData)) {
+        headers['Content-Type'] = 'application/json';
+    }
+    return { ...headers, ...extra };
+}
+
+// Await a promise but give up after `ms` milliseconds so a slow or unreachable
+// server can never hang page initialization. Resolves with undefined on timeout
+// (and swallows rejections) because callers only need a best-effort attempt and
+// then must continue rendering the page regardless.
+function withTimeout(promise, ms) {
+    return Promise.race([
+        Promise.resolve(promise).catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, ms))
+    ]);
+}
+
 async function syncWithServer() {
     if (isSyncing) return;
     const bucket = getSyncBucket();
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
 
-    const currentUser = getCurrentUser();
-    if (!currentUser) return;
+    if (!getUserCredentials()) {
+        showLoginPopup();
+        return;
+    }
+
+    // Without a configured bucket the API path would collapse to "/api/v1//..."
+    // (note the double slash), which the backend answers with a 404 on every
+    // 2s tick. Skip syncing entirely until a bucket is available.
+    if (!bucket) return;
+
+    // If a push is currently in flight, wait for it first so we don't fetch older server state
+    if (_inFlightPushPromise) {
+        try {
+            await _inFlightPushPromise;
+        } catch (e) {}
+    }
 
     const apiBase = `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}`;
     
     isSyncing = true;
     try {
-        const isNewDevice = !localStorage.getItem(BUNDLE_STORAGE_KEY);
-        
-        // 1. Check active user status
-        // (Restriction removed)
+        const isNewDevice = !getStorageItem(BUNDLE_STORAGE_KEY);
         
         // 1. Sync entire file list
-        const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`);
+        const listResp = await fetch(`${apiBase}/all-files?_=${Date.now()}`, {
+            headers: getAuthHeaders()
+        });
         if (listResp.ok) {
             const serverFiles = await listResp.json();
             const localFiles = getSavedFiles();
@@ -12749,7 +14305,7 @@ async function syncWithServer() {
             }
 
             if (localChanged) {
-                localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(localFiles));
+                setStorageItem(FILE_LIST_STORAGE_KEY, JSON.stringify(localFiles));
                 refreshSyncUI();
             }
             if (serverNeedsUpdate) {
@@ -12764,42 +14320,49 @@ async function syncWithServer() {
 
         // 2. Sync active bundle
         const endpoint = isNewDevice ? 'latest' : 'bundle';
-        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`);
+        const resp = await fetch(`${apiBase}/${endpoint}?_=${Date.now()}`, {
+            headers: getAuthHeaders()
+        });
         if (resp.ok) {
             const serverBundle = await resp.json();
             if (serverBundle) {
                 const localBundle = loadBundle();
-                const sMod = new Date(serverBundle.lastModified || 0);
-                const lMod = new Date(localBundle.lastModified || 0);
+                const sMod = new Date(serverBundle.lastModified || 0).getTime();
+                const lMod = new Date(localBundle.lastModified || 0).getTime();
 
                 if (sMod > lMod) {
                     const merged = mergeBundles(localBundle, serverBundle);
+                    // The server copy we just read is now the baseline every
+                    // later save is diffed against.
+                    writeSyncSnapshot(serverBundle);
                     if (areBundlesEqual(merged, serverBundle)) {
-                        localStorage.setItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
+                        setStorageItem(BUNDLE_STORAGE_KEY, JSON.stringify(serverBundle));
                     } else {
-                        // Local has some unique data, push the merged result
+                        // Local holds rows the server has not seen. Store the
+                        // merge locally and send up ONLY those rows.
                         saveBundle(merged, true);
+                        pushBundleDelta(sanitizeBundle(merged));
                     }
                     
                     const files = getSavedFiles();
                     if (serverBundle.fileName) {
                         files[serverBundle.fileName] = {
-                            bundle: loadBundle(), // Use potentially merged bundle
+                            bundle: loadBundle(),
                             lastModified: loadBundle().lastModified
                         };
-                        localStorage.setItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
+                        setStorageItem(FILE_LIST_STORAGE_KEY, JSON.stringify(files));
                     }
                     refreshSyncUI();
-                } else if (lMod > sMod && !isNewDevice) {
-                    pushBundleToServer(localBundle);
                 }
+                // When the local copy looks newer nothing is pushed here: the
+                // rows a device changed were already sent as they were entered.
             }
-        } else if (resp.status === 404 && !isNewDevice) {
-            pushBundleToServer(loadBundle());
+        } else if (resp.status === 404) {
+            // No search file on the server yet, so seed it once.
+            const localBundle = loadBundle();
+            await pushBundleToServer(localBundle);
+            writeSyncSnapshot(localBundle);
         }
-
-        // 4. Discovery step removed to prevent downloading all bundles into localStorage and exceeding quota.
-        // The list is fetched directly from the backend dynamically instead.
     } catch (err) {
         console.warn("Sync background check failed:", err);
     } finally {
@@ -12807,17 +14370,160 @@ async function syncWithServer() {
     }
 }
 
-async function pushBundleToServer(bundle) {
+function getSyncDeltaUtils() {
+    return (typeof window !== 'undefined' && window.SARSyncDelta) ? window.SARSyncDelta : null;
+}
+
+// The snapshot is per CASE # + search file, so switching either one starts a
+// fresh comparison instead of diffing against an unrelated file.
+function syncSnapshotKeyFor(bundle) {
+    return `${getSyncBucket()}::${(bundle && bundle.fileName) || ''}`;
+}
+
+function readSyncSnapshot(bundle) {
+    try {
+        const raw = getStorageItem(SYNC_SNAPSHOT_STORAGE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || parsed.key !== syncSnapshotKeyFor(bundle)) return null;
+        return parsed.bundle || null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function writeSyncSnapshot(snapshotBundle, keyBundle = snapshotBundle) {
+    try {
+        setStorageItem(SYNC_SNAPSHOT_STORAGE_KEY, JSON.stringify({
+            key: syncSnapshotKeyFor(keyBundle),
+            bundle: snapshotBundle
+        }));
+    } catch (e) {}
+}
+
+// Upload ONLY what this device changed.
+//
+// Several devices share one search file, so uploading the whole file made the
+// last writer wipe out every row the others had just typed. Instead we diff the
+// saved file against the snapshot the server confirmed last time and send just
+// those rows; the server merges them into the stored file row by row. When
+// nothing changed, no request is made at all.
+async function pushBundleDelta(bundle) {
+    const bucket = getSyncBucket();
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl || !bucket || !getUserCredentials()) return;
+
+    const utils = getSyncDeltaUtils();
+    if (!utils) {
+        // The shared helper is not loaded on this page; fall back to the whole
+        // file rather than losing the edit.
+        await pushBundleToServer(bundle);
+        return;
+    }
+
+    const snapshot = readSyncSnapshot(bundle);
+    if (!snapshot) {
+        // Nothing to diff against yet (first save for this CASE # on this
+        // device). Seed the server once, then send rows only from here on.
+        await pushBundleToServer(bundle);
+        writeSyncSnapshot(bundle);
+        return;
+    }
+
+    const changes = utils.computeBundleChanges(snapshot, bundle);
+    if (!changes.length) return;
+
+    const baseUrl = serverUrl.replace(/\/$/, '');
+    try {
+        const resp = await fetch(`${baseUrl}/api/v1/${bucket}/rows`, {
+            method: 'POST',
+            headers: getAuthHeaders({'X-Last-Modified': new Date().toISOString()}),
+            body: JSON.stringify({fileName: bundle.fileName, changes}),
+            keepalive: true
+        });
+
+        if (resp.ok) {
+            writeSyncSnapshot(bundle);
+            return;
+        }
+
+        const errorData = await resp.json().catch(() => ({}));
+        // needsFullSync: the server has no copy of this CASE # yet.
+        // 400/404/405/501: an older or self-hosted backend without the row
+        // endpoint. 413: so much changed that it is no longer a row update.
+        // In every case, fall back to the whole file so the edit is never
+        // silently dropped.
+        if ((errorData && errorData.needsFullSync) || [400, 404, 405, 413, 501].indexOf(resp.status) !== -1) {
+            await pushBundleToServer(bundle);
+            writeSyncSnapshot(bundle);
+            return;
+        }
+        console.error("Push row changes failed:", resp.status, errorData.message || errorData.error || '');
+    } catch (err) {
+        console.error("Push row changes failed:", err);
+    }
+}
+
+async function fetchServerPageData(pageName) {
+    const bucket = getSyncBucket();
+    const serverUrl = getSyncServerUrl();
+    if (!serverUrl || !bucket || !getUserCredentials()) return null;
+
+    try {
+        const resp = await fetch(
+            `${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/page/${encodeURIComponent(pageName)}?_=${Date.now()}`,
+            {headers: getAuthHeaders()}
+        );
+        if (!resp.ok) return null;
+        return await resp.json();
+    } catch (err) {
+        return null;
+    }
+}
+
+// Ask the database for THIS page's data only.
+//
+// Used when arriving on a page and right after a cell edit or button press was
+// pushed, so the device immediately shows what the other devices entered without
+// ever re-uploading the page it is on (or the page it just left).
+async function pullCurrentPageData({refresh = true} = {}) {
+    if (typeof pageKey !== 'function') return false;
+    const key = pageKey();
+    const payload = await fetchServerPageData(key);
+    if (!payload || payload.found !== true || payload.data === null) return false;
+
+    const utils = getSyncDeltaUtils();
+    const local = loadBundle();
+    const currentPage = local.pages ? local.pages[key] : undefined;
+    if (utils && utils.deepEqual(currentPage, payload.data)) return false;
+
+    if (!local.pages) local.pages = {};
+    local.pages[key] = payload.data;
+    const sanitized = sanitizeBundle(local);
+    // sanitizeBundle only keeps the known table pages, so a page it does not
+    // recognise was not stored and there is nothing to show.
+    if (!sanitized.pages || sanitized.pages[key] === undefined) return false;
+    setStorageItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
+
+    // Keep the snapshot in step for this page only, so the freshly pulled rows
+    // are not mistaken for local changes and echoed straight back.
+    const snapshot = readSyncSnapshot(sanitized);
+    if (snapshot) {
+        if (!snapshot.pages) snapshot.pages = {};
+        snapshot.pages[key] = JSON.parse(JSON.stringify(sanitized.pages[key]));
+        writeSyncSnapshot(snapshot, sanitized);
+    }
+
+    if (refresh) refreshSyncUI();
+    return true;
+}
+
+async function pushBundleToServer(bundle, isReconcileRetry = false) {
     const bucket = getSyncBucket();
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
     
-    const user = getCurrentUser();
-    const headers = { 
-        'Content-Type': 'application/json',
-        'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : ''
-    };
+    const headers = getAuthHeaders();
     
     try {
         const baseUrl = serverUrl.replace(/\/$/, '');
@@ -12825,7 +14531,8 @@ async function pushBundleToServer(bundle) {
         const resp = await fetch(`${baseUrl}/api/v1/${bucket}/bundle`, {
             method: 'PUT',
             headers: headers,
-            body: JSON.stringify(bundle)
+            body: JSON.stringify(bundle),
+            keepalive: true
         });
 
         // 2. Also push to a file-specific endpoint to aid discovery and prevent truncation
@@ -12834,14 +14541,18 @@ async function pushBundleToServer(bundle) {
             await fetch(`${baseUrl}/api/v1/${bucket}/${fileKey}`, {
                 method: 'PUT',
                 headers: headers,
-                body: JSON.stringify(bundle)
-            });
+                body: JSON.stringify(bundle),
+                keepalive: true
+            }).catch(() => {});
         }
 
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
             if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
-                return; // Silently ignore sync conflicts
+                if (!isReconcileRetry) {
+                    await reconcileAndRepushBundle(bundle, baseUrl, bucket, headers);
+                }
+                return;
             }
             console.error("Push bundle failed:", resp.status, errorData.message || '');
         }
@@ -12850,29 +14561,47 @@ async function pushBundleToServer(bundle) {
     }
 }
 
+async function reconcileAndRepushBundle(localBundle, baseUrl, bucket, headers) {
+    try {
+        const resp = await fetch(`${baseUrl}/api/v1/${bucket}/bundle?_=${Date.now()}`, { headers });
+        if (!resp.ok) return;
+        const serverBundle = await resp.json();
+        if (!serverBundle || typeof serverBundle !== 'object') return;
+
+        const reconciled = mergeBundles(serverBundle, localBundle);
+        const serverTime = new Date(serverBundle.lastModified || 0).getTime() || 0;
+        reconciled.lastModified = new Date(Math.max(serverTime, Date.now()) + 1000).toISOString();
+
+        const sanitized = sanitizeBundle(reconciled);
+        setStorageItem(BUNDLE_STORAGE_KEY, JSON.stringify(sanitized));
+        await pushBundleToServer(sanitized, true);
+        writeSyncSnapshot(sanitized);
+        refreshSyncUI();
+    } catch (err) {
+        console.warn("Bundle reconcile failed:", err);
+    }
+}
+
 async function pushFileListToServer(files) {
     const bucket = getSyncBucket();
     const serverUrl = getSyncServerUrl();
     if (!serverUrl) return;
     
-    const user = getCurrentUser();
-    const headers = { 
-        'Content-Type': 'application/json',
-        'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : '',
+    const headers = getAuthHeaders({
         'X-Last-Modified': new Date().toISOString()
-    };
+    });
     
     try {
         const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/all-files`, {
             method: 'PUT',
             headers: headers,
-            body: JSON.stringify(files)
+            body: JSON.stringify(files),
+            keepalive: true
         });
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
             if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
-                return; // Silently ignore sync conflicts
+                return;
             }
             console.error("Push file list failed:", resp.status, errorData.message || '');
         }
@@ -12886,22 +14615,19 @@ async function notifyActiveUser(user) {
     const serverUrl = getSyncServerUrl();
     if (!serverUrl || !user || !user.pin) return;
 
-    const headers = {
-        'Content-Type': 'application/json',
-        'X-User-Name': getAccountName(user),
-        'X-User-Pin': user ? user.pin : ''
-    };
+    const headers = getAuthHeaders();
     
     try {
         const resp = await fetch(`${serverUrl.replace(/\/$/, '')}/api/v1/${bucket}/user-${user.pin}`, {
             method: 'PUT',
             headers: headers,
-            body: JSON.stringify({deviceId: getDeviceId(), lastModified: new Date().toISOString()})
+            body: JSON.stringify({deviceId: getDeviceId(), lastModified: new Date().toISOString()}),
+            keepalive: true
         });
         if (!resp.ok) {
             const errorData = await resp.json().catch(() => ({}));
             if (resp.status === 403 && (errorData.message || '').includes('older than server data')) {
-                return; // Silently ignore sync conflicts
+                return;
             }
             console.error("Notify active user failed:", resp.status, errorData.message || '');
         }
@@ -12910,7 +14636,33 @@ async function notifyActiveUser(user) {
     }
 }
 
-function refreshSyncUI() {
+let _activeActionCount = 0;
+
+function beginUserAction() {
+    _activeActionCount++;
+}
+
+function endUserAction() {
+    if (_activeActionCount > 0) _activeActionCount--;
+    if (!isUserActionActive()) {
+        flushPendingSyncUI();
+    }
+}
+
+function isEditingActive() {
+    const el = document.activeElement;
+    if (!el) return false;
+    const tag = (el.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable === true;
+}
+
+function isUserActionActive() {
+    return _activeActionCount > 0 || isEditingActive() || _inFlightPushPromise !== null;
+}
+
+let _pendingUIRefresh = false;
+
+function performSyncUIRefresh() {
     if (isHomePage()) buildHomePage();
     else if (isRegionsPage()) buildRegionsTable();
     else if (isSegmentsPage()) buildSegmentsTable();
@@ -12925,7 +14677,114 @@ function refreshSyncUI() {
     else buildStandardTable();
 }
 
-// Start sync loop
-setInterval(syncWithServer, 2000);
-// Initial sync
-setTimeout(syncWithServer, 1000);
+function refreshSyncUI() {
+    if (isUserActionActive()) {
+        _pendingUIRefresh = true;
+        return;
+    }
+    _pendingUIRefresh = false;
+    performSyncUIRefresh();
+}
+
+function flushPendingSyncUI() {
+    if (_pendingUIRefresh && !isUserActionActive()) {
+        _pendingUIRefresh = false;
+        performSyncUIRefresh();
+    }
+}
+
+// Leaving a cell (or finishing a button press) has already sent just that row
+// up. All that is left to do is ask the database for this page's data so the
+// rows other devices changed appear straight away.
+let _syncOnLeaveTimer = null;
+function scheduleSyncOnLeave() {
+    if (_syncOnLeaveTimer) clearTimeout(_syncOnLeaveTimer);
+    _syncOnLeaveTimer = setTimeout(async () => {
+        _syncOnLeaveTimer = null;
+        if (isEditingActive()) return;
+        beginUserAction();
+        try {
+            if (_inFlightPushPromise) {
+                await _inFlightPushPromise;
+            }
+        } finally {
+            endUserAction();
+        }
+        await pullCurrentPageData();
+    }, 200);
+}
+
+// Fires when focus leaves any editable field (contenteditable cells, inputs, etc.).
+document.addEventListener('focusout', (e) => {
+    const el = e.target;
+    if (!el || !el.tagName) return;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable) {
+        scheduleSyncOnLeave();
+    }
+});
+
+// Capture user actions on buttons and interactive controls to guard against refresh conflicts
+document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('button, [role="button"], input[type="submit"], input[type="button"], .mini-pill, .clear-btn, .popup-btn, .toggle-switch');
+    if (btn) {
+        beginUserAction();
+        setTimeout(async () => {
+            try {
+                if (_inFlightPushPromise) {
+                    await _inFlightPushPromise;
+                }
+            } catch (err) {
+                // ignore
+            } finally {
+                endUserAction();
+            }
+            // The button's own change was already sent as a row update; now read
+            // this page back so it reflects what everyone else entered.
+            await pullCurrentPageData();
+        }, 50);
+    }
+}, true);
+
+// Save and sync when leaving or switching away from the page
+window.addEventListener('beforeunload', () => {
+    if (isEditingActive()) {
+        const el = document.activeElement;
+        if (el && typeof el.blur === 'function') {
+            el.blur();
+        }
+    }
+});
+
+// Blurring commits the cell being edited, which sends that one row. The page a
+// device is leaving is never uploaded as a whole.
+window.addEventListener('pagehide', () => {
+    if (isEditingActive()) {
+        const el = document.activeElement;
+        if (el && typeof el.blur === 'function') {
+            el.blur();
+        }
+    }
+});
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+        if (isEditingActive()) {
+            const el = document.activeElement;
+            if (el && typeof el.blur === 'function') {
+                el.blur();
+            }
+        }
+    }
+});
+
+// Arriving on a page: ask the database for this page's data. A device that has
+// no local copy of the search file yet still needs the one-time full read to
+// learn the file list and the other pages.
+setTimeout(() => {
+    if (!getStorageItem(BUNDLE_STORAGE_KEY) || isHomePage()) {
+        syncWithServer();
+    } else {
+        pullCurrentPageData();
+    }
+}, 1000);
